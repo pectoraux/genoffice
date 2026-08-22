@@ -514,6 +514,36 @@ export function registerMigratedSheetsIpc(coordinator: SheetsShellCoordinator, s
     const request = localImageRequestSchema.parse(input)
     return readLocalImage(request.path)
   })
+
+  // ── workbook:read-pivot-definition (INCREMENT 12) ──
+  // Thin adapter: validates input, calls coordinator.readPivotDefinition()
+  // The coordinator reads XML entries from the session snapshot via the
+  // shared sidecar client, then returns the raw XML. The handler parses
+  // the pivot definition via the canonical @genoffice/xlsx-gateway parser.
+  ipcMain.removeHandler(IPC_CHANNELS.readPivotDefinition)
+  ipcMain.handle(IPC_CHANNELS.readPivotDefinition, async (event, input: unknown) => {
+    const { workbookPivotRequestSchema, workbookPivotDefinitionSchema } = await import('../shared/desktop-api')
+    const wcId = wcIdFromEvent(event)
+    const request = workbookPivotRequestSchema.parse(input)
+    const { pivotTableXml, cacheDefinitionXml } = await coordinator.readPivotDefinition(
+      wcId, request.sessionId, request.path, request.cachePath,
+    )
+    // Parse via the canonical xlsx-gateway parser (runtime-independent)
+    const { parsePivotDefinition } = await import('@genoffice/xlsx-gateway/src/gateway/xlsx-pivot.js')
+    return workbookPivotDefinitionSchema.parse(parsePivotDefinition(pivotTableXml, cacheDefinitionXml))
+  })
+
+  // ── workbook:auto-rename (INCREMENT 12) ──
+  // Thin adapter: validates input, calls coordinator.renameWorkbook()
+  // The coordinator owns: session lookup, rename validation, filesystem
+  // rename, session path update, renderer push event (workbook:renamed).
+  ipcMain.removeHandler(IPC_CHANNELS.autoRenameWorkbook)
+  ipcMain.handle(IPC_CHANNELS.autoRenameWorkbook, async (event, sessionId: unknown, baseName: unknown) => {
+    const wcId = wcIdFromEvent(event)
+    const validatedSessionId = z.string().uuid().parse(sessionId)
+    const validatedBaseName = z.string().min(1).max(100).parse(baseName)
+    return coordinator.renameWorkbook(wcId, event.sender, validatedSessionId, validatedBaseName)
+  })
 }
 
 // ── SavePlan translation + WorkbookFile building ────────────────────

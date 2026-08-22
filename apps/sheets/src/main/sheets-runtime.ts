@@ -88,7 +88,11 @@ export function initSheetsRuntime(config: ElectronXlsxSidecarEngineConfig): Shee
   // — screen capture has no session/lifecycle concerns).
   const screenCapture = new ElectronScreenCapture()
 
-  const coordinator = new SheetsShellCoordinator({ service, pdfRenderer })
+  const coordinator = new SheetsShellCoordinator(
+    config.sidecarClient
+      ? { service, pdfRenderer, sidecarClient: config.sidecarClient }
+      : { service, pdfRenderer },
+  )
 
   return { engine, service, coordinator, pdfRenderer, screenCapture }
 }

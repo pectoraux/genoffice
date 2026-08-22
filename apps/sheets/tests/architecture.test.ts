@@ -435,4 +435,60 @@ describe('@genoffice/sheets architecture boundary (Increment 3I/5/5A — AST-bas
     const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
     expect(src).toMatch(/abortStreamsForRenderer\(webContents\.id\)/)
   })
+
+  // ═══ INCREMENT 12 — Pivot read + auto-rename architecture guards ═══
+
+  test('migrated pivot handler delegates to coordinator.readPivotDefinition', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    expect(src).toMatch(/coordinator\.readPivotDefinition/)
+  })
+
+  test('migrated pivot handler replaces legacy handler', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    expect(src).toMatch(/removeHandler\(IPC_CHANNELS\.readPivotDefinition\)/)
+  })
+
+  test('migrated pivot handler has ZERO XlsxSidecarClient imports', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/from\s+['"]\.\/xlsx-sidecar-client['"]/)
+  })
+
+  test('migrated pivot handler uses canonical xlsx-gateway parser', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    expect(src).toMatch(/parsePivotDefinition/)
+  })
+
+  test('migrated rename handler delegates to coordinator.renameWorkbook', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    expect(src).toMatch(/coordinator\.renameWorkbook/)
+  })
+
+  test('migrated rename handler replaces legacy handler', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    expect(src).toMatch(/removeHandler\(IPC_CHANNELS\.autoRenameWorkbook\)/)
+  })
+
+  test('coordinator has readPivotDefinition method', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    expect(src).toMatch(/async readPivotDefinition/)
+  })
+
+  test('coordinator has renameWorkbook method', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    expect(src).toMatch(/async renameWorkbook/)
+  })
+
+  test('coordinator renameWorkbook sends push event to event.sender only', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    expect(src).toMatch(/webContents\.send\('workbook:renamed'/)
+    expect(src).toMatch(/webContents\.isDestroyed\(\)/)
+  })
+
+  test('coordinator renameWorkbook does NOT broadcast', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    // No BrowserWindow.getAllWindows() or broadcast pattern
+    expect(stripped).not.toMatch(/getAllWindows\(\)/)
+  })
 })
