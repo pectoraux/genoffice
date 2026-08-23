@@ -223,7 +223,10 @@ const ALLOWED_EXTENSIONS = new Set(['.xlsx', '.csv', '.xls', '.docx'])
 const SAFE_NAME_RE = /^[A-Za-z0-9.\-_]+$/
 
 export class OfficeValidationError extends Error {
-  constructor(public readonly code: string, message: string) {
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
     super(message)
     this.name = 'OfficeValidationError'
   }
@@ -292,7 +295,10 @@ function expectArray<T>(
  * scalar (string | number | boolean | null), `formula` is an optional
  * string.
  */
-function expectCellState(value: unknown, field: string): {
+function expectCellState(
+  value: unknown,
+  field: string,
+): {
   readonly value: string | number | boolean | null
   readonly formula?: string
 } {
@@ -302,13 +308,11 @@ function expectCellState(value: unknown, field: string): {
   const v = value.value
   // `value` may be string | number | boolean | null. Anything else (object,
   // array, undefined) is rejected.
-  if (
-    v !== null &&
-    typeof v !== 'string' &&
-    typeof v !== 'number' &&
-    typeof v !== 'boolean'
-  ) {
-    throw new OfficeValidationError('validation', `${field}.value must be a string, number, boolean, or null`)
+  if (v !== null && typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.value must be a string, number, boolean, or null`,
+    )
   }
   const formula = value.formula
   if (formula !== undefined && typeof formula !== 'string') {
@@ -354,6 +358,54 @@ function expectCellEdit(value: unknown, index: number): CellEdit {
 }
 
 /**
+ * Validate a `SerializedRun` from the wire. The browser sends these inside
+ * blocks for the DOCX save route — they carry the inline formatting marks
+ * (bold, italic, underline, strike, link) the editor round-trips.
+ */
+function expectSerializedRun(value: unknown, index: number): SerializedRun {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `runs[${index}] must be an object`)
+  }
+  const text = expectString(value.text, `runs[${index}].text`, false)
+  const bold = value.bold
+  if (bold !== undefined && typeof bold !== 'boolean') {
+    throw new OfficeValidationError('validation', `runs[${index}].bold must be a boolean`)
+  }
+  const italic = value.italic
+  if (italic !== undefined && typeof italic !== 'boolean') {
+    throw new OfficeValidationError('validation', `runs[${index}].italic must be a boolean`)
+  }
+  const underline = value.underline
+  if (underline !== undefined && typeof underline !== 'boolean') {
+    throw new OfficeValidationError('validation', `runs[${index}].underline must be a boolean`)
+  }
+  const strike = value.strike
+  if (strike !== undefined && typeof strike !== 'boolean') {
+    throw new OfficeValidationError('validation', `runs[${index}].strike must be a boolean`)
+  }
+  let link: { href: string; tooltip?: string } | undefined
+  if (value.link !== undefined) {
+    if (!isRecord(value.link)) {
+      throw new OfficeValidationError('validation', `runs[${index}].link must be an object`)
+    }
+    const href = expectString(value.link.href, `runs[${index}].link.href`)
+    const tooltip =
+      value.link.tooltip !== undefined
+        ? expectString(value.link.tooltip, `runs[${index}].link.tooltip`, false)
+        : undefined
+    link = { href, ...(tooltip !== undefined ? { tooltip } : {}) }
+  }
+  return {
+    text,
+    ...(bold === true ? { bold: true } : {}),
+    ...(italic === true ? { italic: true } : {}),
+    ...(underline === true ? { underline: true } : {}),
+    ...(strike === true ? { strike: true } : {}),
+    ...(link !== undefined ? { link } : {}),
+  }
+}
+
+/**
  * Validate a `SerializedBlock` from the wire. The browser sends these for
  * the DOCX save route.
  */
@@ -382,16 +434,29 @@ function expectSerializedBlock(value: unknown, index: number): SerializedBlock {
     )
   }
   const text = expectString(value.text, `blocks[${index}].text`, false)
+  // Runs carry the inline formatting marks. Without this field the server
+  // would regenerate edited blocks as plain text, silently stripping every
+  // bold/italic/underline/strike/link mark the browser editor applied.
+  const runs =
+    value.runs !== undefined
+      ? expectArray(value.runs, `blocks[${index}].runs`, expectSerializedRun)
+      : undefined
   const block: SerializedBlock = {
     docxIndex,
     type: type as SerializedBlock['type'],
     text,
-    ...(value.level !== undefined ? { level: expectNumber(value.level, `blocks[${index}].level`) } : {}),
+    ...(runs !== undefined ? { runs } : {}),
+    ...(value.level !== undefined
+      ? { level: expectNumber(value.level, `blocks[${index}].level`) }
+      : {}),
     ...(value.listKind !== undefined
       ? (() => {
           const k = value.listKind
           if (k !== 'bullet' && k !== 'ordered') {
-            throw new OfficeValidationError('validation', `blocks[${index}].listKind must be 'bullet' or 'ordered'`)
+            throw new OfficeValidationError(
+              'validation',
+              `blocks[${index}].listKind must be 'bullet' or 'ordered'`,
+            )
           }
           return { listKind: k }
         })()
@@ -406,16 +471,23 @@ function expectSerializedBlock(value: unknown, index: number): SerializedBlock {
 
 function validateFileName(name: unknown): string {
   expectString(name, 'fileName')
-  if (typeof name !== 'string') throw new OfficeValidationError('validation', 'fileName is required') // narrowed above
+  if (typeof name !== 'string')
+    throw new OfficeValidationError('validation', 'fileName is required') // narrowed above
   if (name.length > 255) {
     throw new OfficeValidationError('validation', 'fileName exceeds 255 characters')
   }
   // Reject any path separator or traversal attempt — even percent-encoded.
   if (name.includes('/') || name.includes('\\') || name.includes('..') || name.includes('\0')) {
-    throw new OfficeValidationError('validation', 'fileName may not contain path separators or traversal sequences')
+    throw new OfficeValidationError(
+      'validation',
+      'fileName may not contain path separators or traversal sequences',
+    )
   }
   if (!SAFE_NAME_RE.test(name)) {
-    throw new OfficeValidationError('validation', 'fileName contains invalid characters (allowed: A-Z a-z 0-9 . - _)')
+    throw new OfficeValidationError(
+      'validation',
+      'fileName contains invalid characters (allowed: A-Z a-z 0-9 . - _)',
+    )
   }
   const lower = name.toLowerCase()
   const ext = lower.match(/\.[^.]+$/)?.[0] ?? ''
@@ -430,7 +502,8 @@ function validateFileName(name: unknown): string {
 
 function decodeFileBytes(b64: unknown, codec: OfficeBinaryCodec): Uint8Array {
   expectString(b64, 'fileBytes')
-  if (typeof b64 !== 'string') throw new OfficeValidationError('validation', 'fileBytes (base64) is required') // narrowed above
+  if (typeof b64 !== 'string')
+    throw new OfficeValidationError('validation', 'fileBytes (base64) is required') // narrowed above
   let bytes: Uint8Array
   try {
     bytes = codec.decode(b64)
@@ -533,10 +606,7 @@ function parseSaveWorkbookRequest(
     return { fileName, fileBytes, savePlan: { edits } }
   }
 
-  throw new OfficeValidationError(
-    'validation',
-    'savePlan.edits (or legacy cellEdits) is required',
-  )
+  throw new OfficeValidationError('validation', 'savePlan.edits (or legacy cellEdits) is required')
 }
 
 function parseOpenDocumentRequest(
@@ -610,12 +680,20 @@ async function handleSaveWorkbook(
 // ── Document (DOCX) handlers ────────────────────────────────────────────────
 
 function serializeRun(run: Run): SerializedRun {
-  const out: { text: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; link?: { href: string; tooltip?: string } } = { text: run.text }
+  const out: {
+    text: string
+    bold?: boolean
+    italic?: boolean
+    underline?: boolean
+    strike?: boolean
+    link?: { href: string; tooltip?: string }
+  } = { text: run.text }
   if (run.bold) out.bold = true
   if (run.italic) out.italic = true
   if (run.underline) out.underline = true
   if (run.strike) out.strike = true
-  if (run.link) out.link = { href: run.link.href, ...(run.link.tooltip ? { tooltip: run.link.tooltip } : {}) }
+  if (run.link)
+    out.link = { href: run.link.href, ...(run.link.tooltip ? { tooltip: run.link.tooltip } : {}) }
   return out
 }
 
@@ -697,15 +775,24 @@ function toSaveBlocks(blocks: readonly SerializedBlock[]): SaveBlock[] {
     }
     // Regenerate with run-level formatting (bold, italic, underline, strike, link).
     // If the browser sent `runs`, use them; otherwise fall back to plain text.
-    const runs: Array<{ text: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; link?: { href: string; tooltip?: string } }> =
-      b.runs && b.runs.length > 0 ? b.runs.map(r => ({
-        text: r.text,
-        ...(r.bold ? { bold: true } : {}),
-        ...(r.italic ? { italic: true } : {}),
-        ...(r.underline ? { underline: true } : {}),
-        ...(r.strike ? { strike: true } : {}),
-        ...(r.link ? { link: r.link } : {}),
-      })) : [{ text: b.text }]
+    const runs: Array<{
+      text: string
+      bold?: boolean
+      italic?: boolean
+      underline?: boolean
+      strike?: boolean
+      link?: { href: string; tooltip?: string }
+    }> =
+      b.runs && b.runs.length > 0
+        ? b.runs.map((r) => ({
+            text: r.text,
+            ...(r.bold ? { bold: true } : {}),
+            ...(r.italic ? { italic: true } : {}),
+            ...(r.underline ? { underline: true } : {}),
+            ...(r.strike ? { strike: true } : {}),
+            ...(r.link ? { link: r.link } : {}),
+          }))
+        : [{ text: b.text }]
     if (b.type === 'heading') {
       out.push({
         kind: 'generated',

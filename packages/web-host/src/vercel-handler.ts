@@ -34,7 +34,12 @@ import { PgLiteClient } from '@contractor/core/persistence/pglite-client.js'
 import { applyMigration } from '@contractor/core/persistence/db-client.js'
 import type { DbClient } from '@contractor/core/persistence/db-client.js'
 import type { Membership } from '@contractor/core/domain'
-import { FOUNDATION_MIGRATION_SQL, COMMERCIAL_MIGRATION_SQL, MAGIC_LINKS_MIGRATION_SQL, AUTH_MIGRATION_SQL } from '@contractor/core/persistence/migrations-loader.js'
+import {
+  FOUNDATION_MIGRATION_SQL,
+  COMMERCIAL_MIGRATION_SQL,
+  MAGIC_LINKS_MIGRATION_SQL,
+  AUTH_MIGRATION_SQL,
+} from '@contractor/core/persistence/migrations-loader.js'
 import { OrganizationRepository } from '@contractor/core/persistence/repositories/organization.repository.js'
 import { UserRepository } from '@contractor/core/persistence/repositories/user.repository.js'
 import { MembershipRepository } from '@contractor/core/persistence/repositories/membership.repository.js'
@@ -50,13 +55,24 @@ import { MagicLinkRepository } from '@contractor/core/persistence/repositories/m
 import { WaitlistRepository } from '@contractor/core/persistence/repositories/waitlist.repository.js'
 import type { AuditRepository as AuditRepoType } from '@contractor/core/persistence/repositories/audit.repository.js'
 import {
-  IdentityService, OrganizationService, WorkspaceService, ProjectService,
-  AuditService, RevisionService, PlanMeasurementService, BOQService, EstimateService, BidService,
+  IdentityService,
+  OrganizationService,
+  WorkspaceService,
+  ProjectService,
+  AuditService,
+  RevisionService,
+  PlanMeasurementService,
+  BOQService,
+  EstimateService,
+  BidService,
 } from '@contractor/core/service'
 import { CoreApi, type ApiRequest, type ApiResponse, routeOffice } from '@contractor/core/api'
 import {
-  loadSessionConfigFromEnv, WebSessionResolver,
-  signSession, sessionCookieHeader, clearSessionCookieHeader,
+  loadSessionConfigFromEnv,
+  WebSessionResolver,
+  signSession,
+  sessionCookieHeader,
+  clearSessionCookieHeader,
 } from './index.js'
 import { MagicLinkAuthService } from './magic-link.js'
 import { PasswordAuthService } from './password-auth.js'
@@ -127,8 +143,18 @@ async function getDeps(): Promise<CachedDeps> {
   const config = loadSessionConfigFromEnv()
   const resolver = new WebSessionResolver({ users, memberships, config })
   const coreApi = new CoreApi(
-    { identity, organizations: orgService, workspaces: wsService, projects: projService,
-      audit: auditService, revisions: revService, measurements, boqs, estimates, bids: bidService },
+    {
+      identity,
+      organizations: orgService,
+      workspaces: wsService,
+      projects: projService,
+      audit: auditService,
+      revisions: revService,
+      measurements,
+      boqs,
+      estimates,
+      bids: bidService,
+    },
     resolver,
   )
   const magicLinkConfig = {
@@ -139,14 +165,33 @@ async function getDeps(): Promise<CachedDeps> {
   if (!magicLinkConfig.linkSecret || magicLinkConfig.linkSecret.length < 32) {
     // In production (no DEV auth), magic-link is the auth path — require the secret.
     if (!config.devAuthEnabled) {
-      throw new Error('CG_MAGIC_LINK_SECRET must be set (min 32 bytes) for production magic-link auth')
+      throw new Error(
+        'CG_MAGIC_LINK_SECRET must be set (min 32 bytes) for production magic-link auth',
+      )
     }
   }
   const magicLinkAuth = new MagicLinkAuthService(users, magicLinks, magicLinkConfig)
-  const passwordAuth = new PasswordAuthService({ db, users, memberships, organizations, waitlist, audit })
+  const passwordAuth = new PasswordAuthService({
+    db,
+    users,
+    memberships,
+    organizations,
+    waitlist,
+    audit,
+  })
   cachedDeps = {
-    coreApi, resolver, users, memberships, organizations, magicLinks, magicLinkAuth, passwordAuth,
-    waitlist, audit, config, magicLinkConfig,
+    coreApi,
+    resolver,
+    users,
+    memberships,
+    organizations,
+    magicLinks,
+    magicLinkAuth,
+    passwordAuth,
+    waitlist,
+    audit,
+    config,
+    magicLinkConfig,
   }
   return cachedDeps
 }
@@ -186,8 +231,18 @@ const DEMO_ORG_SLUG = 'genoffice-demo'
 const DEMO_WS_ID = 'ws_demo_default'
 const DEMO_USERS = [
   { id: 'usr_demo_owner', role: 'owner', email: 'demo-owner@contractor.dev', name: 'Demo Owner' },
-  { id: 'usr_demo_member', role: 'member', email: 'demo-member@contractor.dev', name: 'Demo Member' },
-  { id: 'usr_demo_viewer', role: 'viewer', email: 'demo-viewer@contractor.dev', name: 'Demo Viewer' },
+  {
+    id: 'usr_demo_member',
+    role: 'member',
+    email: 'demo-member@contractor.dev',
+    name: 'Demo Member',
+  },
+  {
+    id: 'usr_demo_viewer',
+    role: 'viewer',
+    email: 'demo-viewer@contractor.dev',
+    name: 'Demo Viewer',
+  },
 ] as const
 
 async function seedDemoData(deps: {
@@ -201,39 +256,62 @@ async function seedDemoData(deps: {
   const existingOrg = await deps.organizations.getById(DEMO_ORG_ID, DEMO_ORG_ID)
   if (!existingOrg) {
     await deps.organizations.create({
-      id: DEMO_ORG_ID, tenantId: DEMO_ORG_ID, name: 'GenOffice Demo', slug: DEMO_ORG_SLUG,
-      status: 'active', createdAt: now,
+      id: DEMO_ORG_ID,
+      tenantId: DEMO_ORG_ID,
+      name: 'GenOffice Demo',
+      slug: DEMO_ORG_SLUG,
+      status: 'active',
+      createdAt: now,
     })
   }
   // Default workspace for the demo org (idempotent) so project creation works
   // out of the box (the Projects screen requires at least one workspace).
   if (!(await deps.workspaces.getById(DEMO_WS_ID, DEMO_ORG_ID))) {
     await deps.workspaces.create({
-      id: DEMO_WS_ID, tenantId: DEMO_ORG_ID, organizationId: DEMO_ORG_ID,
-      name: 'Default Workspace', createdAt: now,
+      id: DEMO_WS_ID,
+      tenantId: DEMO_ORG_ID,
+      organizationId: DEMO_ORG_ID,
+      name: 'Default Workspace',
+      createdAt: now,
     })
   }
   // Demo users + memberships (idempotent).
   for (const u of DEMO_USERS) {
     if (await deps.users.getByEmail(u.email)) continue
-    await deps.users.createDemoUser(
-      { id: u.id, email: u.email, displayName: u.name, status: 'active', createdAt: now },
-    )
+    await deps.users.createDemoUser({
+      id: u.id,
+      email: u.email,
+      displayName: u.name,
+      status: 'active',
+      createdAt: now,
+    })
     // Email binding (password-auth path).
     await deps.users.createBinding({
-      id: `auth_${u.id}`, userId: u.id, provider: 'email', subject: u.email,
-      createdAt: now, lastUsedAt: null,
+      id: `auth_${u.id}`,
+      userId: u.id,
+      provider: 'email',
+      subject: u.email,
+      createdAt: now,
+      lastUsedAt: null,
     })
     // Web binding (provider='web', subject=userId) — required by the session
     // resolver's resolveTenantContext so demo sessions are authorized for
     // Core API calls (projects, workspaces, etc.).
     await deps.users.createBinding({
-      id: `web_${u.id}`, userId: u.id, provider: 'web', subject: u.id,
-      createdAt: now, lastUsedAt: null,
+      id: `web_${u.id}`,
+      userId: u.id,
+      provider: 'web',
+      subject: u.id,
+      createdAt: now,
+      lastUsedAt: null,
     })
     const membership: Membership = {
-      id: `mbr_${u.id}`, userId: u.id, organizationId: DEMO_ORG_ID,
-      role: u.role, status: 'active', createdAt: now,
+      id: `mbr_${u.id}`,
+      userId: u.id,
+      organizationId: DEMO_ORG_ID,
+      role: u.role,
+      status: 'active',
+      createdAt: now,
     }
     await deps.memberships.create(membership)
   }
@@ -264,7 +342,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       return sendJson(res, 200, { devAuth: devAuthEnabled })
     }
     if (path === '/api/auth/logout' && method === 'POST') {
-      res.setHeader('Set-Cookie', clearSessionCookieHeader(process.env.NODE_ENV === "production"))
+      res.setHeader('Set-Cookie', clearSessionCookieHeader(process.env.NODE_ENV === 'production'))
       return sendJson(res, 200, { ok: true })
     }
 
@@ -286,7 +364,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           message: msg === 'payload_too_large' ? 'Payload too large' : 'Invalid JSON body',
         })
       }
-      const officeRes = await routeOffice({ method, path, body: officeBody })
+      // Strip the /api prefix — routeOffice matches paths relative to /api
+      // (e.g. '/office/workbooks/open'), mirroring the CoreApi delegation below.
+      const officeRes = await routeOffice({
+        method,
+        path: path.slice('/api'.length),
+        body: officeBody,
+      })
       if (officeRes) return sendApiResponse(res, officeRes)
       // Fall through to 404 if routeOffice returned null (unknown office route)
       return sendJson(res, 404, { error: 'not_found', message: 'Unknown office route' })
@@ -357,12 +441,17 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
 // ── Auth route handlers (shared with dev server) ────────────────────────────
 
-async function handleDevLogin(req: IncomingMessage, res: ServerResponse, deps: CachedDeps): Promise<void> {
+async function handleDevLogin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+): Promise<void> {
   if (!deps.config.devAuthEnabled) {
     return sendJson(res, 404, { error: 'not_found', message: 'Dev auth is not enabled' })
   }
   const body = await readJsonBody(req)
-  if (!body || typeof body !== 'object') return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
+  if (!body || typeof body !== 'object')
+    return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
   const credential = (body as Record<string, unknown>).credential
   if (typeof credential !== 'string' || credential.length === 0) {
     return sendJson(res, 400, { error: 'validation', message: 'credential required' })
@@ -371,27 +460,50 @@ async function handleDevLogin(req: IncomingMessage, res: ServerResponse, deps: C
     return sendJson(res, 401, { error: 'unauthenticated', message: 'Invalid dev credential' })
   }
   const devUserEmail = process.env.CG_DEV_USER_EMAIL
-  if (!devUserEmail) return sendJson(res, 500, { error: 'internal_error', message: 'Dev user email not configured' })
+  if (!devUserEmail)
+    return sendJson(res, 500, { error: 'internal_error', message: 'Dev user email not configured' })
   const user = await deps.users.getByEmail(devUserEmail)
   if (!user || user.status !== 'active') {
-    return sendJson(res, 401, { error: 'unauthenticated', message: 'Dev user not found or inactive' })
+    return sendJson(res, 401, {
+      error: 'unauthenticated',
+      message: 'Dev user not found or inactive',
+    })
   }
   const existingBinding = await deps.users.getBindingBySubject('web', user.id)
   if (!existingBinding) {
     await deps.users.createBinding({
-      id: 'dev-binding-' + user.id, userId: user.id, provider: 'web', subject: user.id,
-      createdAt: new Date().toISOString(), lastUsedAt: null,
+      id: 'dev-binding-' + user.id,
+      userId: user.id,
+      provider: 'web',
+      subject: user.id,
+      createdAt: new Date().toISOString(),
+      lastUsedAt: null,
     })
   }
   const exp = Math.floor(Date.now() / 1000) + deps.config.sessionTtlSeconds
-  const token = signSession({ userId: user.id, selectedMembershipId: null, exp }, deps.config.sessionSecret)
-  res.setHeader('Set-Cookie', sessionCookieHeader(token, deps.config.sessionTtlSeconds, process.env.NODE_ENV === "production"))
+  const token = signSession(
+    { userId: user.id, selectedMembershipId: null, exp },
+    deps.config.sessionSecret,
+  )
+  res.setHeader(
+    'Set-Cookie',
+    sessionCookieHeader(
+      token,
+      deps.config.sessionTtlSeconds,
+      process.env.NODE_ENV === 'production',
+    ),
+  )
   return sendJson(res, 200, { userId: user.id, email: user.email, displayName: user.displayName })
 }
 
-async function handleRequestLink(req: IncomingMessage, res: ServerResponse, deps: CachedDeps): Promise<void> {
+async function handleRequestLink(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+): Promise<void> {
   const body = await readJsonBody(req)
-  if (!body || typeof body !== 'object') return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
+  if (!body || typeof body !== 'object')
+    return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
   const email = (body as Record<string, unknown>).email
   if (typeof email !== 'string' || email.length === 0) {
     return sendJson(res, 400, { error: 'validation', message: 'email required' })
@@ -407,90 +519,172 @@ async function handleRequestLink(req: IncomingMessage, res: ServerResponse, deps
     // must be delivered out-of-band via email). Return only a confirmation.
     return sendJson(res, 200, { sent: true, email: result.email })
   } catch (e) {
-    return sendJson(res, 400, { error: 'validation', message: e instanceof Error ? e.message : 'Failed' })
+    return sendJson(res, 400, {
+      error: 'validation',
+      message: e instanceof Error ? e.message : 'Failed',
+    })
   }
 }
 
-async function handleVerify(req: IncomingMessage, res: ServerResponse, deps: CachedDeps, url: URL): Promise<void> {
+async function handleVerify(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+  url: URL,
+): Promise<void> {
   const token = url.searchParams.get('token')
   if (!token) return sendJson(res, 400, { error: 'validation', message: 'token required' })
   try {
     const result = await deps.magicLinkAuth.verifyLink(token)
     const exp = Math.floor(Date.now() / 1000) + deps.config.sessionTtlSeconds
-    const sessionToken = signSession({ userId: result.userId, selectedMembershipId: null, exp }, deps.config.sessionSecret)
-    res.setHeader('Set-Cookie', sessionCookieHeader(sessionToken, deps.config.sessionTtlSeconds, process.env.NODE_ENV === "production"))
+    const sessionToken = signSession(
+      { userId: result.userId, selectedMembershipId: null, exp },
+      deps.config.sessionSecret,
+    )
+    res.setHeader(
+      'Set-Cookie',
+      sessionCookieHeader(
+        sessionToken,
+        deps.config.sessionTtlSeconds,
+        process.env.NODE_ENV === 'production',
+      ),
+    )
     // Redirect to the app root (tenant selection follows)
     res.writeHead(302, { Location: '/' })
     res.end()
     return
   } catch (e) {
-    return sendJson(res, 401, { error: 'unauthenticated', message: e instanceof Error ? e.message : 'Invalid token' })
+    return sendJson(res, 401, {
+      error: 'unauthenticated',
+      message: e instanceof Error ? e.message : 'Invalid token',
+    })
   }
 }
 
-async function handleListMemberships(req: IncomingMessage, res: ServerResponse, deps: CachedDeps): Promise<void> {
+async function handleListMemberships(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+): Promise<void> {
   const payload = deps.resolver.resolvePayload(req.headers.cookie)
-  if (!payload) return sendJson(res, 401, { error: 'unauthenticated', message: 'Not authenticated' })
+  if (!payload)
+    return sendJson(res, 401, { error: 'unauthenticated', message: 'Not authenticated' })
   const user = await deps.users.getById(payload.userId)
-  if (!user || user.status !== 'active') return sendJson(res, 401, { error: 'unauthenticated', message: 'User not found' })
+  if (!user || user.status !== 'active')
+    return sendJson(res, 401, { error: 'unauthenticated', message: 'User not found' })
   const memberships = await deps.memberships.listTenantsForUser(payload.userId)
   const result = []
   for (const m of memberships) {
     const org = await deps.organizations.getById(m.organizationId, m.organizationId)
-    result.push({ membershipId: m.id, organizationId: m.organizationId, organizationName: org?.name ?? m.organizationId, role: m.role })
+    result.push({
+      membershipId: m.id,
+      organizationId: m.organizationId,
+      organizationName: org?.name ?? m.organizationId,
+      role: m.role,
+    })
   }
   return sendJson(res, 200, { memberships: result })
 }
 
-async function handleSelectTenant(req: IncomingMessage, res: ServerResponse, deps: CachedDeps): Promise<void> {
+async function handleSelectTenant(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+): Promise<void> {
   const payload = deps.resolver.resolvePayload(req.headers.cookie)
-  if (!payload) return sendJson(res, 401, { error: 'unauthenticated', message: 'Not authenticated' })
+  if (!payload)
+    return sendJson(res, 401, { error: 'unauthenticated', message: 'Not authenticated' })
   const body = await readJsonBody(req)
-  if (!body || typeof body !== 'object') return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
+  if (!body || typeof body !== 'object')
+    return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
   const membershipId = (body as Record<string, unknown>).membershipId
   if (typeof membershipId !== 'string' || membershipId.length === 0) {
     return sendJson(res, 400, { error: 'validation', message: 'membershipId required' })
   }
   const userMemberships = await deps.memberships.listTenantsForUser(payload.userId)
   const found = userMemberships.find((m) => m.id === membershipId)
-  if (!found) return sendJson(res, 403, { error: 'forbidden', message: 'Membership not found or not yours' })
+  if (!found)
+    return sendJson(res, 403, { error: 'forbidden', message: 'Membership not found or not yours' })
   const exp = Math.floor(Date.now() / 1000) + deps.config.sessionTtlSeconds
-  const token = signSession({ userId: payload.userId, selectedMembershipId: membershipId, exp }, deps.config.sessionSecret)
-  res.setHeader('Set-Cookie', sessionCookieHeader(token, deps.config.sessionTtlSeconds, process.env.NODE_ENV === "production"))
-  return sendJson(res, 200, { tenantId: found.organizationId, membershipId: found.id, role: found.role })
+  const token = signSession(
+    { userId: payload.userId, selectedMembershipId: membershipId, exp },
+    deps.config.sessionSecret,
+  )
+  res.setHeader(
+    'Set-Cookie',
+    sessionCookieHeader(
+      token,
+      deps.config.sessionTtlSeconds,
+      process.env.NODE_ENV === 'production',
+    ),
+  )
+  return sendJson(res, 200, {
+    tenantId: found.organizationId,
+    membershipId: found.id,
+    role: found.role,
+  })
 }
 
-async function handleSession(req: IncomingMessage, res: ServerResponse, deps: CachedDeps): Promise<void> {
+async function handleSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+): Promise<void> {
   const payload = deps.resolver.resolvePayload(req.headers.cookie)
   if (!payload) return sendJson(res, 200, { authenticated: false })
   const user = await deps.users.getById(payload.userId)
   if (!user || user.status !== 'active') return sendJson(res, 200, { authenticated: false })
   return sendJson(res, 200, {
-    authenticated: true, userId: user.id, email: user.email, displayName: user.displayName,
+    authenticated: true,
+    userId: user.id,
+    email: user.email,
+    displayName: user.displayName,
     tenantSelected: payload.selectedMembershipId !== null,
   })
 }
 
 // ── Password auth + waitlist handlers (Phase 2C.3) ──────────────────────────
 
-async function handlePasswordLogin(req: IncomingMessage, res: ServerResponse, deps: CachedDeps): Promise<void> {
+async function handlePasswordLogin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+): Promise<void> {
   const body = await readJsonBody(req)
-  if (!body || typeof body !== 'object') return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
+  if (!body || typeof body !== 'object')
+    return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
   const b = body as Record<string, unknown>
   const email = typeof b.email === 'string' ? b.email : ''
   const password = typeof b.password === 'string' ? b.password : ''
-  if (!email || !password) return sendJson(res, 400, { error: 'validation', message: 'email and password required' })
+  if (!email || !password)
+    return sendJson(res, 400, { error: 'validation', message: 'email and password required' })
   const result = await deps.passwordAuth.login(email, password)
-  if (!result) return sendJson(res, 401, { error: 'unauthenticated', message: 'Invalid email or password' })
+  if (!result)
+    return sendJson(res, 401, { error: 'unauthenticated', message: 'Invalid email or password' })
   const exp = Math.floor(Date.now() / 1000) + deps.config.sessionTtlSeconds
-  const token = signSession({ userId: result.userId, selectedMembershipId: null, exp }, deps.config.sessionSecret)
-  res.setHeader('Set-Cookie', sessionCookieHeader(token, deps.config.sessionTtlSeconds, process.env.NODE_ENV === "production"))
+  const token = signSession(
+    { userId: result.userId, selectedMembershipId: null, exp },
+    deps.config.sessionSecret,
+  )
+  res.setHeader(
+    'Set-Cookie',
+    sessionCookieHeader(
+      token,
+      deps.config.sessionTtlSeconds,
+      process.env.NODE_ENV === 'production',
+    ),
+  )
   return sendJson(res, 200, { userId: result.userId })
 }
 
-async function handleSignup(req: IncomingMessage, res: ServerResponse, deps: CachedDeps): Promise<void> {
+async function handleSignup(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+): Promise<void> {
   const body = await readJsonBody(req)
-  if (!body || typeof body !== 'object') return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
+  if (!body || typeof body !== 'object')
+    return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
   const b = body as Record<string, unknown>
   const email = typeof b.email === 'string' ? b.email : ''
   const displayName = typeof b.displayName === 'string' ? b.displayName : null
@@ -498,43 +692,87 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse, deps: Cac
     return sendJson(res, 400, { error: 'validation', message: 'valid email required' })
   }
   const entry = await deps.passwordAuth.joinWaitlist(email, displayName)
-  return sendJson(res, 200, { id: entry.id, email: entry.email, status: entry.status, message: 'You are on the waitlist. An admin will review your request.' })
+  return sendJson(res, 200, {
+    id: entry.id,
+    email: entry.email,
+    status: entry.status,
+    message: 'You are on the waitlist. An admin will review your request.',
+  })
 }
 
-async function handleDemoLogin(req: IncomingMessage, res: ServerResponse, deps: CachedDeps): Promise<void> {
+async function handleDemoLogin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+): Promise<void> {
   const body = await readJsonBody(req)
-  if (!body || typeof body !== 'object') return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
+  if (!body || typeof body !== 'object')
+    return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
   const role = (body as Record<string, unknown>).role
   if (role !== 'owner' && role !== 'member' && role !== 'viewer') {
-    return sendJson(res, 400, { error: 'validation', message: 'role must be owner, member, or viewer' })
+    return sendJson(res, 400, {
+      error: 'validation',
+      message: 'role must be owner, member, or viewer',
+    })
   }
   const result = await deps.passwordAuth.demoLogin(role)
-  if (!result) return sendJson(res, 401, { error: 'unauthenticated', message: 'Demo user not found. Run the bootstrap script.' })
+  if (!result)
+    return sendJson(res, 401, {
+      error: 'unauthenticated',
+      message: 'Demo user not found. Run the bootstrap script.',
+    })
   const exp = Math.floor(Date.now() / 1000) + deps.config.sessionTtlSeconds
-  const token = signSession({ userId: result.userId, selectedMembershipId: null, exp }, deps.config.sessionSecret)
-  res.setHeader('Set-Cookie', sessionCookieHeader(token, deps.config.sessionTtlSeconds, process.env.NODE_ENV === "production"))
+  const token = signSession(
+    { userId: result.userId, selectedMembershipId: null, exp },
+    deps.config.sessionSecret,
+  )
+  res.setHeader(
+    'Set-Cookie',
+    sessionCookieHeader(
+      token,
+      deps.config.sessionTtlSeconds,
+      process.env.NODE_ENV === 'production',
+    ),
+  )
   return sendJson(res, 200, { userId: result.userId, role })
 }
 
-async function handleListWaitlist(req: IncomingMessage, res: ServerResponse, deps: CachedDeps): Promise<void> {
+async function handleListWaitlist(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+): Promise<void> {
   const payload = deps.resolver.resolvePayload(req.headers.cookie)
-  if (!payload) return sendJson(res, 401, { error: 'unauthenticated', message: 'Not authenticated' })
+  if (!payload)
+    return sendJson(res, 401, { error: 'unauthenticated', message: 'Not authenticated' })
   // H4: use the session's SELECTED membership for admin verification
   if (!payload.selectedMembershipId) {
     return sendJson(res, 403, { error: 'forbidden', message: 'No tenant selected' })
   }
   const userMemberships = await deps.memberships.listTenantsForUser(payload.userId)
   const selectedM = userMemberships.find((m) => m.id === payload.selectedMembershipId)
-  if (!selectedM || selectedM.status !== 'active' || (selectedM.role !== 'admin' && selectedM.role !== 'owner')) {
-    return sendJson(res, 403, { error: 'forbidden', message: 'Admin or owner role required for the selected tenant' })
+  if (
+    !selectedM ||
+    selectedM.status !== 'active' ||
+    (selectedM.role !== 'admin' && selectedM.role !== 'owner')
+  ) {
+    return sendJson(res, 403, {
+      error: 'forbidden',
+      message: 'Admin or owner role required for the selected tenant',
+    })
   }
   const entries = await deps.waitlist.listAll()
   return sendJson(res, 200, { entries })
 }
 
-async function handleApproveWaitlist(req: IncomingMessage, res: ServerResponse, deps: CachedDeps): Promise<void> {
+async function handleApproveWaitlist(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: CachedDeps,
+): Promise<void> {
   const payload = deps.resolver.resolvePayload(req.headers.cookie)
-  if (!payload) return sendJson(res, 401, { error: 'unauthenticated', message: 'Not authenticated' })
+  if (!payload)
+    return sendJson(res, 401, { error: 'unauthenticated', message: 'Not authenticated' })
   // H4 FIX: use the session's SELECTED membership, NOT the first admin/owner membership.
   // This ensures the approval creates the user in the tenant the admin actually selected.
   if (!payload.selectedMembershipId) {
@@ -544,37 +782,61 @@ async function handleApproveWaitlist(req: IncomingMessage, res: ServerResponse, 
   const userMemberships = await deps.memberships.listTenantsForUser(payload.userId)
   const selectedM = userMemberships.find((m) => m.id === payload.selectedMembershipId)
   if (!selectedM) {
-    return sendJson(res, 403, { error: 'forbidden', message: 'Selected membership not found or revoked' })
+    return sendJson(res, 403, {
+      error: 'forbidden',
+      message: 'Selected membership not found or revoked',
+    })
   }
   if (selectedM.status !== 'active') {
     return sendJson(res, 403, { error: 'forbidden', message: 'Selected membership is not active' })
   }
   if (selectedM.role !== 'admin' && selectedM.role !== 'owner') {
-    return sendJson(res, 403, { error: 'forbidden', message: 'Admin or owner role required for the selected tenant' })
+    return sendJson(res, 403, {
+      error: 'forbidden',
+      message: 'Admin or owner role required for the selected tenant',
+    })
   }
   const body = await readJsonBody(req)
-  if (!body || typeof body !== 'object') return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
+  if (!body || typeof body !== 'object')
+    return sendJson(res, 400, { error: 'validation', message: 'Invalid body' })
   const b = body as Record<string, unknown>
   const waitlistId = typeof b.waitlistId === 'string' ? b.waitlistId : ''
   const password = typeof b.password === 'string' ? b.password : ''
   if (!waitlistId || !password || password.length < 6) {
-    return sendJson(res, 400, { error: 'validation', message: 'waitlistId and password (min 6 chars) required' })
+    return sendJson(res, 400, {
+      error: 'validation',
+      message: 'waitlistId and password (min 6 chars) required',
+    })
   }
   try {
     // H4: tenantId comes from the SELECTED membership — never client-supplied.
     const result = await deps.passwordAuth.approveWaitlistEntry(
-      waitlistId, payload.userId, selectedM.organizationId, password,
+      waitlistId,
+      payload.userId,
+      selectedM.organizationId,
+      password,
     )
-    return sendJson(res, 200, { userId: result.userId, email: result.email, message: 'User created. They can now login with their email + the password you set.' })
+    return sendJson(res, 200, {
+      userId: result.userId,
+      email: result.email,
+      message: 'User created. They can now login with their email + the password you set.',
+    })
   } catch (e) {
     // H6 FIX: map expected validation/conflict errors appropriately;
     // unexpected DB/internal failures → 500 with sanitized message (no SQL/stack/schema leak).
     const msg = e instanceof Error ? e.message : 'Failed to approve'
-    if (msg.includes('not found') || msg.includes('already') || msg.includes('could not be approved')) {
+    if (
+      msg.includes('not found') ||
+      msg.includes('already') ||
+      msg.includes('could not be approved')
+    ) {
       return sendJson(res, 409, { error: 'conflict', message: msg })
     }
     // Unexpected error — do not leak details
-    return sendJson(res, 500, { error: 'internal_error', message: 'Failed to approve waitlist entry' })
+    return sendJson(res, 500, {
+      error: 'internal_error',
+      message: 'Failed to approve waitlist entry',
+    })
   }
 }
 
@@ -620,14 +882,20 @@ async function readLargeJsonBody(req: IncomingMessage): Promise<unknown> {
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const json = JSON.stringify(body)
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(json) })
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(json),
+  })
   res.end(json)
 }
 
 function sendApiResponse(res: ServerResponse, apiRes: ApiResponse): void {
   const body = typeof apiRes.body === 'string' ? apiRes.body : JSON.stringify(apiRes.body)
   const headers: Record<string, string> = {
-    'Content-Type': typeof apiRes.body === 'string' ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8',
+    'Content-Type':
+      typeof apiRes.body === 'string'
+        ? 'text/plain; charset=utf-8'
+        : 'application/json; charset=utf-8',
     'Content-Length': String(Buffer.byteLength(body)),
   }
   res.writeHead(apiRes.status, headers)
