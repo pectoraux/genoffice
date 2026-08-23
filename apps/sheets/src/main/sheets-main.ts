@@ -1128,7 +1128,6 @@ function getMigratedRuntime(): ReturnType<typeof initSheetsRuntime> {
     const sharedClient = sidecar ?? new XlsxSidecarClient(sidecarPath)
     sidecar = sharedClient
     sharedClient.start()
-    console.log('[DEBUG-16] getMigratedRuntime: sidecar PID =', sharedClient.getProcessId(), ', sidecarClient provided to engine =', !!sharedClient)
     migratedRuntime = initSheetsRuntime(
       { binaryPath: sidecarPath, sidecarClient: sharedClient },
       {

@@ -79,10 +79,12 @@ function wcIdFromEvent(event: IpcMainInvokeEvent): number {
 function getUiLangForHandler(): string {
   // Read the locale provider injected via registerMigratedSheetsIpc.
   // This avoids a static import cycle (sheets-main.ts ↔ sheets-migrated-handlers.ts).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const provider = (globalThis as any).__sheetsLocaleProvider as (() => string) | undefined
+  const provider = globalLocaleProvider
   return provider?.() ?? 'en'
 }
+
+/** Locale provider injected by the caller (avoids a static import cycle). */
+let globalLocaleProvider: (() => string) | undefined
 
 /**
  * Convert a numeric {startRow,startColumn,endRow,endColumn} range (0-indexed)
@@ -148,8 +150,7 @@ export function registerMigratedSheetsIpc(
   migratedIpcRegistered = true
   // Inject the locale provider (avoids a static import cycle with sheets-main.ts).
   if (localeProvider) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(globalThis as any).__sheetsLocaleProvider = localeProvider
+    globalLocaleProvider = localeProvider
   }
 
   // ── workbook:select (Phase 2 Increment 16 — migrated open path) ──
