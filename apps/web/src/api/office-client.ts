@@ -263,11 +263,47 @@ function isOfficeApiErrorBody(value: unknown): value is { error: string; message
 
 function isString(v: unknown): v is string { return typeof v === 'string' }
 function isObject(v: unknown): v is Record<string, unknown> { return typeof v === 'object' && v !== null && !Array.isArray(v) }
+function isNumber(v: unknown): v is number { return typeof v === 'number' }
+
+function isSerializedRun(v: unknown): v is SerializedRun {
+  if (!isObject(v)) return false
+  if (!isString(v.text)) return false
+  if (v.bold !== undefined && typeof v.bold !== 'boolean') return false
+  if (v.italic !== undefined && typeof v.italic !== 'boolean') return false
+  if (v.underline !== undefined && typeof v.underline !== 'boolean') return false
+  if (v.strike !== undefined && typeof v.strike !== 'boolean') return false
+  if (v.link !== undefined) {
+    if (!isObject(v.link) || !isString(v.link.href)) return false
+  }
+  return true
+}
+
+function isSerializedBlock(v: unknown): v is SerializedBlock {
+  if (!isObject(v)) return false
+  if (v.docxIndex !== null && typeof v.docxIndex !== 'number') return false
+  if (!isString(v.type)) return false
+  if (!isString(v.text)) return false
+  if (v.runs !== undefined) {
+    if (!Array.isArray(v.runs)) return false
+    if (!v.runs.every(isSerializedRun)) return false
+  }
+  if (v.level !== undefined && typeof v.level !== 'number') return false
+  if (v.listKind !== undefined && v.listKind !== 'bullet' && v.listKind !== 'ordered') return false
+  if (v.edited !== undefined && typeof v.edited !== 'boolean') return false
+  if (v.hidden !== undefined && typeof v.hidden !== 'boolean') return false
+  return true
+}
 
 function isOpenWorkbookResponse(v: unknown): v is OpenWorkbookResponse {
   if (!isObject(v)) return false
   if (!isObject(v.snapshot)) return false
   if (!Array.isArray(v.snapshot.sheets)) return false
+  for (const sheet of v.snapshot.sheets) {
+    if (!isObject(sheet)) return false
+    if (!isString(sheet.id)) return false
+    if (!isString(sheet.name)) return false
+    if (!isObject(sheet.cells)) return false
+  }
   if (!isObject(v.sheetNamesById)) return false
   return true
 }
@@ -279,7 +315,8 @@ function isSaveWorkbookResponse(v: unknown): v is SaveWorkbookResponse {
 
 function isOpenDocumentResponse(v: unknown): v is OpenDocumentResponse {
   if (!isObject(v)) return false
-  return Array.isArray(v.blocks)
+  if (!Array.isArray(v.blocks)) return false
+  return v.blocks.every(isSerializedBlock)
 }
 
 function isSaveDocumentResponse(v: unknown): v is SaveDocumentResponse {
@@ -287,7 +324,7 @@ function isSaveDocumentResponse(v: unknown): v is SaveDocumentResponse {
   return isString(v.fileBytes)
 }
 
-async function postJson<T>(path: string, body: unknown, guard?: (v: unknown) => v is T): Promise<T> {
+async function postJson<T>(path: string, body: unknown, guard: (v: unknown) => v is T): Promise<T> {
   const res = await fetch(`/api/office${path}`, {
     method: 'POST',
     credentials: 'same-origin',
@@ -319,18 +356,15 @@ async function postJson<T>(path: string, body: unknown, guard?: (v: unknown) => 
       message: `Office API request failed (${res.status})`,
     })
   }
-  // Runtime-verify the response shape if a type guard was provided.
-  if (guard) {
-    if (!guard(parsed)) {
-      throw new OfficeApiRequestError({
-        status: res.status,
-        error: 'internal',
-        message: 'Office API returned a malformed response (failed type guard)',
-      })
-    }
-    return parsed
+  // Runtime-verify the response shape — guard is mandatory.
+  if (!guard(parsed)) {
+    throw new OfficeApiRequestError({
+      status: res.status,
+      error: 'internal',
+      message: 'Office API returned a malformed response (failed type guard)',
+    })
   }
-  return parsed as T
+  return parsed
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
