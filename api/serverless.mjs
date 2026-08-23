@@ -34457,6 +34457,166 @@ function bookmarksXml(names) {
     return `<w:bookmarkStart w:id="${id}" w:name="${escapeXmlAttr(name)}"/><w:bookmarkEnd w:id="${id}"/>`;
   }).join("");
 }
+var TCPR_ORDER = [
+  "w:cnfStyle",
+  "w:tcW",
+  "w:gridSpan",
+  "w:hMerge",
+  "w:vMerge",
+  "w:tcBorders",
+  "w:shd",
+  "w:noWrap",
+  "w:tcMar",
+  "w:textDirection",
+  "w:tcFitText",
+  "w:vAlign",
+  "w:hideMark"
+];
+function setTcPrChild(children, name, xml) {
+  const idx = children.findIndex((c) => c.name === name);
+  if (xml === null) {
+    if (idx >= 0) children.splice(idx, 1);
+    return;
+  }
+  if (idx >= 0) {
+    children[idx] = { name, xml };
+    return;
+  }
+  const orderIdx = TCPR_ORDER.indexOf(name);
+  let insertAt = children.length;
+  for (let i = 0; i < children.length; i++) {
+    const oi = TCPR_ORDER.indexOf(children[i].name);
+    if (oi >= 0 && orderIdx >= 0 && oi > orderIdx) {
+      insertAt = i;
+      break;
+    }
+  }
+  children.splice(insertAt, 0, { name, xml });
+}
+function cellBordersXml(borders) {
+  const side = (name) => {
+    const b = borders[name];
+    if (!b) return "";
+    const sz = b.style === "none" || b.style === "nil" ? "" : ` w:sz="${b.szEighths ?? 4}" w:space="0"`;
+    const color = b.style === "none" || b.style === "nil" ? "" : ` w:color="${escapeXmlAttr(b.color ?? "auto")}"`;
+    return `<w:${name} w:val="${escapeXmlAttr(b.style)}"${sz}${color}/>`;
+  };
+  return `<w:tcBorders>${side("top")}${side("left")}${side("bottom")}${side("right")}</w:tcBorders>`;
+}
+function tableCellXml(cell, width, verticalMerge) {
+  const rawInner = cell.rawTcPr ? cell.rawTcPr.replace(/^<w:tcPr(?:\s[^>]*)?>/, "").replace(/<\/w:tcPr>$/, "") : "";
+  const children = cell.rawTcPr && cell.rawTcPr.endsWith("</w:tcPr>") ? splitXmlChildren(rawInner) : [];
+  setTcPrChild(children, "w:tcW", `<w:tcW w:w="${width}" w:type="dxa"/>`);
+  setTcPrChild(
+    children,
+    "w:gridSpan",
+    cell.colSpan && cell.colSpan > 1 ? `<w:gridSpan w:val="${cell.colSpan}"/>` : null
+  );
+  const merge = verticalMerge ?? cell.vMerge;
+  setTcPrChild(
+    children,
+    "w:vMerge",
+    merge === "restart" ? '<w:vMerge w:val="restart"/>' : merge === "continue" ? "<w:vMerge/>" : null
+  );
+  if (cell.borders) setTcPrChild(children, "w:tcBorders", cellBordersXml(cell.borders));
+  setTcPrChild(
+    children,
+    "w:shd",
+    cell.fill ? `<w:shd w:val="clear" w:color="auto" w:fill="${escapeXmlAttr(cell.fill)}"/>` : null
+  );
+  setTcPrChild(
+    children,
+    "w:vAlign",
+    cell.vAlign && cell.vAlign !== "top" ? `<w:vAlign w:val="${cell.vAlign}"/>` : null
+  );
+  const tcPr = children.map((c) => c.xml);
+  const paragraphs = cell.richParas?.length ? cell.richParas : (cell.paras.length > 0 ? cell.paras : [""]).map((text) => ({
+    align: cell.align,
+    runs: text === "" ? [] : [{ text, bold: cell.bold, color: cell.color }]
+  }));
+  const paraXmls = paragraphs.map((paragraph) => {
+    const list = "list" in paragraph ? paragraph.list : void 0;
+    const numPr = list ? `<w:numPr><w:ilvl w:val="${list.ilvl}"/><w:numId w:val="${escapeXmlAttr(list.numId)}"/></w:numPr>` : "";
+    const pPr = mergePPrFormat(`<w:pPr>${numPr}</w:pPr>`, paragraph);
+    return `<w:p>${pPr}${runsXml(paragraph.runs, null)}</w:p>`;
+  });
+  const nested = cell.nestedTables ?? [];
+  const items = paraXmls.map((xml) => ({ tbl: false, xml }));
+  for (let i = nested.length - 1; i >= 0; i--) {
+    const at = Math.min(cell.nestedTableAnchors?.[i] ?? paraXmls.length, paraXmls.length);
+    items.splice(at, 0, { tbl: true, xml: generateTableModelXml(nested[i]) });
+  }
+  const tail = items.length === 0 || items[items.length - 1].tbl ? "<w:p/>" : "";
+  const content = items.map((item) => item.xml).join("");
+  return `<w:tc><w:tcPr>${tcPr.join("")}</w:tcPr>${content}${tail}</w:tc>`;
+}
+function generateTableModelXml(model, originalTableXml) {
+  const columnCount = Math.max(
+    1,
+    model.colWidthsPct?.length ?? 0,
+    ...model.rows.map((row) => row.reduce((sum, cell) => sum + (cell.colSpan ?? 1), 0))
+  );
+  const percentages = model.colWidthsPct?.length === columnCount ? model.colWidthsPct : Array.from({ length: columnCount }, () => 100 / columnCount);
+  const totalPct = percentages.reduce((sum, value) => sum + value, 0) || 100;
+  const widths = model.colWidthsTwips?.length === columnCount ? model.colWidthsTwips.map((value) => Math.max(1, Math.round(value))) : percentages.map((value) => Math.max(1, Math.round(value / totalPct * 9360)));
+  const totalWidth = widths.reduce((sum, value) => sum + value, 0);
+  const border = (name) => `<w:${name} w:val="single" w:sz="4" w:space="0" w:color="auto"/>`;
+  const borders = "<w:tblBorders>" + ["top", "left", "bottom", "right", "insideH", "insideV"].map(border).join("") + "</w:tblBorders>";
+  const grid = `<w:tblGrid>${widths.map((width) => `<w:gridCol w:w="${width}"/>`).join("")}</w:tblGrid>`;
+  const rows = model.rows.map((row, ri) => {
+    let gridColumn = 0;
+    const cells = row.map((cell) => {
+      const span = Math.max(1, cell.colSpan ?? 1);
+      const width = widths.slice(gridColumn, gridColumn + span).reduce((sum, value) => sum + value, 0);
+      gridColumn += span;
+      return tableCellXml(cell, width);
+    });
+    let trPr = model.rawTrPrs?.[ri] ?? "";
+    if (trPr && !trPr.endsWith("</w:trPr>")) trPr = "";
+    const h = model.rowHeightsTwips?.[ri];
+    if (h != null && h > 0) {
+      const rule = model.rowHeightRules?.[ri] === "exact" ? "exact" : "atLeast";
+      const tag = `<w:trHeight w:val="${Math.round(h)}" w:hRule="${rule}"/>`;
+      if (!trPr) trPr = `<w:trPr>${tag}</w:trPr>`;
+      else if (/<w:trHeight[^>]*\/>/.test(trPr)) trPr = trPr.replace(/<w:trHeight[^>]*\/>/, tag);
+      else trPr = trPr.replace("</w:trPr>", `${tag}</w:trPr>`);
+    } else if (trPr) {
+      trPr = trPr.replace(/<w:trHeight[^>]*\/>/, "");
+      if (/^<w:trPr(?:\s[^>]*)?>\s*<\/w:trPr>$/.test(trPr)) trPr = "";
+    }
+    return `<w:tr>${trPr}${cells.join("")}</w:tr>`;
+  }).join("");
+  const originalTblPr = originalTableXml?.match(
+    /<w:tblPr(?:\s[^>]*)?>[\s\S]*?<\/w:tblPr>|<w:tblPr(?:\s[^>]*)?\/>/
+  )?.[0];
+  let tblPr = originalTblPr ?? `<w:tblPr><w:tblW w:w="${totalWidth}" w:type="dxa"/>${borders}<w:tblLayout w:type="fixed"/></w:tblPr>`;
+  if (model.tblStyleId !== void 0) {
+    tblPr = tblPr.replace(/<w:tblStyle[^>]*\/>/, "");
+    if (model.tblStyleId !== "") {
+      const tag = `<w:tblStyle w:val="${escapeXmlAttr(model.tblStyleId)}"/>`;
+      tblPr = /<w:tblPr\/>/.test(tblPr) ? tblPr.replace("<w:tblPr/>", `<w:tblPr>${tag}</w:tblPr>`) : tblPr.replace(/(<w:tblPr(?:\s[^>]*)?>)/, `$1${tag}`);
+      if (!/<w:tblLook[\s/>]/.test(tblPr)) {
+        tblPr = tblPr.replace(
+          "</w:tblPr>",
+          '<w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/></w:tblPr>'
+        );
+      }
+    }
+  }
+  if (model.align) {
+    tblPr = tblPr.replace(/<w:jc[^>]*\/>/, "");
+    if (model.align !== "left") {
+      const tag = `<w:jc w:val="${model.align}"/>`;
+      if (/<w:tblW[^>]*\/>/.test(tblPr)) tblPr = tblPr.replace(/(<w:tblW[^>]*\/>)/, `$1${tag}`);
+      else if (/<w:tblStyle[^>]*\/>/.test(tblPr))
+        tblPr = tblPr.replace(/(<w:tblStyle[^>]*\/>)/, `$1${tag}`);
+      else if (/<w:tblPr\/>/.test(tblPr))
+        tblPr = tblPr.replace("<w:tblPr/>", `<w:tblPr>${tag}</w:tblPr>`);
+      else tblPr = tblPr.replace(/(<w:tblPr(?:\s[^>]*)?>)/, `$1${tag}`);
+    }
+  }
+  return `<w:tbl>${tblPr}${grid}${rows}</w:tbl>`;
+}
 function generateRunsXml(runs, ctx) {
   return runsXml(runs, ctx.allocateHyperlinkRel);
 }
@@ -41247,6 +41407,358 @@ function expectSerializedRun(value, index) {
     ...link !== void 0 ? { link } : {}
   };
 }
+var MAX_TABLE_ROWS = 1e3;
+var MAX_TABLE_COLS = 63;
+function expectOptionalNumber(value, field) {
+  if (value === void 0 || value === null) return void 0;
+  return expectNumber(value, field);
+}
+function expectOptionalBoolean(value, field) {
+  if (value === void 0 || value === null) return void 0;
+  if (typeof value !== "boolean") {
+    throw new OfficeValidationError("validation", `${field} must be a boolean`);
+  }
+  return value;
+}
+function expectOptionalString(value, field, maxLength = 200) {
+  if (value === void 0 || value === null) return void 0;
+  const s = expectString(value, field, false);
+  if (s.length > maxLength) {
+    throw new OfficeValidationError("validation", `${field} exceeds ${maxLength} characters`);
+  }
+  return s;
+}
+function expectHexColor(value, field) {
+  if (value === void 0 || value === null) return void 0;
+  const s = expectString(value, field);
+  if (!/^[0-9A-Za-z]{0,8}$/.test(s)) {
+    throw new OfficeValidationError("validation", `${field} must be a hex color without '#'`);
+  }
+  return s;
+}
+function expectCellBorder(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const style = expectString(value.style, `${field}.style`);
+  if (style.length > 40) {
+    throw new OfficeValidationError("validation", `${field}.style is too long`);
+  }
+  const szEighths = expectOptionalNumber(value.szEighths, `${field}.szEighths`);
+  if (szEighths !== void 0 && (szEighths < 0 || szEighths > 96)) {
+    throw new OfficeValidationError("validation", `${field}.szEighths must be within 0..96`);
+  }
+  const color = expectHexColor(value.color, `${field}.color`);
+  return {
+    style,
+    ...szEighths !== void 0 ? { szEighths } : {},
+    ...color !== void 0 ? { color } : {}
+  };
+}
+function expectCellBorders(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const out = {};
+  for (const edge of ["top", "left", "bottom", "right"]) {
+    if (value[edge] !== void 0 && value[edge] !== null) {
+      out[edge] = expectCellBorder(value[edge], `${field}.${edge}`);
+    }
+  }
+  return out;
+}
+function expectTableBorders(value, field) {
+  const base = expectCellBorders(value, field);
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const out = {
+    ...base
+  };
+  for (const edge of ["insideH", "insideV"]) {
+    if (value[edge] !== void 0 && value[edge] !== null) {
+      out[edge] = expectCellBorder(value[edge], `${field}.${edge}`);
+    }
+  }
+  return out;
+}
+function expectCellMargins(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const out = {};
+  for (const side of ["top", "left", "bottom", "right"]) {
+    const v = expectOptionalNumber(value[side], `${field}.${side}`);
+    if (v !== void 0) {
+      if (v < 0 || v > 31680) {
+        throw new OfficeValidationError(
+          "validation",
+          `${field}.${side} must be within 0..31680 twips`
+        );
+      }
+      out[side] = v;
+    }
+  }
+  return out;
+}
+function expectTableParagraph(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const runs = expectArray(value.runs, `${field}.runs`, (r, i) => expectSerializedRun(r, i));
+  if (runs.length > 200) {
+    throw new OfficeValidationError("validation", `${field}.runs exceeds 200 entries`);
+  }
+  const alignRaw = expectOptionalString(value.align, `${field}.align`, 20);
+  if (alignRaw !== void 0 && !["left", "center", "right", "justify", "distribute"].includes(alignRaw)) {
+    throw new OfficeValidationError("validation", `${field}.align must be a paragraph alignment`);
+  }
+  const styleId = expectOptionalString(value.styleId, `${field}.styleId`, 64);
+  return {
+    runs,
+    ...alignRaw !== void 0 ? { align: alignRaw } : {},
+    ...styleId !== void 0 ? { styleId } : {}
+  };
+}
+function expectTableCell(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const paras = expectArray(value.paras, `${field}.paras`, (p) => {
+    if (typeof p !== "string") {
+      throw new OfficeValidationError("validation", `${field}.paras entries must be strings`);
+    }
+    return p;
+  });
+  if (paras.length > 200) {
+    throw new OfficeValidationError("validation", `${field}.paras exceeds 200 entries`);
+  }
+  const richParas = value.richParas !== void 0 && value.richParas !== null ? expectArray(
+    value.richParas,
+    `${field}.richParas`,
+    (p, i) => expectTableParagraph(p, `${field}.richParas[${i}]`)
+  ) : void 0;
+  const colSpan = expectOptionalNumber(value.colSpan, `${field}.colSpan`);
+  if (colSpan !== void 0 && (!Number.isInteger(colSpan) || colSpan < 1 || colSpan > MAX_TABLE_COLS)) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.colSpan must be an integer 1..${MAX_TABLE_COLS}`
+    );
+  }
+  const vMergeRaw = expectOptionalString(value.vMerge, `${field}.vMerge`, 10);
+  if (vMergeRaw !== void 0 && vMergeRaw !== "restart" && vMergeRaw !== "continue") {
+    throw new OfficeValidationError("validation", `${field}.vMerge must be 'restart' or 'continue'`);
+  }
+  const fill = expectHexColor(value.fill, `${field}.fill`);
+  const color = expectHexColor(value.color, `${field}.color`);
+  const bold = expectOptionalBoolean(value.bold, `${field}.bold`);
+  const alignRaw = expectOptionalString(value.align, `${field}.align`, 20);
+  if (alignRaw !== void 0 && !["left", "center", "right", "justify", "distribute"].includes(alignRaw)) {
+    throw new OfficeValidationError("validation", `${field}.align must be a paragraph alignment`);
+  }
+  const vAlignRaw = expectOptionalString(value.vAlign, `${field}.vAlign`, 10);
+  if (vAlignRaw !== void 0 && !["top", "center", "bottom"].includes(vAlignRaw)) {
+    throw new OfficeValidationError("validation", `${field}.vAlign must be top/center/bottom`);
+  }
+  const borders = value.borders !== void 0 && value.borders !== null ? expectCellBorders(value.borders, `${field}.borders`) : void 0;
+  const rawTcPrRaw = value.rawTcPr;
+  let rawTcPr;
+  if (rawTcPrRaw !== void 0 && rawTcPrRaw !== null) {
+    rawTcPr = expectString(rawTcPrRaw, `${field}.rawTcPr`, false);
+    if (rawTcPr.length > 4096 || !/^<w:tcPr[\s>]/.test(rawTcPr) || !rawTcPr.endsWith("</w:tcPr>")) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.rawTcPr must be a <w:tcPr>\u2026</w:tcPr> fragment (max 4096 chars)`
+      );
+    }
+    if (/<[!?]/.test(rawTcPr)) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.rawTcPr may not contain comments or processing instructions`
+      );
+    }
+    const tagNames = rawTcPr.match(/<\/?([A-Za-z:][^\s>/]*)/g) ?? [];
+    for (const tag of tagNames) {
+      const name = tag.replace(/^<\/?/, "");
+      if (!name.startsWith("w:")) {
+        throw new OfficeValidationError(
+          "validation",
+          `${field}.rawTcPr may only contain w:-namespaced elements (found <${name}>)`
+        );
+      }
+    }
+  }
+  return {
+    paras,
+    ...richParas !== void 0 ? { richParas } : {},
+    ...colSpan !== void 0 ? { colSpan } : {},
+    ...vMergeRaw !== void 0 ? { vMerge: vMergeRaw } : {},
+    ...fill !== void 0 ? { fill } : {},
+    ...color !== void 0 ? { color } : {},
+    ...bold !== void 0 ? { bold } : {},
+    ...alignRaw !== void 0 ? { align: alignRaw } : {},
+    ...vAlignRaw !== void 0 ? { vAlign: vAlignRaw } : {},
+    ...borders !== void 0 ? { borders } : {},
+    ...rawTcPr !== void 0 ? { rawTcPr } : {}
+  };
+}
+function expectSerializedTable(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const rows = expectArray(value.rows, `${field}.rows`, (row, ri) => {
+    if (!Array.isArray(row)) {
+      throw new OfficeValidationError("validation", `${field}.rows[${ri}] must be an array`);
+    }
+    if (row.length === 0 || row.length > MAX_TABLE_COLS) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.rows[${ri}] must have 1..${MAX_TABLE_COLS} cells`
+      );
+    }
+    return row.map((cell, ci) => expectTableCell(cell, `${field}.rows[${ri}][${ci}]`));
+  });
+  if (rows.length === 0 || rows.length > MAX_TABLE_ROWS) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.rows must have 1..${MAX_TABLE_ROWS} rows`
+    );
+  }
+  for (let ri = 0; ri < rows.length; ri++) {
+    const width = rows[ri].reduce((sum, cell) => sum + (cell.colSpan ?? 1), 0);
+    if (width > MAX_TABLE_COLS) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.rows[${ri}] spans ${width} grid columns (max ${MAX_TABLE_COLS})`
+      );
+    }
+  }
+  const numArray = (v, f) => v === void 0 || v === null ? void 0 : expectArray(v, f, (entry) => {
+    if (typeof entry !== "number" || !Number.isFinite(entry)) {
+      throw new OfficeValidationError("validation", `${f} entries must be numbers`);
+    }
+    return entry;
+  });
+  const colWidthsPct = numArray(value.colWidthsPct, `${field}.colWidthsPct`);
+  if (colWidthsPct !== void 0 && colWidthsPct.length > MAX_TABLE_COLS) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.colWidthsPct exceeds ${MAX_TABLE_COLS} entries`
+    );
+  }
+  const colWidthsTwips = numArray(value.colWidthsTwips, `${field}.colWidthsTwips`);
+  if (colWidthsTwips !== void 0 && colWidthsTwips.length > MAX_TABLE_COLS) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.colWidthsTwips exceeds ${MAX_TABLE_COLS} entries`
+    );
+  }
+  const widthPct = expectOptionalNumber(value.widthPct, `${field}.widthPct`);
+  if (widthPct !== void 0 && (widthPct <= 0 || widthPct > 100)) {
+    throw new OfficeValidationError("validation", `${field}.widthPct must be within (0..100]`);
+  }
+  const autoLayout = expectOptionalBoolean(value.autoLayout, `${field}.autoLayout`);
+  const cellMarTwips = value.cellMarTwips !== void 0 && value.cellMarTwips !== null ? expectCellMargins(value.cellMarTwips, `${field}.cellMarTwips`) : void 0;
+  const borders = value.borders !== void 0 && value.borders !== null ? expectTableBorders(value.borders, `${field}.borders`) : void 0;
+  const alignRaw = expectOptionalString(value.align, `${field}.align`, 10);
+  if (alignRaw !== void 0 && !["left", "center", "right"].includes(alignRaw)) {
+    throw new OfficeValidationError("validation", `${field}.align must be left/center/right`);
+  }
+  const indentTwips = expectOptionalNumber(value.indentTwips, `${field}.indentTwips`);
+  if (indentTwips !== void 0 && Math.abs(indentTwips) > 31680) {
+    throw new OfficeValidationError("validation", `${field}.indentTwips is out of range`);
+  }
+  const rowHeightsTwips = value.rowHeightsTwips !== void 0 && value.rowHeightsTwips !== null ? expectArray(value.rowHeightsTwips, `${field}.rowHeightsTwips`, (entry) => {
+    if (entry === null) return null;
+    if (typeof entry !== "number" || !Number.isFinite(entry)) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.rowHeightsTwips entries must be numbers or null`
+      );
+    }
+    if (entry < 0 || entry > 31680) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.rowHeightsTwips entries must be within 0..31680`
+      );
+    }
+    return entry;
+  }) : void 0;
+  const rowHeightRules = value.rowHeightRules !== void 0 && value.rowHeightRules !== null ? expectArray(
+    value.rowHeightRules,
+    `${field}.rowHeightRules`,
+    (entry) => {
+      if (entry === null) return null;
+      if (entry !== "atLeast" && entry !== "exact") {
+        throw new OfficeValidationError(
+          "validation",
+          `${field}.rowHeightRules entries must be 'atLeast'|'exact'|null`
+        );
+      }
+      return entry;
+    }
+  ) : void 0;
+  const rawTrPrs = value.rawTrPrs !== void 0 && value.rawTrPrs !== null ? expectArray(value.rawTrPrs, `${field}.rawTrPrs`, (entry) => {
+    if (entry === null) return null;
+    if (typeof entry !== "string") {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.rawTrPrs entries must be strings or null`
+      );
+    }
+    if (entry.length > 4096 || !/^<w:trPr[\s>]/.test(entry) || !entry.endsWith("</w:trPr>")) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.rawTrPrs entries must be <w:trPr>\u2026</w:trPr> fragments (max 4096 chars)`
+      );
+    }
+    if (/<[!?]/.test(entry)) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.rawTrPrs entries may not contain comments or processing instructions`
+      );
+    }
+    const trTagNames = entry.match(/<\/?([A-Za-z:][^\s>/]*)/g) ?? [];
+    for (const tag of trTagNames) {
+      const name = tag.replace(/^<\/?/, "");
+      if (!name.startsWith("w:")) {
+        throw new OfficeValidationError(
+          "validation",
+          `${field}.rawTrPrs entries may only contain w:-namespaced elements (found <${name}>)`
+        );
+      }
+    }
+    return entry;
+  }) : void 0;
+  const tblStyleId = expectOptionalString(value.tblStyleId, `${field}.tblStyleId`, 64);
+  const bidiVisual = expectOptionalBoolean(value.bidiVisual, `${field}.bidiVisual`);
+  const headerRows = value.headerRows !== void 0 && value.headerRows !== null ? expectArray(value.headerRows, `${field}.headerRows`, (entry) => {
+    if (typeof entry !== "boolean") {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.headerRows entries must be booleans`
+      );
+    }
+    return entry;
+  }) : void 0;
+  return {
+    rows,
+    ...colWidthsPct !== void 0 ? { colWidthsPct: [...colWidthsPct] } : {},
+    ...colWidthsTwips !== void 0 ? { colWidthsTwips: [...colWidthsTwips] } : {},
+    ...widthPct !== void 0 ? { widthPct } : {},
+    ...autoLayout !== void 0 ? { autoLayout } : {},
+    ...cellMarTwips !== void 0 ? { cellMarTwips } : {},
+    ...borders !== void 0 ? { borders } : {},
+    ...alignRaw !== void 0 ? { align: alignRaw } : {},
+    ...indentTwips !== void 0 ? { indentTwips } : {},
+    ...rowHeightsTwips !== void 0 ? { rowHeightsTwips } : {},
+    ...rowHeightRules !== void 0 ? { rowHeightRules } : {},
+    ...rawTrPrs !== void 0 ? { rawTrPrs } : {},
+    ...tblStyleId !== void 0 ? { tblStyleId } : {},
+    ...bidiVisual !== void 0 ? { bidiVisual } : {},
+    ...headerRows !== void 0 ? { headerRows } : {}
+  };
+}
 function expectSerializedBlock(value, index) {
   if (!isRecord(value)) {
     throw new OfficeValidationError("validation", `blocks[${index}] must be an object`);
@@ -41270,11 +41782,28 @@ function expectSerializedBlock(value, index) {
   }
   const text = expectString(value.text, `blocks[${index}].text`, false);
   const runs = value.runs !== void 0 ? expectArray(value.runs, `blocks[${index}].runs`, expectSerializedRun) : void 0;
+  let table;
+  if (value.table !== void 0 && value.table !== null) {
+    if (type !== "table") {
+      throw new OfficeValidationError(
+        "validation",
+        `blocks[${index}].table is only allowed on type 'table' blocks`
+      );
+    }
+    table = expectSerializedTable(value.table, `blocks[${index}].table`);
+  }
+  if (type === "table" && value.edited === true && table === void 0) {
+    throw new OfficeValidationError(
+      "validation",
+      `blocks[${index}] is an edited table but carries no table payload`
+    );
+  }
   const block = {
     docxIndex,
     type,
     text,
     ...runs !== void 0 ? { runs } : {},
+    ...table !== void 0 ? { table } : {},
     ...value.level !== void 0 ? { level: expectNumber(value.level, `blocks[${index}].level`) } : {},
     ...value.listKind !== void 0 ? (() => {
       const k = value.listKind;
@@ -41431,16 +41960,181 @@ function serializeRun(run) {
     out.link = { href: run.link.href, ...run.link.tooltip ? { tooltip: run.link.tooltip } : {} };
   return out;
 }
+function serializeCellBorder(b) {
+  return {
+    style: b.style,
+    ...b.szEighths !== void 0 ? { szEighths: b.szEighths } : {},
+    ...b.color !== void 0 ? { color: b.color } : {}
+  };
+}
+function serializeCellBorders(b) {
+  const out = {};
+  if (b.top) out.top = serializeCellBorder(b.top);
+  if (b.left) out.left = serializeCellBorder(b.left);
+  if (b.bottom) out.bottom = serializeCellBorder(b.bottom);
+  if (b.right) out.right = serializeCellBorder(b.right);
+  return out;
+}
+function serializeTableModel(model) {
+  for (const row of model.rows) {
+    for (const cell of row) {
+      if ((cell.nestedTables?.length ?? 0) > 0 || (cell.anchoredBoxes?.length ?? 0) > 0) {
+        return void 0;
+      }
+    }
+  }
+  const rows = model.rows.map(
+    (row) => row.map((cell) => {
+      const richParas = cell.richParas?.map((p) => ({
+        runs: p.runs.map(serializeRun),
+        ...p.align ? { align: p.align } : {},
+        ...p.styleId ? { styleId: p.styleId } : {}
+      }));
+      const borders2 = cell.borders ? serializeCellBorders(cell.borders) : void 0;
+      return {
+        paras: cell.paras,
+        ...richParas ? { richParas } : {},
+        ...cell.colSpan && cell.colSpan > 1 ? { colSpan: cell.colSpan } : {},
+        ...cell.vMerge ? { vMerge: cell.vMerge } : {},
+        ...cell.fill ? { fill: cell.fill } : {},
+        ...cell.color ? { color: cell.color } : {},
+        ...cell.bold ? { bold: cell.bold } : {},
+        ...cell.align ? { align: cell.align } : {},
+        ...cell.vAlign && cell.vAlign !== "top" ? { vAlign: cell.vAlign } : {},
+        ...borders2 ? { borders: borders2 } : {},
+        ...cell.rawTcPr ? { rawTcPr: cell.rawTcPr } : {}
+      };
+    })
+  );
+  const headerRows = model.rawTrPrs?.map((trPr) => !!trPr && /<w:tblHeader[\s/>]/.test(trPr));
+  const borders = model.borders ? (() => {
+    const out = serializeCellBorders(model.borders);
+    return {
+      ...out,
+      ...model.borders.insideH ? { insideH: serializeCellBorder(model.borders.insideH) } : {},
+      ...model.borders.insideV ? { insideV: serializeCellBorder(model.borders.insideV) } : {}
+    };
+  })() : void 0;
+  return {
+    rows,
+    ...model.colWidthsPct ? { colWidthsPct: model.colWidthsPct } : {},
+    ...model.colWidthsTwips ? { colWidthsTwips: model.colWidthsTwips } : {},
+    ...model.widthPct !== void 0 ? { widthPct: model.widthPct } : {},
+    ...model.autoLayout ? { autoLayout: model.autoLayout } : {},
+    ...model.cellMarTwips ? { cellMarTwips: model.cellMarTwips } : {},
+    ...borders ? { borders } : {},
+    ...model.align ? { align: model.align } : {},
+    ...model.indentTwips !== void 0 ? { indentTwips: model.indentTwips } : {},
+    ...model.rowHeightsTwips ? { rowHeightsTwips: model.rowHeightsTwips } : {},
+    ...model.rowHeightRules ? { rowHeightRules: model.rowHeightRules } : {},
+    ...model.rawTrPrs ? { rawTrPrs: model.rawTrPrs } : {},
+    ...model.tblStyleId !== void 0 ? { tblStyleId: model.tblStyleId } : {},
+    ...model.bidiVisual ? { bidiVisual: model.bidiVisual } : {},
+    ...headerRows?.some(Boolean) ? { headerRows } : {}
+  };
+}
+function toCellBorder(b) {
+  return {
+    style: b.style,
+    ...b.szEighths !== void 0 ? { szEighths: b.szEighths } : {},
+    ...b.color !== void 0 ? { color: b.color } : {}
+  };
+}
+function applyHeaderRowToTrPr(trPr, header) {
+  if (header === void 0) return trPr ?? void 0;
+  const has = !!trPr && /<w:tblHeader[\s/>]/.test(trPr);
+  if (header === has) return trPr ?? void 0;
+  if (header) {
+    const tag = "<w:tblHeader/>";
+    if (!trPr) return `<w:trPr>${tag}</w:trPr>`;
+    return trPr.replace("</w:trPr>", `${tag}</w:trPr>`);
+  }
+  if (!trPr) return void 0;
+  const stripped = trPr.replace(/<w:tblHeader[^>]*\/>/, "");
+  return /^<w:trPr(?:\s[^>]*)?>\s*<\/w:trPr>$/.test(stripped) ? void 0 : stripped;
+}
+function toTableModel(t) {
+  const rows = t.rows.map(
+    (row) => row.map((cell) => ({
+      paras: [...cell.paras],
+      ...cell.richParas ? {
+        richParas: cell.richParas.map((p) => ({
+          runs: p.runs.map((r) => ({
+            text: r.text,
+            ...r.bold ? { bold: true } : {},
+            ...r.italic ? { italic: true } : {},
+            ...r.underline ? { underline: true } : {},
+            ...r.strike ? { strike: true } : {},
+            ...r.link ? {
+              link: {
+                href: r.link.href,
+                ...r.link.tooltip ? { tooltip: r.link.tooltip } : {}
+              }
+            } : {}
+          })),
+          ...p.align ? { align: p.align } : {},
+          ...p.styleId ? { styleId: p.styleId } : {}
+        }))
+      } : {},
+      ...cell.colSpan && cell.colSpan > 1 ? { colSpan: cell.colSpan } : {},
+      ...cell.vMerge ? { vMerge: cell.vMerge } : {},
+      ...cell.fill ? { fill: cell.fill } : {},
+      ...cell.color ? { color: cell.color } : {},
+      ...cell.bold ? { bold: cell.bold } : {},
+      ...cell.align ? { align: cell.align } : {},
+      ...cell.vAlign ? { vAlign: cell.vAlign } : {},
+      ...cell.borders ? {
+        borders: {
+          ...cell.borders.top ? { top: toCellBorder(cell.borders.top) } : {},
+          ...cell.borders.left ? { left: toCellBorder(cell.borders.left) } : {},
+          ...cell.borders.bottom ? { bottom: toCellBorder(cell.borders.bottom) } : {},
+          ...cell.borders.right ? { right: toCellBorder(cell.borders.right) } : {}
+        }
+      } : {},
+      ...cell.rawTcPr ? { rawTcPr: cell.rawTcPr } : {}
+    }))
+  );
+  const rawTrPrs = t.rawTrPrs || t.headerRows ? t.rows.map((_, ri) => {
+    const patched = applyHeaderRowToTrPr(t.rawTrPrs?.[ri], t.headerRows?.[ri]);
+    return patched ?? null;
+  }) : void 0;
+  const model = { rows };
+  if (t.colWidthsPct) model.colWidthsPct = [...t.colWidthsPct];
+  if (t.colWidthsTwips) model.colWidthsTwips = [...t.colWidthsTwips];
+  if (t.widthPct !== void 0) model.widthPct = t.widthPct;
+  if (t.autoLayout) model.autoLayout = t.autoLayout;
+  if (t.cellMarTwips) model.cellMarTwips = { ...t.cellMarTwips };
+  if (t.borders) {
+    model.borders = {
+      ...t.borders.top ? { top: toCellBorder(t.borders.top) } : {},
+      ...t.borders.left ? { left: toCellBorder(t.borders.left) } : {},
+      ...t.borders.bottom ? { bottom: toCellBorder(t.borders.bottom) } : {},
+      ...t.borders.right ? { right: toCellBorder(t.borders.right) } : {},
+      ...t.borders.insideH ? { insideH: toCellBorder(t.borders.insideH) } : {},
+      ...t.borders.insideV ? { insideV: toCellBorder(t.borders.insideV) } : {}
+    };
+  }
+  if (t.align) model.align = t.align;
+  if (t.indentTwips !== void 0) model.indentTwips = t.indentTwips;
+  if (t.rowHeightsTwips) model.rowHeightsTwips = [...t.rowHeightsTwips];
+  if (t.rowHeightRules) model.rowHeightRules = [...t.rowHeightRules];
+  if (rawTrPrs) model.rawTrPrs = rawTrPrs;
+  if (t.tblStyleId !== void 0) model.tblStyleId = t.tblStyleId;
+  if (t.bidiVisual) model.bidiVisual = t.bidiVisual;
+  return model;
+}
 function serializeBlock(block) {
   const runs = block.runs ?? [];
   const text = runs.map((r) => r.text).join("");
   const type = block.hidden ? "hidden" : block.type === "heading" ? "heading" : block.type === "listItem" ? "listItem" : block.type === "paragraph" ? "paragraph" : block.type === "table" ? "table" : block.type === "image" ? "image" : "passthrough";
   const serializedRuns = runs.length > 0 ? runs.map(serializeRun) : void 0;
+  const table = type === "table" && block.table ? serializeTableModel(block.table) : void 0;
   return {
     docxIndex: block.docxIndex,
     type,
     text,
     ...serializedRuns ? { runs: serializedRuns } : {},
+    ...table ? { table } : {},
     level: block.level,
     listKind: block.list?.kind,
     edited: false,
@@ -41462,13 +42156,29 @@ async function handleOpenDocument(body, codec) {
   const res = { blocks };
   return { status: 200, body: res };
 }
-function toSaveBlocks(blocks) {
+function toSaveBlocks(blocks, parsed) {
   const out = [];
   for (const b of blocks) {
     if (b.hidden) continue;
     const edited = b.edited === true || b.docxIndex === null;
     if (!edited && b.docxIndex !== null) {
       out.push({ kind: "original", docxIndex: b.docxIndex });
+      continue;
+    }
+    if (b.type === "table") {
+      if (!b.table) {
+        if (b.docxIndex !== null) {
+          out.push({ kind: "original", docxIndex: b.docxIndex });
+          continue;
+        }
+        throw new OfficeValidationError("validation", "new table block carries no table payload");
+      }
+      const model = toTableModel(b.table);
+      const original = b.docxIndex !== null ? parsed.blocks[b.docxIndex]?.originalXml ?? null : null;
+      out.push({
+        kind: "xml",
+        xml: generateTableModelXml(model, original ?? void 0)
+      });
       continue;
     }
     const runs = b.runs && b.runs.length > 0 ? b.runs.map((r) => ({
@@ -41520,7 +42230,7 @@ async function handleSaveDocument(body, codec) {
       e instanceof Error ? e.message : "Failed to parse document"
     );
   }
-  const saveBlocks = toSaveBlocks(req.blocks);
+  const saveBlocks = toSaveBlocks(req.blocks, parsed);
   let saved;
   try {
     saved = await saveDocx(parsed, saveBlocks);
