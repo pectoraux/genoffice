@@ -53,7 +53,7 @@ import {
   IdentityService, OrganizationService, WorkspaceService, ProjectService,
   AuditService, RevisionService, PlanMeasurementService, BOQService, EstimateService, BidService,
 } from '@contractor/core/service'
-import { CoreApi, type ApiRequest, type ApiResponse } from '@contractor/core/api'
+import { CoreApi, type ApiRequest, type ApiResponse, routeOffice } from '@contractor/core/api'
 import {
   loadSessionConfigFromEnv, WebSessionResolver,
   signSession, sessionCookieHeader, clearSessionCookieHeader,
@@ -270,6 +270,27 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     // All other routes require the full deps (DB + services).
     const deps = await getDeps()
+
+    // Office file routes — pure (no DB), but we still need getDeps() to be ready
+    // before any subsequent CoreApi call. Bypass auth entirely: office routes
+    // are stateless file transforms. The 14MB JSON envelope cap accommodates
+    // the 10MB-decoded base64 fileBytes limit (base64 inflates by ~33%).
+    if (path.startsWith('/api/office/')) {
+      let officeBody: unknown
+      try {
+        officeBody = method === 'GET' || method === 'HEAD' ? null : await readLargeJsonBody(req)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'invalid_body'
+        return sendJson(res, 400, {
+          error: 'validation',
+          message: msg === 'payload_too_large' ? 'Payload too large' : 'Invalid JSON body',
+        })
+      }
+      const officeRes = await routeOffice({ method, path, body: officeBody })
+      if (officeRes) return sendApiResponse(res, officeRes)
+      // Fall through to 404 if routeOffice returned null (unknown office route)
+      return sendJson(res, 404, { error: 'not_found', message: 'Unknown office route' })
+    }
 
     // Auth routes (stateful — require DB)
     if (path === '/api/auth/password-login' && method === 'POST') {
@@ -571,6 +592,30 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const text = Buffer.concat(chunks).toString('utf8')
   if (text.length === 0) return null
   return JSON.parse(text)
+}
+
+/**
+ * Larger body reader for office file requests. The 10MB decoded-fileBytes cap
+ * inflates to ~13.4MB base64; we allow 14MB total envelope size to give the
+ * JSON wrapper some headroom while still resisting oversized payloads.
+ */
+async function readLargeJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = []
+  let total = 0
+  const MAX = 14 * 1024 * 1024
+  for await (const chunk of req) {
+    total += chunk.length
+    if (total > MAX) throw new Error('payload_too_large')
+    chunks.push(chunk as Buffer)
+  }
+  if (chunks.length === 0) return null
+  const text = Buffer.concat(chunks).toString('utf8')
+  if (text.length === 0) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new Error('invalid_json')
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

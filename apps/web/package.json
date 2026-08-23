@@ -9,14 +9,19 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "devDependencies": {
+    "@contractor/core": "*",
+    "@genoffice/docx-engine": "*",
+    "@genoffice/xlsx-gateway": "*",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
     "typescript": "^5.7.2",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^2.1.8"
   },
   "dependencies": {
     "@genoffice/ui": "*",
