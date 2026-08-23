@@ -8,12 +8,21 @@ import { WordEditor } from './WordEditor'
 import { ExcelEditor } from './ExcelEditor'
 
 export function AppShell({
-  route, onRoute, onLogout,
-}: { route: string; onRoute: (r: string) => void; onLogout: () => Promise<void> }) {
+  route,
+  onRoute,
+  onLogout,
+}: {
+  route: string
+  onRoute: (r: string) => void
+  onLogout: () => Promise<void>
+}) {
   const [session, setSession] = useState<SessionInfo | null>(null)
 
   useEffect(() => {
-    authApi.session().then(setSession).catch(() => setSession(null))
+    authApi
+      .session()
+      .then(setSession)
+      .catch(() => setSession(null))
   }, [route])
 
   const logout = async () => {
@@ -22,37 +31,83 @@ export function AppShell({
   }
 
   if (route === '/office' || route === '/office/') {
-    return <OfficeFrame session={session} onRoute={onRoute} onLogout={logout}><OfficeHome onRoute={onRoute} /></OfficeFrame>
+    return (
+      <OfficeFrame session={session} onRoute={onRoute} onLogout={logout}>
+        <OfficeHome onRoute={onRoute} />
+      </OfficeFrame>
+    )
   }
-  if (route === '/office/word') return <OfficeFrame session={session} onRoute={onRoute} onLogout={logout}><WordEditor onRoute={onRoute} /></OfficeFrame>
-  if (route === '/office/excel') return <OfficeFrame session={session} onRoute={onRoute} onLogout={logout}><ExcelEditor onRoute={onRoute} /></OfficeFrame>
+  if (route === '/office/word')
+    return (
+      <OfficeFrame session={session} onRoute={onRoute} onLogout={logout}>
+        <WordEditor onRoute={onRoute} />
+      </OfficeFrame>
+    )
+  if (route === '/office/excel')
+    return (
+      <OfficeFrame session={session} onRoute={onRoute} onLogout={logout}>
+        <ExcelEditor onRoute={onRoute} />
+      </OfficeFrame>
+    )
 
   const m = route.match(/^\/projects\/([^/]+)$/)
   const projectId = m ? m[1] : null
   return (
     <div style={styles.app}>
       <header style={styles.header}>
-        <h1 style={styles.headerTitle}>Contractor GenOffice{session?.displayName ? ` — ${session.displayName}` : ''}</h1>
+        <h1 style={styles.headerTitle}>
+          Contractor GenOffice{session?.displayName ? ` — ${session.displayName}` : ''}
+        </h1>
         <div style={styles.headerRight}>
-          <button style={styles.button} onClick={() => onRoute('/office')}>Office</button>
-          <button style={styles.button} onClick={() => onRoute('/projects')}>Projects</button>
-          <button style={styles.button} onClick={logout}>Sign out</button>
+          <button style={styles.button} onClick={() => onRoute('/office')}>
+            Office
+          </button>
+          <button style={styles.button} onClick={() => onRoute('/projects')}>
+            Projects
+          </button>
+          <button style={styles.button} onClick={logout}>
+            Sign out
+          </button>
         </div>
       </header>
-      <main style={styles.main}>{projectId ? <ProjectWorkspace projectId={projectId} onRoute={onRoute} /> : <ProjectsScreen onRoute={onRoute} />}</main>
+      <main style={styles.main}>
+        {projectId ? (
+          <ProjectWorkspace projectId={projectId} onRoute={onRoute} />
+        ) : (
+          <ProjectsScreen onRoute={onRoute} />
+        )}
+      </main>
     </div>
   )
 }
 
-function OfficeFrame({ children, session, onRoute, onLogout }: { children: ReactNode; session: SessionInfo | null; onRoute: (r: string) => void; onLogout: () => Promise<void> }) {
-  return <div style={{ minHeight: '100vh' }}>
-    <header style={styles.header}>
-      <h1 style={styles.headerTitle}>GenOffice Office{session?.displayName ? ` — ${session.displayName}` : ''}</h1>
-      <div style={styles.headerRight}>
-        <button style={styles.button} onClick={() => onRoute('/office')}>Office</button>
-        <button style={styles.button} onClick={onLogout}>Sign out</button>
-      </div>
-    </header>
-    {children}
-  </div>
+function OfficeFrame({
+  children,
+  session,
+  onRoute,
+  onLogout,
+}: {
+  children: ReactNode
+  session: SessionInfo | null
+  onRoute: (r: string) => void
+  onLogout: () => Promise<void>
+}) {
+  return (
+    <div style={{ minHeight: '100vh' }}>
+      <header style={styles.header}>
+        <h1 style={styles.headerTitle}>
+          GenOffice Office{session?.displayName ? ` — ${session.displayName}` : ''}
+        </h1>
+        <div style={styles.headerRight}>
+          <button style={styles.button} onClick={() => onRoute('/office')}>
+            Office
+          </button>
+          <button style={styles.button} onClick={onLogout}>
+            Sign out
+          </button>
+        </div>
+      </header>
+      {children}
+    </div>
+  )
 }

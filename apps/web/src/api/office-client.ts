@@ -19,10 +19,7 @@
 // Type-only imports — erased at build time. The browser never bundles the
 // engine packages; these types exist purely so the client's wire shapes line
 // up with the server-side route handlers.
-import type {
-  CellEdit,
-  WorkbookSnapshot,
-} from '@genoffice/xlsx-gateway'
+import type { CellEdit, WorkbookSnapshot } from '@genoffice/xlsx-gateway'
 
 // ── Wire types (mirror the @contractor/core/api office-routes module) ────────
 
@@ -57,13 +54,7 @@ export interface SaveWorkbookResponse {
 }
 
 export type SerializedBlockType =
-  | 'paragraph'
-  | 'heading'
-  | 'listItem'
-  | 'table'
-  | 'image'
-  | 'passthrough'
-  | 'hidden'
+  'paragraph' | 'heading' | 'listItem' | 'table' | 'image' | 'passthrough' | 'hidden'
 
 export interface SerializedRun {
   readonly text: string
@@ -261,9 +252,12 @@ function isOfficeApiErrorBody(value: unknown): value is { error: string; message
 
 // ── Response type guards ────────────────────────────────────────────────────
 
-function isString(v: unknown): v is string { return typeof v === 'string' }
-function isObject(v: unknown): v is Record<string, unknown> { return typeof v === 'object' && v !== null && !Array.isArray(v) }
-function isNumber(v: unknown): v is number { return typeof v === 'number' }
+function isString(v: unknown): v is string {
+  return typeof v === 'string'
+}
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
 
 function isSerializedRun(v: unknown): v is SerializedRun {
   if (!isObject(v)) return false

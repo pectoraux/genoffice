@@ -18,6 +18,9 @@ export default tseslint.config(
       'scripts/drivers/**',
       'apps/*/build/**',
       'packages/*/src/vendor/**',
+      // Generated esbuild bundle committed for the Vercel serverless function
+      // (rebuilt by `bun run build:api` on every deploy — never hand-edited).
+      'api/serverless.mjs',
     ],
   },
   js.configs.recommended,

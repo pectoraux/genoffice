@@ -65,13 +65,19 @@ describe('architecture: source directories are non-empty (path resolution guard)
   it('apps/web/src exists and contains at least one source file', () => {
     const webDir = join(REPO_ROOT, 'apps', 'web', 'src')
     const files = walkTs(webDir)
-    expect(files.length, `apps/web/src should contain source files (found 0 — path resolution broken?)`).toBeGreaterThan(0)
+    expect(
+      files.length,
+      `apps/web/src should contain source files (found 0 — path resolution broken?)`,
+    ).toBeGreaterThan(0)
   })
 
   it('packages/web-host/src exists and contains at least one source file', () => {
     const hostDir = join(REPO_ROOT, 'packages', 'web-host', 'src')
     const files = walkTs(hostDir)
-    expect(files.length, `packages/web-host/src should contain source files (found 0 — path resolution broken?)`).toBeGreaterThan(0)
+    expect(
+      files.length,
+      `packages/web-host/src should contain source files (found 0 — path resolution broken?)`,
+    ).toBeGreaterThan(0)
   })
 
   it('REPO_ROOT contains the expected top-level directories', () => {
@@ -85,14 +91,24 @@ describe('architecture: source directories are non-empty (path resolution guard)
 
 describe('architecture: apps/web cannot import Electron / persistence / DB drivers', () => {
   it('apps/web does NOT import electron, @genoffice/electron-utils, apps/shell, pg, @electric-sql/pglite, @contractor/core/persistence, @contractor/core/service, @contractor/core/storage', () => {
-    const webDir = join(REPO_ROOT, 'apps', 'web')
+    // Scan apps/web/src — the browser bundle surface. Files under apps/web/tests
+    // are node-run test infrastructure (vitest node env / Playwright specs) that
+    // never enter the bundle; scanning them false-positives on the architecture
+    // suite's own regex self-checks (e.g. the string literal
+    // "import { ipcRenderer } from 'electron'" used to verify the guard regex).
+    // The in-repo apps/web architecture suite enforces the same rules over src/.
+    const webDir = join(REPO_ROOT, 'apps', 'web', 'src')
     const webFiles = readFiles(webDir)
-    expect(webFiles.length, 'apps/web should have source files to scan').toBeGreaterThan(0)
+    expect(webFiles.length, 'apps/web/src should have source files to scan').toBeGreaterThan(0)
     const forbidden = [
-      /from\s+['"]electron['"]/, /from\s+['"]@genoffice\/electron-utils['"]/,
-      /from\s+['"]@genoffice\/project-store['"]/, /from\s+['"]apps\/shell/,
-      /from\s+['"]pg['"]/, /from\s+['"]@electric-sql\/pglite['"]/,
-      /from\s+['"]@contractor\/core\/persistence['"]/, /from\s+['"]@contractor\/core\/service['"]/,
+      /from\s+['"]electron['"]/,
+      /from\s+['"]@genoffice\/electron-utils['"]/,
+      /from\s+['"]@genoffice\/project-store['"]/,
+      /from\s+['"]apps\/shell/,
+      /from\s+['"]pg['"]/,
+      /from\s+['"]@electric-sql\/pglite['"]/,
+      /from\s+['"]@contractor\/core\/persistence['"]/,
+      /from\s+['"]@contractor\/core\/service['"]/,
       /from\s+['"]@contractor\/core\/storage['"]/,
     ]
     const violations = webFiles.filter((f) => forbidden.some((re) => re.test(f.content)))
@@ -105,14 +121,20 @@ describe('architecture: apps/web contains no SQL / pricing / audit / tenant auth
     const webDir = join(REPO_ROOT, 'apps', 'web')
     const webFiles = readFiles(webDir)
     expect(webFiles.length, 'apps/web should have source files to scan').toBeGreaterThan(0)
-    const sqlRe = /['"`]\s*(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|SELECT\s+[\s\S]*?\s+FROM)/i
-    const pricingRe = /\b(totalCost|sellPrice|grossProfit|grossMargin|overhead|contingency)\s*=\s*[^=]/
+    const sqlRe =
+      /['"`]\s*(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|SELECT\s+[\s\S]*?\s+FROM)/i
+    const pricingRe =
+      /\b(totalCost|sellPrice|grossProfit|grossMargin|overhead|contingency)\s*=\s*[^=]/
     const auditRe = /AuditRepository|\.append\s*\(\s*\)|audit\.record\s*\(/
     const tenantAuthorityRe = /\btenantId\s*=\s*[^=]/
     const violations = webFiles.filter((f) => {
       const lines = nonCommentLines(f.content)
-      return lines.some((line) =>
-        sqlRe.test(line) || pricingRe.test(line) || auditRe.test(line) || tenantAuthorityRe.test(line),
+      return lines.some(
+        (line) =>
+          sqlRe.test(line) ||
+          pricingRe.test(line) ||
+          auditRe.test(line) ||
+          tenantAuthorityRe.test(line),
       )
     })
     expect(violations.map((v) => v.rel)).toEqual([])
@@ -135,7 +157,8 @@ describe('architecture: web-host contains no SQL / pricing / direct audit mutati
     const hostDir = join(REPO_ROOT, 'packages', 'web-host', 'src')
     const hostFiles = readFiles(hostDir)
     expect(hostFiles.length, 'web-host/src should have source files to scan').toBeGreaterThan(0)
-    const pricingRe = /\b(totalCost|sellPrice|grossProfit|grossMargin|overhead|contingency)\s*=\s*[^=]/
+    const pricingRe =
+      /\b(totalCost|sellPrice|grossProfit|grossMargin|overhead|contingency)\s*=\s*[^=]/
     // AuditRepository constructor calls in composition-root wiring (new AuditRepository(db))
     // are ALLOWED — the repo is constructed and passed to services/CoreApi. What is
     // forbidden is calling .append() directly from a request handler (bypassing the
@@ -143,14 +166,18 @@ describe('architecture: web-host contains no SQL / pricing / direct audit mutati
     // the password-auth.ts service (which legitimately calls audit.append inside db.tx).
     const auditRe = /AuditRepository\s*\(\s*\)/
     const directAuditMutationRe = /\.append\s*\(\s*\{/
-    const sqlRe = /['"`]\s*(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|SELECT\s+[\s\S]*?\s+FROM)/i
+    const sqlRe =
+      /['"`]\s*(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|SELECT\s+[\s\S]*?\s+FROM)/i
     const violations = hostFiles.filter((f) => {
       const lines = nonCommentLines(f.content)
-      return lines.some((line) =>
-        pricingRe.test(line) ||
-        (auditRe.test(line) && !/new\s+AuditRepository/.test(line)) ||
-        (directAuditMutationRe.test(line) && !f.rel.includes('password-auth.ts') && !f.rel.includes('magic-link.ts')) ||
-        sqlRe.test(line),
+      return lines.some(
+        (line) =>
+          pricingRe.test(line) ||
+          (auditRe.test(line) && !/new\s+AuditRepository/.test(line)) ||
+          (directAuditMutationRe.test(line) &&
+            !f.rel.includes('password-auth.ts') &&
+            !f.rel.includes('magic-link.ts')) ||
+          sqlRe.test(line),
       )
     })
     expect(violations.map((v) => v.rel)).toEqual([])
@@ -162,14 +189,16 @@ describe('architecture: web-host contains no SQL / pricing / direct audit mutati
  */
 describe('architecture: web-host SQL boundary regression', () => {
   it('would catch a future module with raw SQL', () => {
-    const sqlRe = /['"`]\s*(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|SELECT\s+[\s\S]*?\s+FROM)/i
-    const fakeModule = "await db.execute(`INSERT INTO users VALUES (...)`)"
+    const sqlRe =
+      /['"`]\s*(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|SELECT\s+[\s\S]*?\s+FROM)/i
+    const fakeModule = 'await db.execute(`INSERT INTO users VALUES (...)`)'
     const lines = nonCommentLines(fakeModule)
     expect(lines.some((line) => sqlRe.test(line))).toBe(true)
   })
   it('would NOT flag a repository method call (no SQL string literal)', () => {
-    const sqlRe = /['"`]\s*(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|SELECT\s+[\s\S]*?\s+FROM)/i
-    const fakeModule = "await users.createWithPassword(user, hash)"
+    const sqlRe =
+      /['"`]\s*(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|SELECT\s+[\s\S]*?\s+FROM)/i
+    const fakeModule = 'await users.createWithPassword(user, hash)'
     const lines = nonCommentLines(fakeModule)
     expect(lines.some((line) => sqlRe.test(line))).toBe(false)
   })
@@ -229,9 +258,14 @@ describe('architecture: web-host commercial request handlers delegate to CoreApi
       // (they can be comments, the startsWith check, or the slice — all OK)
       // The key invariant: no second commercial router (e.g. if path === '/api/projects')
       const commercialRouteHandlers = nonAuthApiRefs.filter((l) =>
-        /path\s*(===|startsWith\()\s*['"`]\/api\/(projects|estimates|bids|boqs|boq-items|measurements)/.test(l),
+        /path\s*(===|startsWith\()\s*['"`]\/api\/(projects|estimates|bids|boqs|boq-items|measurements)/.test(
+          l,
+        ),
       )
-      expect(commercialRouteHandlers, `${fname} must not have a commercial route handler before coreApi.handle()`).toEqual([])
+      expect(
+        commercialRouteHandlers,
+        `${fname} must not have a commercial route handler before coreApi.handle()`,
+      ).toEqual([])
     }
   })
 
@@ -240,8 +274,8 @@ describe('architecture: web-host commercial request handlers delegate to CoreApi
     for (const fname of transportFiles) {
       const content = getTransportFile(fname)
       const lines = nonCommentLines(content)
-      const violations = lines.filter((line) =>
-        commercialServiceRe.test(line) && /from\s+['"]/.test(line),
+      const violations = lines.filter(
+        (line) => commercialServiceRe.test(line) && /from\s+['"]/.test(line),
       )
       expect(violations).toEqual([])
     }
@@ -249,7 +283,8 @@ describe('architecture: web-host commercial request handlers delegate to CoreApi
 
   it('transport files do NOT invoke commercial services directly (no .createEstimateDraft, .submitBid, etc.)', () => {
     // Check for direct commercial service method calls in transport files
-    const commercialMethodRe = /\.(createEstimateDraft|finalizeEstimate|supersedeEstimate|replayEstimate|updateEstimateDraft|createBid|submitBid|recordBidOutcome|withdrawBid|createBOQ|addBOQItem|updateBOQItemQuantity|createMeasurement)\s*\(/;
+    const commercialMethodRe =
+      /\.(createEstimateDraft|finalizeEstimate|supersedeEstimate|replayEstimate|updateEstimateDraft|createBid|submitBid|recordBidOutcome|withdrawBid|createBOQ|addBOQItem|updateBOQItemQuantity|createMeasurement)\s*\(/
     for (const fname of transportFiles) {
       const content = getTransportFile(fname)
       const lines = nonCommentLines(content)
@@ -260,7 +295,8 @@ describe('architecture: web-host commercial request handlers delegate to CoreApi
 
   it('transport files do NOT call repository mutation methods directly', () => {
     // Repository mutation methods that should go through CoreApi → service → tx
-    const repoMutationRe = /\.(create|update|delete|approve|submit|finalize|supersede|withdraw|addItem|updateItemQuantity)\s*\(/;
+    const repoMutationRe =
+      /\.(create|update|delete|approve|submit|finalize|supersede|withdraw|addItem|updateItemQuantity)\s*\(/
     for (const fname of transportFiles) {
       const content = getTransportFile(fname)
       const lines = nonCommentLines(content)
@@ -269,14 +305,21 @@ describe('architecture: web-host commercial request handlers delegate to CoreApi
       // We check for repo mutation calls that are NOT inside the composition-root (getDeps) function
       // The transport files handle requests in the handler function, not in getDeps
       // So we look for mutation calls AFTER the handler function starts
-      const handlerIdx = lines.findIndex((l) => /export default|async function handleRequest|async function handle/.test(l))
+      const handlerIdx = lines.findIndex((l) =>
+        /export default|async function handleRequest|async function handle/.test(l),
+      )
       if (handlerIdx === -1) continue // server.ts uses startWebHost which delegates
       const handlerLines = lines.slice(handlerIdx)
-      const violations = handlerLines.filter((line) =>
-        repoMutationRe.test(line) &&
-        !/createBinding|setDemoFlag|createDemoUser|createWithPassword|updatePasswordHash/.test(line) && // auth-infrastructure methods
-        !/new\s+\w+Repository/.test(line) && // constructor calls
-        !/deps\.(coreApi|resolver|passwordAuth|magicLinkAuth|users|memberships|organizations|magicLinks|waitlist|audit|config|magicLinkConfig)\b/.test(line), // deps access
+      const violations = handlerLines.filter(
+        (line) =>
+          repoMutationRe.test(line) &&
+          !/createBinding|setDemoFlag|createDemoUser|createWithPassword|updatePasswordHash/.test(
+            line,
+          ) && // auth-infrastructure methods
+          !/new\s+\w+Repository/.test(line) && // constructor calls
+          !/deps\.(coreApi|resolver|passwordAuth|magicLinkAuth|users|memberships|organizations|magicLinks|waitlist|audit|config|magicLinkConfig)\b/.test(
+            line,
+          ), // deps access
       )
       expect(violations, `${fname} handler must not call repository mutation methods`).toEqual([])
     }
@@ -308,22 +351,26 @@ describe('architecture: CoreApi delegation boundary regression', () => {
   })
 
   it('would catch a direct createTenantContext call', () => {
-    expect(/createTenantContext/.test("const ctx = createTenantContext(orgId, userId, membership)")).toBe(true)
+    expect(
+      /createTenantContext/.test('const ctx = createTenantContext(orgId, userId, membership)'),
+    ).toBe(true)
   })
 
   it('would catch a second commercial router before coreApi.handle()', () => {
-    const re = /path\s*(===|startsWith\()\s*['"`]\/api\/(projects|estimates|bids|boqs|boq-items|measurements)/
+    const re =
+      /path\s*(===|startsWith\()\s*['"`]\/api\/(projects|estimates|bids|boqs|boq-items|measurements)/
     expect(re.test("if (path === '/api/projects') { return ... }")).toBe(true)
   })
 
   it('would catch a direct boqs.addBOQItem(...) call', () => {
-    const re = /\.(createEstimateDraft|finalizeEstimate|supersedeEstimate|replayEstimate|updateEstimateDraft|createBid|submitBid|recordBidOutcome|withdrawBid|createBOQ|addBOQItem|updateBOQItemQuantity|createMeasurement)\s*\(/;
-    expect(re.test("await boqs.addBOQItem(item, boqId, ctx.tenantId)")).toBe(true)
+    const re =
+      /\.(createEstimateDraft|finalizeEstimate|supersedeEstimate|replayEstimate|updateEstimateDraft|createBid|submitBid|recordBidOutcome|withdrawBid|createBOQ|addBOQItem|updateBOQItemQuantity|createMeasurement)\s*\(/
+    expect(re.test('await boqs.addBOQItem(item, boqId, ctx.tenantId)')).toBe(true)
   })
 
   it('would NOT flag a coreApi.handle() delegation', () => {
     const re = /\b(EstimateService|BidService|BOQService|PlanMeasurementService)\b/
-    expect(re.test("const apiRes = await deps.coreApi.handle(apiReq)")).toBe(false)
+    expect(re.test('const apiRes = await deps.coreApi.handle(apiReq)')).toBe(false)
   })
 
   it('would NOT flag an auth route handler', () => {
@@ -332,7 +379,8 @@ describe('architecture: CoreApi delegation boundary regression', () => {
   })
 
   it('would NOT flag a composition-root constructor call', () => {
-    const re = /\.(create|update|delete|approve|submit|finalize|supersede|withdraw|addItem|updateItemQuantity)\s*\(/;
-    expect(re.test("const users = new UserRepository(db)")).toBe(false)
+    const re =
+      /\.(create|update|delete|approve|submit|finalize|supersede|withdraw|addItem|updateItemQuantity)\s*\(/
+    expect(re.test('const users = new UserRepository(db)')).toBe(false)
   })
 })

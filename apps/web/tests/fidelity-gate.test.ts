@@ -69,7 +69,13 @@ describe('Excel mutation regression', () => {
       path: '/office/workbooks/open',
       body: { fileName: 'saved.xlsx', fileBytes: toBase64(saved) },
     })
-    const cells = (reopenRes?.body as { snapshot: { sheets: Array<{ cells: Record<string, { value: string | number | boolean | null }> }> } }).snapshot.sheets[0].cells
+    const cells = (
+      reopenRes?.body as {
+        snapshot: {
+          sheets: Array<{ cells: Record<string, { value: string | number | boolean | null }> }>
+        }
+      }
+    ).snapshot.sheets[0].cells
     expect(cells.A1?.value).toBe('Changed')
     // Untouched cell survives.
     expect(cells.B1?.value).toBe(10)
@@ -87,7 +93,11 @@ describe('Word run fidelity (parseRuns text-leaf walking)', () => {
       body: { fileName: 'blank.docx', fileBytes: toBase64(bytes) },
     })
     expect(openRes?.status).toBe(200)
-    const blocks = (openRes?.body as { blocks: Array<{ runs?: Array<{ bold?: boolean; italic?: boolean; text: string }> }> }).blocks
+    const blocks = (
+      openRes?.body as {
+        blocks: Array<{ runs?: Array<{ bold?: boolean; italic?: boolean; text: string }> }>
+      }
+    ).blocks
     // Blank DOCX should have at least one block.
     expect(blocks.length).toBeGreaterThan(0)
     // Verify runs structure is present and valid.
@@ -109,7 +119,7 @@ describe('Word run fidelity (parseRuns text-leaf walking)', () => {
     const html = '<strong>bold <em>bold+italic</em></strong>'
     // Count text nodes by counting non-tag sequences.
     const stripped = html.replace(/<[^>]+>/g, '\x00')
-    const leaves = stripped.split('\x00').filter(s => s.length > 0)
+    const leaves = stripped.split('\x00').filter((s) => s.length > 0)
     expect(leaves).toEqual(['bold ', 'bold+italic'])
   })
 })
@@ -125,10 +135,14 @@ describe('Word unchanged-document preservation', () => {
       body: { fileName: 'blank.docx', fileBytes: toBase64(bytes) },
     })
     expect(openRes?.status).toBe(200)
-    const blocks = (openRes?.body as { blocks: Array<{ docxIndex: number | null; edited?: boolean; type: string }> }).blocks
+    const blocks = (
+      openRes?.body as {
+        blocks: Array<{ docxIndex: number | null; edited?: boolean; type: string }>
+      }
+    ).blocks
 
     // Mark all blocks as unedited (edited: false) — simulating an untouched document.
-    const uneditedBlocks = blocks.map(b => ({ ...b, edited: false }))
+    const uneditedBlocks = blocks.map((b) => ({ ...b, edited: false }))
 
     const saveRes = await routeOffice({
       method: 'POST',
@@ -145,7 +159,9 @@ describe('Word unchanged-document preservation', () => {
       body: { fileName: 'saved.docx', fileBytes: toBase64(savedBytes) },
     })
     expect(reopenRes?.status).toBe(200)
-    const reopenedBlocks = (reopenRes?.body as { blocks: Array<{ type: string; docxIndex: number | null }> }).blocks
+    const reopenedBlocks = (
+      reopenRes?.body as { blocks: Array<{ type: string; docxIndex: number | null }> }
+    ).blocks
     // Same number of blocks.
     expect(reopenedBlocks.length).toBe(blocks.length)
     // Same block types.
@@ -248,9 +264,11 @@ describe('Word dirty-state correctness', () => {
       path: '/office/documents/open',
       body: { fileName: 'blank.docx', fileBytes: toBase64(bytes) },
     })
-    const blocks = (openRes?.body as { blocks: Array<{ docxIndex: number | null; type: string; text: string }> }).blocks
+    const blocks = (
+      openRes?.body as { blocks: Array<{ docxIndex: number | null; type: string; text: string }> }
+    ).blocks
     // Mark ALL blocks as unedited — simulating an untouched document save.
-    const uneditedBlocks = blocks.map(b => ({ ...b, edited: false }))
+    const uneditedBlocks = blocks.map((b) => ({ ...b, edited: false }))
     const saveRes = await routeOffice({
       method: 'POST',
       path: '/office/documents/save',
@@ -269,7 +287,9 @@ describe('Word dirty-state correctness', () => {
       path: '/office/documents/open',
       body: { fileName: 'blank.docx', fileBytes: toBase64(bytes) },
     })
-    const blocks = (openRes?.body as { blocks: Array<{ docxIndex: number | null; type: string; text: string }> }).blocks
+    const blocks = (
+      openRes?.body as { blocks: Array<{ docxIndex: number | null; type: string; text: string }> }
+    ).blocks
     // Mark only the first block as edited, rest unchanged.
     const mixedBlocks = blocks.map((b, i) => ({
       ...b,
@@ -292,11 +312,18 @@ describe('Word dirty-state correctness', () => {
       path: '/office/documents/open',
       body: { fileName: 'blank.docx', fileBytes: toBase64(bytes) },
     })
-    const blocks = (openRes?.body as { blocks: Array<{ docxIndex: number | null; type: string }> }).blocks
+    const blocks = (openRes?.body as { blocks: Array<{ docxIndex: number | null; type: string }> })
+      .blocks
     // Add a new block at the beginning (docxIndex=null, edited=true).
     const withNewBlock = [
-      { docxIndex: null, type: 'paragraph', text: 'New paragraph', runs: [{ text: 'New paragraph' }], edited: true },
-      ...blocks.map(b => ({ ...b, edited: false })),
+      {
+        docxIndex: null,
+        type: 'paragraph',
+        text: 'New paragraph',
+        runs: [{ text: 'New paragraph' }],
+        edited: true,
+      },
+      ...blocks.map((b) => ({ ...b, edited: false })),
     ]
     const saveRes = await routeOffice({
       method: 'POST',
@@ -311,7 +338,8 @@ describe('Word dirty-state correctness', () => {
       path: '/office/documents/open',
       body: { fileName: 'saved.docx', fileBytes: toBase64(savedBytes) },
     })
-    const reopenedBlocks = (reopenRes?.body as { blocks: Array<{ type: string; text: string }> }).blocks
+    const reopenedBlocks = (reopenRes?.body as { blocks: Array<{ type: string; text: string }> })
+      .blocks
     // The first block should be the new paragraph.
     expect(reopenedBlocks[0]?.text).toContain('New paragraph')
   })
@@ -323,10 +351,11 @@ describe('Word dirty-state correctness', () => {
       path: '/office/documents/open',
       body: { fileName: 'blank.docx', fileBytes: toBase64(bytes) },
     })
-    const blocks = (openRes?.body as { blocks: Array<{ docxIndex: number | null; type: string }> }).blocks
+    const blocks = (openRes?.body as { blocks: Array<{ docxIndex: number | null; type: string }> })
+      .blocks
     // Delete the first visible block by excluding it from the save plan.
-    const visibleBlocks = blocks.filter(b => b.type !== 'hidden')
-    const withoutFirst = visibleBlocks.slice(1).map(b => ({ ...b, edited: false }))
+    const visibleBlocks = blocks.filter((b) => b.type !== 'hidden')
+    const withoutFirst = visibleBlocks.slice(1).map((b) => ({ ...b, edited: false }))
     const saveRes = await routeOffice({
       method: 'POST',
       path: '/office/documents/save',

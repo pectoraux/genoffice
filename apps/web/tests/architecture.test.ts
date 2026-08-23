@@ -54,7 +54,10 @@ describe('architecture: apps/web source directory is non-empty', () => {
   it('apps/web/src exists and contains source files', () => {
     const src = join(WEB_ROOT, 'src')
     const files = walkTs(src)
-    expect(files.length, `apps/web/src should contain source files (found 0 — path resolution broken?)`).toBeGreaterThan(0)
+    expect(
+      files.length,
+      `apps/web/src should contain source files (found 0 — path resolution broken?)`,
+    ).toBeGreaterThan(0)
   })
 })
 
@@ -132,7 +135,10 @@ describe('architecture: office API client uses only fetch', () => {
     const content = readFileSync(clientPath, 'utf8')
     const lines = nonCommentLines(content)
     // The client must call fetch() at least once (to make requests).
-    expect(lines.some((l) => /\bfetch\s*\(/.test(l)), 'office-client.ts should call fetch()').toBe(true)
+    expect(
+      lines.some((l) => /\bfetch\s*\(/.test(l)),
+      'office-client.ts should call fetch()',
+    ).toBe(true)
     // And must not import any HTTP/Node library.
     const forbiddenHttp = [
       /from\s+['"]node:http['"]/,
@@ -144,14 +150,19 @@ describe('architecture: office API client uses only fetch', () => {
       /\brequire\s*\(/,
     ]
     const violations = lines.filter((line) => forbiddenHttp.some((re) => re.test(line)))
-    expect(violations, 'office-client.ts must not import any HTTP library other than fetch').toEqual([])
+    expect(
+      violations,
+      'office-client.ts must not import any HTTP library other than fetch',
+    ).toEqual([])
   })
 
   it('apps/web/src/api/office-client.ts does NOT use `as any` or `as unknown as`', () => {
     const clientPath = join(WEB_ROOT, 'src', 'api', 'office-client.ts')
     const content = readFileSync(clientPath, 'utf8')
     const lines = nonCommentLines(content)
-    const violations = lines.filter((l) => /\bas\s+any\b/.test(l) || /\bas\s+unknown\s+as\b/.test(l))
+    const violations = lines.filter(
+      (l) => /\bas\s+any\b/.test(l) || /\bas\s+unknown\s+as\b/.test(l),
+    )
     expect(violations, 'office-client.ts must not use `as any` or `as unknown as`').toEqual([])
   })
 
@@ -199,7 +210,9 @@ describe('architecture: regression patterns', () => {
   })
 
   it('would NOT flag a fetch call', () => {
-    const re = /\bfetch\s*\(/;
-    expect(re.test("const res = await fetch('/api/office/workbooks/open', { method: 'POST' })")).toBe(true)
+    const re = /\bfetch\s*\(/
+    expect(
+      re.test("const res = await fetch('/api/office/workbooks/open', { method: 'POST' })"),
+    ).toBe(true)
   })
 })

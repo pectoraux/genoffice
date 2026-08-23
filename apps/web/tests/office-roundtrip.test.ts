@@ -33,7 +33,15 @@ async function openWorkbook(fileName: string, bytes: Uint8Array) {
     throw new Error(`openWorkbook failed: ${res?.status} ${JSON.stringify(res?.body)}`)
   }
   return res.body as {
-    snapshot: { sheets: ReadonlyArray<{ id: string; name: string; cells: Readonly<Record<string, { value: string | number | boolean | null; formula?: string }>> }> }
+    snapshot: {
+      sheets: ReadonlyArray<{
+        id: string
+        name: string
+        cells: Readonly<
+          Record<string, { value: string | number | boolean | null; formula?: string }>
+        >
+      }>
+    }
     sheetNamesById: Readonly<Record<string, string>>
   }
 }
@@ -59,7 +67,16 @@ async function openDocument(fileName: string, bytes: Uint8Array) {
   if (!res || res.status !== 200) {
     throw new Error(`openDocument failed: ${res?.status} ${JSON.stringify(res?.body)}`)
   }
-  return (res?.body as { blocks: ReadonlyArray<{ docxIndex: number | null; type: string; text: string; level?: number }> }).blocks
+  return (
+    res?.body as {
+      blocks: ReadonlyArray<{
+        docxIndex: number | null
+        type: string
+        text: string
+        level?: number
+      }>
+    }
+  ).blocks
 }
 
 async function saveDocument(fileName: string, bytes: Uint8Array, blocks: readonly unknown[]) {
@@ -381,7 +398,13 @@ describe('XLSX save with edits', () => {
   it('writes a formula', async () => {
     const bytes = await buildCompatibilityFixture()
     const edits: CellEdit[] = [
-      { sheetName: 'Sheet1', row: 2, column: 1, writeValue: true, cell: { value: null, formula: '=SUM(C1:C3)' } },
+      {
+        sheetName: 'Sheet1',
+        row: 2,
+        column: 1,
+        writeValue: true,
+        cell: { value: null, formula: '=SUM(C1:C3)' },
+      },
     ]
     const saved = await saveWorkbook('fixture.xlsx', bytes, edits)
     const after = await openWorkbook('fixture.xlsx', saved)

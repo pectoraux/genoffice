@@ -20,26 +20,43 @@ export function BOQTab({ projectId }: { projectId: string }) {
   const [itemDesc, setItemDesc] = useState('')
   const [itemUnit, setItemUnit] = useState('m2')
   const [itemQty, setItemQty] = useState(0)
-  const [itemRate, setItemRate] = useState(0)
 
   const refreshBoqs = async () => {
-    try { setBoqs(await boqApi.listForProject(projectId)) } catch (e) { setError(String(e)) }
+    try {
+      setBoqs(await boqApi.listForProject(projectId))
+    } catch (e) {
+      setError(String(e))
+    }
   }
   const refreshItems = async (boqId: string) => {
-    try { setItems(await boqApi.listItems(boqId)) } catch (e) { setError(String(e)) }
+    try {
+      setItems(await boqApi.listItems(boqId))
+    } catch (e) {
+      setError(String(e))
+    }
   }
 
-  useEffect(() => { refreshBoqs() }, [projectId])
+  useEffect(() => {
+    refreshBoqs()
+  }, [projectId])
 
   const selectBoq = async (b: BOQ) => {
-    setSelected(b); setLoading(true); setError(null)
-    await refreshItems(b.boqId); setLoading(false)
+    setSelected(b)
+    setLoading(true)
+    setError(null)
+    await refreshItems(b.boqId)
+    setLoading(false)
   }
 
   const createBoq = async () => {
     setError(null)
-    try { await boqApi.create(projectId, newName || undefined); setNewName(''); await refreshBoqs() }
-    catch (e) { setError(e instanceof Error ? e.message : 'Create failed') }
+    try {
+      await boqApi.create(projectId, newName || undefined)
+      setNewName('')
+      await refreshBoqs()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Create failed')
+    }
   }
 
   const addItem = async () => {
@@ -47,12 +64,20 @@ export function BOQTab({ projectId }: { projectId: string }) {
     setError(null)
     try {
       await boqApi.addItem(selected.boqId, {
-        itemCode, description: itemDesc, unit: itemUnit,
-        quantityValue: itemQty, quantityUnit: itemUnit, provenance: 'manual',
+        itemCode,
+        description: itemDesc,
+        unit: itemUnit,
+        quantityValue: itemQty,
+        quantityUnit: itemUnit,
+        provenance: 'manual',
       })
-      setItemCode(''); setItemDesc(''); setItemQty(0)
+      setItemCode('')
+      setItemDesc('')
+      setItemQty(0)
       await refreshItems(selected.boqId)
-    } catch (e) { setError(e instanceof Error ? e.message : 'Add failed') }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Add failed')
+    }
   }
 
   const updateQty = async (itemId: string, qty: number) => {
@@ -61,7 +86,9 @@ export function BOQTab({ projectId }: { projectId: string }) {
     try {
       await boqApi.updateQuantity(itemId, qty, itemUnit)
       await refreshItems(selected.boqId)
-    } catch (e) { setError(e instanceof Error ? e.message : 'Update failed') }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Update failed')
+    }
   }
 
   return (
@@ -71,12 +98,23 @@ export function BOQTab({ projectId }: { projectId: string }) {
         <h2 style={styles.title}>BOQs</h2>
         <p style={styles.muted}>BOQ = scope structure, not commercial authority.</p>
         <div style={styles.row}>
-          <input style={styles.input} placeholder="BOQ name (optional)" value={newName} onChange={(e) => setNewName(e.target.value)} />
-          <button style={styles.buttonPrimary} onClick={createBoq}>Create BOQ</button>
+          <input
+            style={styles.input}
+            placeholder="BOQ name (optional)"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+          />
+          <button style={styles.buttonPrimary} onClick={createBoq}>
+            Create BOQ
+          </button>
         </div>
         <div style={styles.column}>
           {boqs.map((b) => (
-            <button key={b.boqId} style={selected?.boqId === b.boqId ? styles.buttonPrimary : styles.button} onClick={() => selectBoq(b)}>
+            <button
+              key={b.boqId}
+              style={selected?.boqId === b.boqId ? styles.buttonPrimary : styles.button}
+              onClick={() => selectBoq(b)}
+            >
               {b.boqId.slice(-8)}
             </button>
           ))}
@@ -85,11 +123,21 @@ export function BOQTab({ projectId }: { projectId: string }) {
       {selected && (
         <div style={styles.card}>
           <h3 style={styles.title}>Items in {selected.boqId.slice(-8)}</h3>
-          {loading ? <div style={styles.loading}>Loading…</div> : items.length === 0 ? (
+          {loading ? (
+            <div style={styles.loading}>Loading…</div>
+          ) : items.length === 0 ? (
             <p style={styles.muted}>No items yet.</p>
           ) : (
             <table style={styles.table}>
-              <thead><tr><th style={styles.th}>Code</th><th style={styles.th}>Description</th><th style={styles.th}>Unit</th><th style={styles.th}>Quantity</th><th style={styles.th}></th></tr></thead>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Code</th>
+                  <th style={styles.th}>Description</th>
+                  <th style={styles.th}>Unit</th>
+                  <th style={styles.th}>Quantity</th>
+                  <th style={styles.th}></th>
+                </tr>
+              </thead>
               <tbody>
                 {items.map((it) => (
                   <tr key={it.itemId}>
@@ -98,8 +146,15 @@ export function BOQTab({ projectId }: { projectId: string }) {
                     <td style={styles.td}>{it.quantity.unit}</td>
                     <td style={styles.td}>{it.quantity.value}</td>
                     <td style={styles.td}>
-                      <input type="number" style={{ ...styles.input, width: 80 }} defaultValue={it.quantity.value}
-                        onBlur={(e) => { const v = Number(e.target.value); if (v !== it.quantity.value) updateQty(it.itemId, v) }} />
+                      <input
+                        type="number"
+                        style={{ ...styles.input, width: 80 }}
+                        defaultValue={it.quantity.value}
+                        onBlur={(e) => {
+                          const v = Number(e.target.value)
+                          if (v !== it.quantity.value) updateQty(it.itemId, v)
+                        }}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -108,11 +163,38 @@ export function BOQTab({ projectId }: { projectId: string }) {
           )}
           <h3 style={styles.title}>Add item</h3>
           <div style={styles.row}>
-            <input style={styles.input} placeholder="Code" value={itemCode} onChange={(e) => setItemCode(e.target.value)} />
-            <input style={styles.input} placeholder="Description" value={itemDesc} onChange={(e) => setItemDesc(e.target.value)} />
-            <input style={{ ...styles.input, width: 80 }} placeholder="Unit" value={itemUnit} onChange={(e) => setItemUnit(e.target.value)} />
-            <input type="number" style={{ ...styles.input, width: 80 }} placeholder="Qty" value={itemQty} onChange={(e) => setItemQty(Number(e.target.value))} />
-            <button style={styles.buttonPrimary} onClick={addItem} disabled={!itemCode || !itemDesc}>Add item</button>
+            <input
+              style={styles.input}
+              placeholder="Code"
+              value={itemCode}
+              onChange={(e) => setItemCode(e.target.value)}
+            />
+            <input
+              style={styles.input}
+              placeholder="Description"
+              value={itemDesc}
+              onChange={(e) => setItemDesc(e.target.value)}
+            />
+            <input
+              style={{ ...styles.input, width: 80 }}
+              placeholder="Unit"
+              value={itemUnit}
+              onChange={(e) => setItemUnit(e.target.value)}
+            />
+            <input
+              type="number"
+              style={{ ...styles.input, width: 80 }}
+              placeholder="Qty"
+              value={itemQty}
+              onChange={(e) => setItemQty(Number(e.target.value))}
+            />
+            <button
+              style={styles.buttonPrimary}
+              onClick={addItem}
+              disabled={!itemCode || !itemDesc}
+            >
+              Add item
+            </button>
           </div>
         </div>
       )}
