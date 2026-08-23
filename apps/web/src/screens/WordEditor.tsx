@@ -1,18 +1,39 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Underline from '@tiptap/extension-underline'
 import Link from '@tiptap/extension-link'
 import { styles } from '../styles'
 import { openDocument, saveDocument, readFileBytes } from '../api/office-client'
-import type { SerializedBlock, SerializedRun, OfficeDocumentHandle } from '../api/office-client'
+import type {
+  SerializedBlock,
+  SerializedRun,
+  SerializedTable,
+  OfficeDocumentHandle,
+} from '../api/office-client'
 import {
   DocxParagraph,
   DocxHeading,
   DocxListItem,
   PassthroughBlock,
 } from '../office/tiptap-docx-extensions'
+import {
+  DocxTable,
+  DocxTableRow,
+  DocxTableCell,
+  DocxTableHeader,
+} from '../office/tiptap-table-extensions'
 import { parseRuns } from '../office/parse-runs'
+import {
+  tableToHtml,
+  tableFromHtml,
+  tableGridFingerprint,
+  setTableParseRuns,
+} from '../office/table-conversion'
+
+// Wire the DOM run parser into the table conversion module (lazy injection
+// avoids a module cycle; parse-runs has no dependencies).
+setTableParseRuns(parseRuns)
 
 /**
  * WordEditor — real DOCX I/O backed by the GenOffice office API.
@@ -61,6 +82,24 @@ function blockFingerprint(runs: readonly SerializedRun[] | undefined, text: stri
   return JSON.stringify({ runs: runs ?? [{ text }], text })
 }
 
+/** Joined plain text of a table (display-only; the payload is authoritative). */
+function tableDisplayText(table: SerializedTable): string {
+  return table.rows
+    .flatMap((row) => row.map((cell) => cell.paras.join(' ')))
+    .join(' ')
+    .trim()
+}
+
+/** Minimal editor CSS for tables (borders, header shading, cell selection). */
+const TABLE_EDITOR_CSS = `
+.ProseMirror table { border-collapse: collapse; table-layout: fixed; width: 100%; margin: 8px 0; }
+.ProseMirror th, .ProseMirror td { border: 1px solid #9aa0a6; padding: 4px 8px; vertical-align: top; min-width: 2em; }
+.ProseMirror th { background: #eef1f4; font-weight: 700; text-align: left; }
+.ProseMirror th p, .ProseMirror td p { margin: 0; }
+.ProseMirror .selectedCell::after { content: ''; position: absolute; inset: 0; background: rgba(35, 131, 226, 0.14); pointer-events: none; }
+.ProseMirror .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: 0; width: 4px; background: #2383e2; }
+`
+
 export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
   const [title, setTitle] = useState('Document')
   const [saved, setSaved] = useState(true)
@@ -68,6 +107,10 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
   const handleRef = useRef<OfficeDocumentHandle | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const originalFingerprintsRef = useRef<Map<number, string>>(new Map())
+  /** Loaded tables by docxIndex — the echo source for byte-preservation fields
+   *  (rawTcPr/borders/colWidths…) and the baseline for grid fingerprints. */
+  const loadedTablesRef = useRef<Map<number, SerializedTable>>(new Map())
+  const [inTable, setInTable] = useState(false)
 
   const editor = useEditor({
     extensions: [
@@ -82,11 +125,36 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
       Underline,
       Link.configure({ openOnClick: false }),
       PassthroughBlock,
+      // Editable tables (Phase 3 Increment 7): real Tiptap table nodes with
+      // schema-backed docxIndex on the table node.
+      DocxTable.configure({ resizable: false }),
+      DocxTableRow,
+      DocxTableCell,
+      DocxTableHeader,
     ],
     content: '<h1>Untitled document</h1><p>Start writing your document here.</p>',
     onUpdate: () => setSaved(false),
     immediatelyRender: false,
   })
+
+  // Track whether the selection is inside a table (drives the table toolbar).
+  useEffect(() => {
+    if (!editor) return
+    const update = () => setInTable(editor.isActive('table'))
+    editor.on('selectionUpdate', update)
+    editor.on('transaction', update)
+    update()
+    // Test hook: lets Playwright drive real editor commands/selections
+    // (e.g. building a prosemirror-tables CellSelection for merge/split
+    // E2E, which cannot be produced reliably by synthetic mouse drags).
+    const w = window as { __genofficeWordEditor?: unknown }
+    w.__genofficeWordEditor = editor
+    return () => {
+      editor.off('selectionUpdate', update)
+      editor.off('transaction', update)
+      delete w.__genofficeWordEditor
+    }
+  }, [editor])
 
   /**
    * Convert Tiptap HTML content into SerializedBlock[] for the API.
@@ -105,6 +173,27 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
       const tag = node.tagName.toLowerCase()
       const rawIndex = node.getAttribute('data-docx-index')
       const docxIndex = rawIndex !== null ? parseInt(rawIndex, 10) : null
+
+      // ── Tables: DOM grid → SerializedTable (identity = docxIndex) ──────
+      if (node instanceof HTMLTableElement) {
+        const loaded = docxIndex !== null ? loadedTablesRef.current.get(docxIndex) : undefined
+        const reconstructed = tableFromHtml(node, loaded)
+        const edited =
+          docxIndex === null ||
+          loaded === undefined ||
+          tableGridFingerprint(reconstructed) !== tableGridFingerprint(loaded)
+        // Unchanged tables echo the loaded payload verbatim (round-trip
+        // stability); edited tables send the reconstruction.
+        blocks.push({
+          docxIndex,
+          type: 'table',
+          text: tableDisplayText(loaded ?? reconstructed),
+          table: edited ? reconstructed : loaded,
+          edited,
+        })
+        continue
+      }
+
       const runs = parseRuns(node)
       const text = node.textContent ?? ''
 
@@ -221,9 +310,17 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
         }
         case 'table':
           flushList()
-          parts.push(
-            `<div${indexAttr} data-passthrough="true" data-passthrough-type="table">${escapeHtml(block.text || '[Table — edit in desktop app]')}</div>`,
-          )
+          if (block.table) {
+            // Editable table: real Tiptap table nodes with schema-backed
+            // docxIndex; cell content is real paragraph/text nodes.
+            parts.push(tableToHtml(block.table, block.docxIndex))
+          } else {
+            // Table the editor cannot safely regenerate (nested tables /
+            // anchored shapes in cells): read-only passthrough, byte-preserved.
+            parts.push(
+              `<div${indexAttr} data-passthrough="true" data-passthrough-type="table">${escapeHtml(block.text || '[Table — edit in desktop app]')}</div>`,
+            )
+          }
           break
         case 'image':
           flushList()
@@ -255,9 +352,17 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
         handleRef.current = { fileName: file.name, sourceBytes: bytes }
         const fingerprints = originalFingerprintsRef.current
         fingerprints.clear()
+        loadedTablesRef.current.clear()
         for (const block of res.blocks) {
           if (block.docxIndex !== null) {
-            fingerprints.set(block.docxIndex, blockFingerprint(block.runs, block.text))
+            if (block.type === 'table' && block.table) {
+              // Tables participate in the same fingerprint-based dirty
+              // tracking as paragraphs, over their editable grid surface.
+              loadedTablesRef.current.set(block.docxIndex, block.table)
+              fingerprints.set(block.docxIndex, tableGridFingerprint(block.table))
+            } else {
+              fingerprints.set(block.docxIndex, blockFingerprint(block.runs, block.text))
+            }
           }
         }
         const html = renderBlocks(res.blocks)
@@ -329,8 +434,29 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
         ['H2', () => editor?.chain().focus().toggleHeading({ level: 2 }).run()],
         ['• List', () => editor?.chain().focus().toggleBulletList().run()],
         ['1. List', () => editor?.chain().focus().toggleOrderedList().run()],
+        [
+          'Table',
+          () =>
+            editor?.chain().focus().insertTable({ rows: 2, cols: 3, withHeaderRow: false }).run(),
+        ],
         ['Undo', () => editor?.chain().focus().undo().run()],
         ['Redo', () => editor?.chain().focus().redo().run()],
+      ] as const,
+    [editor],
+  )
+
+  /** Table actions — shown while the selection is inside a table. */
+  const tableToolbar = useMemo(
+    () =>
+      [
+        ['+ Row', () => editor?.chain().focus().addRowAfter().run()],
+        ['- Row', () => editor?.chain().focus().deleteRow().run()],
+        ['+ Col', () => editor?.chain().focus().addColumnAfter().run()],
+        ['- Col', () => editor?.chain().focus().deleteColumn().run()],
+        ['Header Row', () => editor?.chain().focus().toggleHeaderRow().run()],
+        ['Merge Cells', () => editor?.chain().focus().mergeCells().run()],
+        ['Split Cell', () => editor?.chain().focus().splitCell().run()],
+        ['Delete Table', () => editor?.chain().focus().deleteTable().run()],
       ] as const,
     [editor],
   )
@@ -339,6 +465,8 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
 
   return (
     <div style={{ minHeight: 'calc(100vh - 64px)', background: '#eef1f5' }}>
+      {/* Table editor styles (borders, header shading, cell selection). */}
+      <style>{TABLE_EDITOR_CSS}</style>
       <header style={{ ...styles.header, position: 'sticky', top: 0, zIndex: 5 }}>
         <button style={styles.button} onClick={() => onRoute('/office')}>
           ← Office
@@ -401,6 +529,31 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
           </button>
         ))}
       </div>
+      {inTable && (
+        <div
+          style={{
+            background: '#f6f8fa',
+            borderBottom: '1px solid #d9dee7',
+            padding: '6px 18px',
+            display: 'flex',
+            gap: 6,
+            flexWrap: 'wrap',
+          }}
+        >
+          <span style={{ fontSize: 12, color: '#5b6470', alignSelf: 'center', marginRight: 4 }}>
+            Table:
+          </span>
+          {tableToolbar.map(([label, action]) => (
+            <button
+              key={label}
+              style={{ ...styles.button, padding: '4px 10px', fontSize: 13 }}
+              onClick={action}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       <main style={{ padding: '32px 20px 80px' }}>
         <div
           style={{

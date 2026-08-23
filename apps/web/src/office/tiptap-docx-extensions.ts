@@ -19,12 +19,13 @@ import { Node, mergeAttributes } from '@tiptap/core'
 // ── docxIndex attribute ──────────────────────────────────────────────────
 
 /**
- * Shared attribute definition for the docxIndex node attribute.
- * Stored as a global attribute so it can be applied to any node type.
+ * Shared attribute definitions for the docxIndex node attribute and the
+ * paragraph alignment. Stored as global attributes so they can be applied to
+ * any node type.
  *
- * The attribute renders as `data-docx-index` in HTML (matching the
- * existing convention), but is now schema-backed — Tiptap will preserve
- * it across setContent() → getHTML() round-trips.
+ * The attributes render as `data-docx-index` / `data-align` in HTML (matching
+ * the existing convention), but are schema-backed — Tiptap will preserve
+ * them across setContent() → getHTML() round-trips.
  */
 const docxIndexAttribute = {
   docxIndex: {
@@ -42,6 +43,30 @@ const docxIndexAttribute = {
   },
 }
 
+/** Paragraph alignment (w:jc) — set on paragraphs inside table cells. */
+const alignAttribute = {
+  align: {
+    default: null,
+    parseHTML: (element: HTMLElement) => element.getAttribute('data-align'),
+    renderHTML: (attributes: { align: string | null }) => {
+      if (!attributes.align) return {}
+      return { 'data-align': attributes.align, style: `text-align: ${attributes.align}` }
+    },
+  },
+}
+
+/** Paragraph style id (w:pStyle) — set on paragraphs inside table cells. */
+const styleIdAttribute = {
+  styleId: {
+    default: null,
+    parseHTML: (element: HTMLElement) => element.getAttribute('data-style'),
+    renderHTML: (attributes: { styleId: string | null }) => {
+      if (!attributes.styleId) return {}
+      return { 'data-style': attributes.styleId }
+    },
+  },
+}
+
 // ── Paragraph with docxIndex ─────────────────────────────────────────────
 
 export const DocxParagraph = Paragraph.extend({
@@ -49,6 +74,8 @@ export const DocxParagraph = Paragraph.extend({
     return {
       ...this.parent?.(),
       ...docxIndexAttribute,
+      ...alignAttribute,
+      ...styleIdAttribute,
     }
   },
 })

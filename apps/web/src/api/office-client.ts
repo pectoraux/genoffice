@@ -65,11 +65,77 @@ export interface SerializedRun {
   readonly link?: { readonly href: string; readonly tooltip?: string }
 }
 
+// ── Serialized table (browser mirror of the server wire type) ──────────────
+
+export interface SerializedCellBorder {
+  readonly style: string
+  readonly szEighths?: number
+  readonly color?: string
+}
+
+export interface SerializedCellBorders {
+  readonly top?: SerializedCellBorder
+  readonly left?: SerializedCellBorder
+  readonly bottom?: SerializedCellBorder
+  readonly right?: SerializedCellBorder
+}
+
+export interface SerializedTableBorders extends SerializedCellBorders {
+  readonly insideH?: SerializedCellBorder
+  readonly insideV?: SerializedCellBorder
+}
+
+export interface SerializedCellMargins {
+  readonly top?: number
+  readonly left?: number
+  readonly bottom?: number
+  readonly right?: number
+}
+
+export interface SerializedTableParagraph {
+  readonly runs: readonly SerializedRun[]
+  readonly align?: 'left' | 'center' | 'right' | 'justify' | 'distribute'
+  readonly styleId?: string
+}
+
+export interface SerializedTableCell {
+  readonly paras: readonly string[]
+  readonly richParas?: readonly SerializedTableParagraph[]
+  readonly colSpan?: number
+  readonly vMerge?: 'restart' | 'continue'
+  readonly fill?: string
+  readonly color?: string
+  readonly bold?: boolean
+  readonly align?: 'left' | 'center' | 'right' | 'justify' | 'distribute'
+  readonly vAlign?: 'top' | 'center' | 'bottom'
+  readonly borders?: SerializedCellBorders
+  readonly rawTcPr?: string
+}
+
+export interface SerializedTable {
+  readonly rows: readonly (readonly SerializedTableCell[])[]
+  readonly colWidthsPct?: readonly number[]
+  readonly colWidthsTwips?: readonly number[]
+  readonly widthPct?: number
+  readonly autoLayout?: boolean
+  readonly cellMarTwips?: SerializedCellMargins
+  readonly borders?: SerializedTableBorders
+  readonly align?: 'left' | 'center' | 'right'
+  readonly indentTwips?: number
+  readonly rowHeightsTwips?: readonly (number | null)[]
+  readonly rowHeightRules?: readonly ('atLeast' | 'exact' | null)[]
+  readonly rawTrPrs?: readonly (string | null)[]
+  readonly tblStyleId?: string
+  readonly bidiVisual?: boolean
+  readonly headerRows?: readonly boolean[]
+}
+
 export interface SerializedBlock {
   readonly docxIndex: number | null
   readonly type: SerializedBlockType
   readonly text: string
   readonly runs?: readonly SerializedRun[]
+  readonly table?: SerializedTable
   readonly level?: number
   readonly listKind?: 'bullet' | 'ordered'
   readonly edited?: boolean
@@ -272,6 +338,146 @@ function isSerializedRun(v: unknown): v is SerializedRun {
   return true
 }
 
+// ── Table payload guards (mirror the server-side validation shape) ─────────
+
+const TABLE_PARA_ALIGNS = ['left', 'center', 'right', 'justify', 'distribute']
+const TABLE_ALIGNS = ['left', 'center', 'right']
+const TABLE_VALIGNS = ['top', 'center', 'bottom']
+const MAX_TABLE_ROWS = 1000
+const MAX_TABLE_COLS = 63
+
+function isCellBorder(v: unknown): v is SerializedCellBorder {
+  if (!isObject(v)) return false
+  if (!isString(v.style)) return false
+  if (v.szEighths !== undefined && typeof v.szEighths !== 'number') return false
+  if (v.color !== undefined && !isString(v.color)) return false
+  return true
+}
+
+function isCellBorders(v: unknown): v is SerializedCellBorders {
+  if (!isObject(v)) return false
+  for (const edge of ['top', 'left', 'bottom', 'right'] as const) {
+    if (v[edge] !== undefined && !isCellBorder(v[edge])) return false
+  }
+  return true
+}
+
+function isTableBorders(v: unknown): v is SerializedTableBorders {
+  if (!isCellBorders(v)) return false
+  if ((v as Record<string, unknown>).insideH !== undefined) {
+    if (!isCellBorder((v as Record<string, unknown>).insideH)) return false
+  }
+  if ((v as Record<string, unknown>).insideV !== undefined) {
+    if (!isCellBorder((v as Record<string, unknown>).insideV)) return false
+  }
+  return true
+}
+
+function isCellMargins(v: unknown): v is SerializedCellMargins {
+  if (!isObject(v)) return false
+  for (const side of ['top', 'left', 'bottom', 'right'] as const) {
+    if (v[side] !== undefined && typeof v[side] !== 'number') return false
+  }
+  return true
+}
+
+function isTableParagraph(v: unknown): v is SerializedTableParagraph {
+  if (!isObject(v)) return false
+  if (!Array.isArray(v.runs) || !v.runs.every(isSerializedRun)) return false
+  if (v.align !== undefined && (!isString(v.align) || !TABLE_PARA_ALIGNS.includes(v.align))) {
+    return false
+  }
+  if (v.styleId !== undefined && !isString(v.styleId)) return false
+  return true
+}
+
+function isTableCell(v: unknown): v is SerializedTableCell {
+  if (!isObject(v)) return false
+  if (!Array.isArray(v.paras) || !v.paras.every((p) => typeof p === 'string')) return false
+  if (v.richParas !== undefined) {
+    if (!Array.isArray(v.richParas) || !v.richParas.every(isTableParagraph)) return false
+  }
+  if (
+    v.colSpan !== undefined &&
+    (!Number.isInteger(v.colSpan) ||
+      (v.colSpan as number) < 1 ||
+      (v.colSpan as number) > MAX_TABLE_COLS)
+  ) {
+    return false
+  }
+  if (v.vMerge !== undefined && v.vMerge !== 'restart' && v.vMerge !== 'continue') return false
+  if (v.fill !== undefined && !isString(v.fill)) return false
+  if (v.color !== undefined && !isString(v.color)) return false
+  if (v.bold !== undefined && typeof v.bold !== 'boolean') return false
+  if (v.align !== undefined && (!isString(v.align) || !TABLE_PARA_ALIGNS.includes(v.align))) {
+    return false
+  }
+  if (v.vAlign !== undefined && (!isString(v.vAlign) || !TABLE_VALIGNS.includes(v.vAlign))) {
+    return false
+  }
+  if (v.borders !== undefined && !isCellBorders(v.borders)) return false
+  if (v.rawTcPr !== undefined && !isString(v.rawTcPr)) return false
+  return true
+}
+
+function isSerializedTable(v: unknown): v is SerializedTable {
+  if (!isObject(v)) return false
+  if (!Array.isArray(v.rows) || v.rows.length === 0 || v.rows.length > MAX_TABLE_ROWS) return false
+  for (const row of v.rows) {
+    if (!Array.isArray(row) || row.length === 0 || row.length > MAX_TABLE_COLS) return false
+    if (!row.every(isTableCell)) return false
+    const width = row.reduce(
+      (sum: number, cell: SerializedTableCell) => sum + (cell.colSpan ?? 1),
+      0,
+    )
+    if (width > MAX_TABLE_COLS) return false
+  }
+  for (const key of ['colWidthsPct', 'colWidthsTwips'] as const) {
+    if (v[key] !== undefined) {
+      if (!Array.isArray(v[key]) || !(v[key] as unknown[]).every((n) => typeof n === 'number')) {
+        return false
+      }
+    }
+  }
+  if (v.widthPct !== undefined && typeof v.widthPct !== 'number') return false
+  if (v.autoLayout !== undefined && typeof v.autoLayout !== 'boolean') return false
+  if (v.cellMarTwips !== undefined && !isCellMargins(v.cellMarTwips)) return false
+  if (v.borders !== undefined && !isTableBorders(v.borders)) return false
+  if (v.align !== undefined && (!isString(v.align) || !TABLE_ALIGNS.includes(v.align))) {
+    return false
+  }
+  if (v.indentTwips !== undefined && typeof v.indentTwips !== 'number') return false
+  if (v.rowHeightsTwips !== undefined) {
+    if (
+      !Array.isArray(v.rowHeightsTwips) ||
+      !v.rowHeightsTwips.every((h) => h === null || typeof h === 'number')
+    ) {
+      return false
+    }
+  }
+  if (v.rowHeightRules !== undefined) {
+    if (
+      !Array.isArray(v.rowHeightRules) ||
+      !v.rowHeightRules.every((r) => r === null || r === 'atLeast' || r === 'exact')
+    ) {
+      return false
+    }
+  }
+  if (v.rawTrPrs !== undefined) {
+    if (!Array.isArray(v.rawTrPrs) || !v.rawTrPrs.every((r) => r === null || isString(r))) {
+      return false
+    }
+  }
+  if (v.tblStyleId !== undefined && !isString(v.tblStyleId)) return false
+  if (v.bidiVisual !== undefined && typeof v.bidiVisual !== 'boolean') return false
+  if (v.headerRows !== undefined) {
+    if (!Array.isArray(v.headerRows) || !v.headerRows.every((h) => typeof h === 'boolean')) {
+      return false
+    }
+  }
+  return true
+}
+
 function isSerializedBlock(v: unknown): v is SerializedBlock {
   if (!isObject(v)) return false
   if (v.docxIndex !== null && typeof v.docxIndex !== 'number') return false
@@ -280,6 +486,10 @@ function isSerializedBlock(v: unknown): v is SerializedBlock {
   if (v.runs !== undefined) {
     if (!Array.isArray(v.runs)) return false
     if (!v.runs.every(isSerializedRun)) return false
+  }
+  if (v.table !== undefined) {
+    if (v.type !== 'table') return false
+    if (!isSerializedTable(v.table)) return false
   }
   if (v.level !== undefined && typeof v.level !== 'number') return false
   if (v.listKind !== undefined && v.listKind !== 'bullet' && v.listKind !== 'ordered') return false

@@ -305,7 +305,149 @@ export async function readZipEntry(buffer: Buffer, path: string): Promise<string
   return entry.async('string')
 }
 
-// ── Inline-marks fixture (underline / strike / hyperlink) ───────────────────
+// ── Word table fixture (editable-table E2E) ─────────────────────────────────
+
+/**
+ * Deterministic DOCX exercising the editable-table path:
+ *
+ *   idx 0 — plain paragraph "This is a plain paragraph."
+ *   idx 1 — Heading1 "Table Fixture Heading"
+ *   idx 2 — 2×3 table:
+ *             row 1: [vMerge restart: bold/italic runs] [fill FFF2CC, center] [plain]
+ *             row 2: [vMerge continue]                 [plain]              [plain]
+ *   idx 3 — trailing plain paragraph "Paragraph after the table."
+ *   trailing w:sectPr (hidden)
+ *
+ * The vertical merge spans both rows of column 1; the merged cell carries
+ * rich run content; cell (1,2) has a fill and centered paragraph.
+ */
+export async function buildWordTableFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'word/_rels/document.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'word/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>
+    <w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>
+    <w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr>
+    <w:rPr><w:b/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr></w:style>
+</w:styles>`,
+  )
+
+  addFile(
+    zip,
+    'word/numbering.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="&#61623;"/><w:lvlJc w:val="left"/>
+      <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr><w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol" w:hint="default"/></w:rPr></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>`,
+  )
+
+  const border = (name: string) => `<w:${name} w:val="single" w:sz="4" w:space="0" w:color="auto"/>`
+  const tableXml = `<w:tbl>
+  <w:tblPr>
+    <w:tblW w:w="9360" w:type="dxa"/>
+    <w:tblBorders>${['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(border).join('')}</w:tblBorders>
+    <w:tblLayout w:type="fixed"/>
+  </w:tblPr>
+  <w:tblGrid><w:gridCol w:w="3120"/><w:gridCol w:w="3120"/><w:gridCol w:w="3120"/></w:tblGrid>
+  <w:tr>
+    <w:tc>
+      <w:tcPr><w:tcW w:w="3120" w:type="dxa"/><w:vMerge w:val="restart"/></w:tcPr>
+      <w:p>
+        <w:r><w:t xml:space="preserve">Merged </w:t></w:r>
+        <w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">bold</w:t></w:r>
+        <w:r><w:t xml:space="preserve"> and </w:t></w:r>
+        <w:r><w:rPr><w:i/></w:rPr><w:t xml:space="preserve">italic</w:t></w:r>
+        <w:r><w:t xml:space="preserve"> cell</w:t></w:r>
+      </w:p>
+    </w:tc>
+    <w:tc>
+      <w:tcPr><w:tcW w:w="3120" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFF2CC"/></w:tcPr>
+      <w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t xml:space="preserve">Filled center</w:t></w:r></w:p>
+    </w:tc>
+    <w:tc>
+      <w:tcPr><w:tcW w:w="3120" w:type="dxa"/></w:tcPr>
+      <w:p><w:r><w:t xml:space="preserve">Top right</w:t></w:r></w:p>
+    </w:tc>
+  </w:tr>
+  <w:tr>
+    <w:tc>
+      <w:tcPr><w:tcW w:w="3120" w:type="dxa"/><w:vMerge/></w:tcPr>
+      <w:p/>
+    </w:tc>
+    <w:tc>
+      <w:tcPr><w:tcW w:w="3120" w:type="dxa"/></w:tcPr>
+      <w:p><w:r><w:t xml:space="preserve">Bottom middle</w:t></w:r></w:p>
+    </w:tc>
+    <w:tc>
+      <w:tcPr><w:tcW w:w="3120" w:type="dxa"/></w:tcPr>
+      <w:p><w:r><w:t xml:space="preserve">Bottom right</w:t></w:r></w:p>
+    </w:tc>
+  </w:tr>
+</w:tbl>`
+
+  const body = `
+    <w:p><w:r><w:t xml:space="preserve">This is a plain paragraph.</w:t></w:r></w:p>
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t xml:space="preserve">Table Fixture Heading</w:t></w:r></w:p>
+    ${tableXml}
+    <w:p><w:r><w:t xml:space="preserve">Paragraph after the table.</w:t></w:r></w:p>
+    <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>`
+
+  addFile(
+    zip,
+    'word/document.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>${body}
+  </w:body>
+</w:document>`,
+  )
+
+  return toBytes(zip)
+}
 
 /**
  * Deterministic DOCX exercising the remaining inline marks:

@@ -30,12 +30,16 @@ import {
   type WorkbookSnapshot,
 } from '@genoffice/xlsx-gateway'
 import {
+  generateTableModelXml,
   parseDocx,
   saveDocx,
   type Block,
+  type CellBorder,
+  type CellBorders,
   type ParsedDocFull,
   type Run,
   type SaveBlock,
+  type TableModel,
 } from '@genoffice/docx-engine'
 
 // ── Wire types (JSON-serializable; the browser sends/receives these shapes) ──
@@ -116,6 +120,97 @@ export interface SerializedRun {
   readonly link?: { readonly href: string; readonly tooltip?: string }
 }
 
+// ── Serialized table (wire mirror of the canonical docx-engine TableModel) ──
+
+/**
+ * One cell border edge (wire mirror of docx-engine's CellBorder).
+ * style is a w:val keyword (single/dashed/double/none/…).
+ */
+export interface SerializedCellBorder {
+  readonly style: string
+  readonly szEighths?: number
+  readonly color?: string
+}
+
+export interface SerializedCellBorders {
+  readonly top?: SerializedCellBorder
+  readonly left?: SerializedCellBorder
+  readonly bottom?: SerializedCellBorder
+  readonly right?: SerializedCellBorder
+}
+
+export interface SerializedTableBorders extends SerializedCellBorders {
+  readonly insideH?: SerializedCellBorder
+  readonly insideV?: SerializedCellBorder
+}
+
+export interface SerializedCellMargins {
+  readonly top?: number
+  readonly left?: number
+  readonly bottom?: number
+  readonly right?: number
+}
+
+/** One paragraph inside a table cell (wire mirror of TableParagraph). */
+export interface SerializedTableParagraph {
+  readonly runs: readonly SerializedRun[]
+  readonly align?: 'left' | 'center' | 'right' | 'justify' | 'distribute'
+  readonly styleId?: string
+}
+
+/**
+ * One table cell (wire mirror of docx-engine's TableCell, editable subset).
+ *
+ * `rawTcPr` carries the original <w:tcPr> bytes so unmodeled properties
+ * (per-cell tcMar, textDirection, noWrap…) survive regeneration of an edited
+ * table — the generator surgically patches the modeled children into it.
+ */
+export interface SerializedTableCell {
+  readonly paras: readonly string[]
+  readonly richParas?: readonly SerializedTableParagraph[]
+  readonly colSpan?: number
+  readonly vMerge?: 'restart' | 'continue'
+  readonly fill?: string
+  readonly color?: string
+  readonly bold?: boolean
+  readonly align?: 'left' | 'center' | 'right' | 'justify' | 'distribute'
+  readonly vAlign?: 'top' | 'center' | 'bottom'
+  readonly borders?: SerializedCellBorders
+  readonly rawTcPr?: string
+}
+
+/**
+ * Editable table interchange (wire mirror of docx-engine's TableModel).
+ *
+ * NOT a lossy text-only DTO: structure (colSpan/vMerge), cell formatting
+ * (fill/vAlign/borders), per-row raw <w:trPr> bytes (row heights, tblHeader,
+ * cantSplit, row revisions) and per-cell raw <w:tcPr> bytes all round-trip,
+ * and an edited table regenerates through the canonical engine generator
+ * (generateTableModelXml) — never a web-side XML serializer.
+ *
+ * `headerRows` is the wire representation of trPr <w:tblHeader/> (the
+ * canonical model keeps it inside rawTrPrs); the server patches it into the
+ * row properties on save.
+ */
+export interface SerializedTable {
+  readonly rows: readonly (readonly SerializedTableCell[])[]
+  readonly colWidthsPct?: readonly number[]
+  readonly colWidthsTwips?: readonly number[]
+  readonly widthPct?: number
+  readonly autoLayout?: boolean
+  readonly cellMarTwips?: SerializedCellMargins
+  readonly borders?: SerializedTableBorders
+  readonly align?: 'left' | 'center' | 'right'
+  readonly indentTwips?: number
+  readonly rowHeightsTwips?: readonly (number | null)[]
+  readonly rowHeightRules?: readonly ('atLeast' | 'exact' | null)[]
+  readonly rawTrPrs?: readonly (string | null)[]
+  readonly tblStyleId?: string
+  readonly bidiVisual?: boolean
+  /** per-row trPr <w:tblHeader/> flag (row is a header row) */
+  readonly headerRows?: readonly boolean[]
+}
+
 /**
  * Simplified Tiptap-compatible block representation.
  *
@@ -143,6 +238,13 @@ export interface SerializedBlock {
   readonly type: 'paragraph' | 'heading' | 'listItem' | 'table' | 'image' | 'passthrough' | 'hidden'
   readonly text: string
   readonly runs?: readonly SerializedRun[]
+  /**
+   * Editable table payload (type === 'table'). Present when the canonical
+   * TableModel was extracted and the table is browser-editable; absent for
+   * tables the editor cannot safely regenerate (nested tables, anchored
+   * shapes in cells) — those stay byte-preserved read-only blocks.
+   */
+  readonly table?: SerializedTable
   readonly level?: number
   readonly listKind?: 'bullet' | 'ordered'
   /** true when the browser editor modified the block; the server regenerates it. */
@@ -405,6 +507,418 @@ function expectSerializedRun(value: unknown, index: number): SerializedRun {
   }
 }
 
+// ── Table payload validation (mirrors SerializedRun/SerializedBlock rigor) ──
+
+/** Size guards: a malformed table payload must never become a memory bomb. */
+const MAX_TABLE_ROWS = 1000
+const MAX_TABLE_COLS = 63
+
+function expectOptionalNumber(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined
+  return expectNumber(value, field)
+}
+
+function expectOptionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'boolean') {
+    throw new OfficeValidationError('validation', `${field} must be a boolean`)
+  }
+  return value
+}
+
+function expectOptionalString(value: unknown, field: string, maxLength = 200): string | undefined {
+  if (value === undefined || value === null) return undefined
+  const s = expectString(value, field, false)
+  if (s.length > maxLength) {
+    throw new OfficeValidationError('validation', `${field} exceeds ${maxLength} characters`)
+  }
+  return s
+}
+
+function expectHexColor(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  const s = expectString(value, field)
+  if (!/^[0-9A-Za-z]{0,8}$/.test(s)) {
+    throw new OfficeValidationError('validation', `${field} must be a hex color without '#'`)
+  }
+  return s
+}
+
+function expectCellBorder(value: unknown, field: string): SerializedCellBorder {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const style = expectString(value.style, `${field}.style`)
+  if (style.length > 40) {
+    throw new OfficeValidationError('validation', `${field}.style is too long`)
+  }
+  const szEighths = expectOptionalNumber(value.szEighths, `${field}.szEighths`)
+  if (szEighths !== undefined && (szEighths < 0 || szEighths > 96)) {
+    throw new OfficeValidationError('validation', `${field}.szEighths must be within 0..96`)
+  }
+  const color = expectHexColor(value.color, `${field}.color`)
+  return {
+    style,
+    ...(szEighths !== undefined ? { szEighths } : {}),
+    ...(color !== undefined ? { color } : {}),
+  }
+}
+
+function expectCellBorders(value: unknown, field: string): SerializedCellBorders {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const out: { -readonly [K in keyof SerializedCellBorders]: SerializedCellBorders[K] } = {}
+  for (const edge of ['top', 'left', 'bottom', 'right'] as const) {
+    if (value[edge] !== undefined && value[edge] !== null) {
+      out[edge] = expectCellBorder(value[edge], `${field}.${edge}`)
+    }
+  }
+  return out
+}
+
+function expectTableBorders(value: unknown, field: string): SerializedTableBorders {
+  const base = expectCellBorders(value, field)
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const out: { -readonly [K in keyof SerializedTableBorders]: SerializedTableBorders[K] } = {
+    ...base,
+  }
+  for (const edge of ['insideH', 'insideV'] as const) {
+    if (value[edge] !== undefined && value[edge] !== null) {
+      out[edge] = expectCellBorder(value[edge], `${field}.${edge}`)
+    }
+  }
+  return out
+}
+
+function expectCellMargins(value: unknown, field: string): SerializedCellMargins {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const out: { -readonly [K in keyof SerializedCellMargins]: SerializedCellMargins[K] } = {}
+  for (const side of ['top', 'left', 'bottom', 'right'] as const) {
+    const v = expectOptionalNumber(value[side], `${field}.${side}`)
+    if (v !== undefined) {
+      if (v < 0 || v > 31680) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.${side} must be within 0..31680 twips`,
+        )
+      }
+      out[side] = v
+    }
+  }
+  return out
+}
+
+function expectTableParagraph(value: unknown, field: string): SerializedTableParagraph {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const runs = expectArray(value.runs, `${field}.runs`, (r, i) => expectSerializedRun(r, i))
+  if (runs.length > 200) {
+    throw new OfficeValidationError('validation', `${field}.runs exceeds 200 entries`)
+  }
+  const alignRaw = expectOptionalString(value.align, `${field}.align`, 20)
+  if (
+    alignRaw !== undefined &&
+    !['left', 'center', 'right', 'justify', 'distribute'].includes(alignRaw)
+  ) {
+    throw new OfficeValidationError('validation', `${field}.align must be a paragraph alignment`)
+  }
+  const styleId = expectOptionalString(value.styleId, `${field}.styleId`, 64)
+  return {
+    runs,
+    ...(alignRaw !== undefined ? { align: alignRaw as SerializedTableParagraph['align'] } : {}),
+    ...(styleId !== undefined ? { styleId } : {}),
+  }
+}
+
+function expectTableCell(value: unknown, field: string): SerializedTableCell {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const paras = expectArray(value.paras, `${field}.paras`, (p) => {
+    if (typeof p !== 'string') {
+      throw new OfficeValidationError('validation', `${field}.paras entries must be strings`)
+    }
+    return p
+  })
+  if (paras.length > 200) {
+    throw new OfficeValidationError('validation', `${field}.paras exceeds 200 entries`)
+  }
+  const richParas =
+    value.richParas !== undefined && value.richParas !== null
+      ? expectArray(value.richParas, `${field}.richParas`, (p, i) =>
+          expectTableParagraph(p, `${field}.richParas[${i}]`),
+        )
+      : undefined
+  const colSpan = expectOptionalNumber(value.colSpan, `${field}.colSpan`)
+  if (
+    colSpan !== undefined &&
+    (!Number.isInteger(colSpan) || colSpan < 1 || colSpan > MAX_TABLE_COLS)
+  ) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.colSpan must be an integer 1..${MAX_TABLE_COLS}`,
+    )
+  }
+  const vMergeRaw = expectOptionalString(value.vMerge, `${field}.vMerge`, 10)
+  if (vMergeRaw !== undefined && vMergeRaw !== 'restart' && vMergeRaw !== 'continue') {
+    throw new OfficeValidationError('validation', `${field}.vMerge must be 'restart' or 'continue'`)
+  }
+  const fill = expectHexColor(value.fill, `${field}.fill`)
+  const color = expectHexColor(value.color, `${field}.color`)
+  const bold = expectOptionalBoolean(value.bold, `${field}.bold`)
+  const alignRaw = expectOptionalString(value.align, `${field}.align`, 20)
+  if (
+    alignRaw !== undefined &&
+    !['left', 'center', 'right', 'justify', 'distribute'].includes(alignRaw)
+  ) {
+    throw new OfficeValidationError('validation', `${field}.align must be a paragraph alignment`)
+  }
+  const vAlignRaw = expectOptionalString(value.vAlign, `${field}.vAlign`, 10)
+  if (vAlignRaw !== undefined && !['top', 'center', 'bottom'].includes(vAlignRaw)) {
+    throw new OfficeValidationError('validation', `${field}.vAlign must be top/center/bottom`)
+  }
+  const borders =
+    value.borders !== undefined && value.borders !== null
+      ? expectCellBorders(value.borders, `${field}.borders`)
+      : undefined
+  // rawTcPr: original <w:tcPr> bytes echoed back for byte preservation.
+  // Must look like a tcPr fragment and be bounded.
+  const rawTcPrRaw = value.rawTcPr
+  let rawTcPr: string | undefined
+  if (rawTcPrRaw !== undefined && rawTcPrRaw !== null) {
+    rawTcPr = expectString(rawTcPrRaw, `${field}.rawTcPr`, false)
+    if (rawTcPr.length > 4096 || !/^<w:tcPr[\s>]/.test(rawTcPr) || !rawTcPr.endsWith('</w:tcPr>')) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.rawTcPr must be a <w:tcPr>…</w:tcPr> fragment (max 4096 chars)`,
+      )
+    }
+    // Every element must be w:-namespaced; no comments or processing
+    // instructions. The fragment is spliced verbatim into generated OOXML,
+    // so foreign content must never ride through it.
+    if (/<[!?]/.test(rawTcPr)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.rawTcPr may not contain comments or processing instructions`,
+      )
+    }
+    const tagNames = rawTcPr.match(/<\/?([A-Za-z:][^\s>/]*)/g) ?? []
+    for (const tag of tagNames) {
+      const name = tag.replace(/^<\/?/, '')
+      if (!name.startsWith('w:')) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.rawTcPr may only contain w:-namespaced elements (found <${name}>)`,
+        )
+      }
+    }
+  }
+  return {
+    paras,
+    ...(richParas !== undefined ? { richParas } : {}),
+    ...(colSpan !== undefined ? { colSpan } : {}),
+    ...(vMergeRaw !== undefined ? { vMerge: vMergeRaw as 'restart' | 'continue' } : {}),
+    ...(fill !== undefined ? { fill } : {}),
+    ...(color !== undefined ? { color } : {}),
+    ...(bold !== undefined ? { bold } : {}),
+    ...(alignRaw !== undefined ? { align: alignRaw as SerializedTableCell['align'] } : {}),
+    ...(vAlignRaw !== undefined ? { vAlign: vAlignRaw as 'top' | 'center' | 'bottom' } : {}),
+    ...(borders !== undefined ? { borders } : {}),
+    ...(rawTcPr !== undefined ? { rawTcPr } : {}),
+  }
+}
+
+/**
+ * Validate a `SerializedTable` from the wire. Malformed tables throw
+ * OfficeValidationError → the existing 400 validation error shape.
+ */
+function expectSerializedTable(value: unknown, field: string): SerializedTable {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const rows = expectArray(value.rows, `${field}.rows`, (row, ri) => {
+    if (!Array.isArray(row)) {
+      throw new OfficeValidationError('validation', `${field}.rows[${ri}] must be an array`)
+    }
+    if (row.length === 0 || row.length > MAX_TABLE_COLS) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.rows[${ri}] must have 1..${MAX_TABLE_COLS} cells`,
+      )
+    }
+    return row.map((cell, ci) => expectTableCell(cell, `${field}.rows[${ri}][${ci}]`))
+  })
+  if (rows.length === 0 || rows.length > MAX_TABLE_ROWS) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.rows must have 1..${MAX_TABLE_ROWS} rows`,
+    )
+  }
+  // Total grid width per row (colSpan sum) must stay bounded and consistent-ish;
+  // vMerge continuations may legitimately shorten a row, so we only cap the max.
+  for (let ri = 0; ri < rows.length; ri++) {
+    const width = rows[ri].reduce((sum, cell) => sum + (cell.colSpan ?? 1), 0)
+    if (width > MAX_TABLE_COLS) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.rows[${ri}] spans ${width} grid columns (max ${MAX_TABLE_COLS})`,
+      )
+    }
+  }
+  const numArray = (v: unknown, f: string): readonly number[] | undefined =>
+    v === undefined || v === null
+      ? undefined
+      : expectArray(v, f, (entry) => {
+          if (typeof entry !== 'number' || !Number.isFinite(entry)) {
+            throw new OfficeValidationError('validation', `${f} entries must be numbers`)
+          }
+          return entry
+        })
+  const colWidthsPct = numArray(value.colWidthsPct, `${field}.colWidthsPct`)
+  if (colWidthsPct !== undefined && colWidthsPct.length > MAX_TABLE_COLS) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.colWidthsPct exceeds ${MAX_TABLE_COLS} entries`,
+    )
+  }
+  const colWidthsTwips = numArray(value.colWidthsTwips, `${field}.colWidthsTwips`)
+  if (colWidthsTwips !== undefined && colWidthsTwips.length > MAX_TABLE_COLS) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.colWidthsTwips exceeds ${MAX_TABLE_COLS} entries`,
+    )
+  }
+  const widthPct = expectOptionalNumber(value.widthPct, `${field}.widthPct`)
+  if (widthPct !== undefined && (widthPct <= 0 || widthPct > 100)) {
+    throw new OfficeValidationError('validation', `${field}.widthPct must be within (0..100]`)
+  }
+  const autoLayout = expectOptionalBoolean(value.autoLayout, `${field}.autoLayout`)
+  const cellMarTwips =
+    value.cellMarTwips !== undefined && value.cellMarTwips !== null
+      ? expectCellMargins(value.cellMarTwips, `${field}.cellMarTwips`)
+      : undefined
+  const borders =
+    value.borders !== undefined && value.borders !== null
+      ? expectTableBorders(value.borders, `${field}.borders`)
+      : undefined
+  const alignRaw = expectOptionalString(value.align, `${field}.align`, 10)
+  if (alignRaw !== undefined && !['left', 'center', 'right'].includes(alignRaw)) {
+    throw new OfficeValidationError('validation', `${field}.align must be left/center/right`)
+  }
+  const indentTwips = expectOptionalNumber(value.indentTwips, `${field}.indentTwips`)
+  if (indentTwips !== undefined && Math.abs(indentTwips) > 31680) {
+    throw new OfficeValidationError('validation', `${field}.indentTwips is out of range`)
+  }
+  const rowHeightsTwips =
+    value.rowHeightsTwips !== undefined && value.rowHeightsTwips !== null
+      ? expectArray(value.rowHeightsTwips, `${field}.rowHeightsTwips`, (entry) => {
+          if (entry === null) return null
+          if (typeof entry !== 'number' || !Number.isFinite(entry)) {
+            throw new OfficeValidationError(
+              'validation',
+              `${field}.rowHeightsTwips entries must be numbers or null`,
+            )
+          }
+          if (entry < 0 || entry > 31680) {
+            throw new OfficeValidationError(
+              'validation',
+              `${field}.rowHeightsTwips entries must be within 0..31680`,
+            )
+          }
+          return entry
+        })
+      : undefined
+  const rowHeightRules =
+    value.rowHeightRules !== undefined && value.rowHeightRules !== null
+      ? expectArray(
+          value.rowHeightRules,
+          `${field}.rowHeightRules`,
+          (entry): 'atLeast' | 'exact' | null => {
+            if (entry === null) return null
+            if (entry !== 'atLeast' && entry !== 'exact') {
+              throw new OfficeValidationError(
+                'validation',
+                `${field}.rowHeightRules entries must be 'atLeast'|'exact'|null`,
+              )
+            }
+            return entry
+          },
+        )
+      : undefined
+  const rawTrPrs =
+    value.rawTrPrs !== undefined && value.rawTrPrs !== null
+      ? expectArray(value.rawTrPrs, `${field}.rawTrPrs`, (entry) => {
+          if (entry === null) return null
+          if (typeof entry !== 'string') {
+            throw new OfficeValidationError(
+              'validation',
+              `${field}.rawTrPrs entries must be strings or null`,
+            )
+          }
+          if (entry.length > 4096 || !/^<w:trPr[\s>]/.test(entry) || !entry.endsWith('</w:trPr>')) {
+            throw new OfficeValidationError(
+              'validation',
+              `${field}.rawTrPrs entries must be <w:trPr>…</w:trPr> fragments (max 4096 chars)`,
+            )
+          }
+          if (/<[!?]/.test(entry)) {
+            throw new OfficeValidationError(
+              'validation',
+              `${field}.rawTrPrs entries may not contain comments or processing instructions`,
+            )
+          }
+          const trTagNames = entry.match(/<\/?([A-Za-z:][^\s>/]*)/g) ?? []
+          for (const tag of trTagNames) {
+            const name = tag.replace(/^<\/?/, '')
+            if (!name.startsWith('w:')) {
+              throw new OfficeValidationError(
+                'validation',
+                `${field}.rawTrPrs entries may only contain w:-namespaced elements (found <${name}>)`,
+              )
+            }
+          }
+          return entry
+        })
+      : undefined
+  const tblStyleId = expectOptionalString(value.tblStyleId, `${field}.tblStyleId`, 64)
+  const bidiVisual = expectOptionalBoolean(value.bidiVisual, `${field}.bidiVisual`)
+  const headerRows =
+    value.headerRows !== undefined && value.headerRows !== null
+      ? expectArray(value.headerRows, `${field}.headerRows`, (entry) => {
+          if (typeof entry !== 'boolean') {
+            throw new OfficeValidationError(
+              'validation',
+              `${field}.headerRows entries must be booleans`,
+            )
+          }
+          return entry
+        })
+      : undefined
+  return {
+    rows,
+    ...(colWidthsPct !== undefined ? { colWidthsPct: [...colWidthsPct] } : {}),
+    ...(colWidthsTwips !== undefined ? { colWidthsTwips: [...colWidthsTwips] } : {}),
+    ...(widthPct !== undefined ? { widthPct } : {}),
+    ...(autoLayout !== undefined ? { autoLayout } : {}),
+    ...(cellMarTwips !== undefined ? { cellMarTwips } : {}),
+    ...(borders !== undefined ? { borders } : {}),
+    ...(alignRaw !== undefined ? { align: alignRaw as 'left' | 'center' | 'right' } : {}),
+    ...(indentTwips !== undefined ? { indentTwips } : {}),
+    ...(rowHeightsTwips !== undefined ? { rowHeightsTwips } : {}),
+    ...(rowHeightRules !== undefined ? { rowHeightRules } : {}),
+    ...(rawTrPrs !== undefined ? { rawTrPrs } : {}),
+    ...(tblStyleId !== undefined ? { tblStyleId } : {}),
+    ...(bidiVisual !== undefined ? { bidiVisual } : {}),
+    ...(headerRows !== undefined ? { headerRows } : {}),
+  }
+}
+
 /**
  * Validate a `SerializedBlock` from the wire. The browser sends these for
  * the DOCX save route.
@@ -441,11 +955,30 @@ function expectSerializedBlock(value: unknown, index: number): SerializedBlock {
     value.runs !== undefined
       ? expectArray(value.runs, `blocks[${index}].runs`, expectSerializedRun)
       : undefined
+  // Editable table payload. Only valid on table blocks; a non-table block
+  // carrying a table payload (or vice versa) is malformed.
+  let table: SerializedTable | undefined
+  if (value.table !== undefined && value.table !== null) {
+    if (type !== 'table') {
+      throw new OfficeValidationError(
+        'validation',
+        `blocks[${index}].table is only allowed on type 'table' blocks`,
+      )
+    }
+    table = expectSerializedTable(value.table, `blocks[${index}].table`)
+  }
+  if (type === 'table' && value.edited === true && table === undefined) {
+    throw new OfficeValidationError(
+      'validation',
+      `blocks[${index}] is an edited table but carries no table payload`,
+    )
+  }
   const block: SerializedBlock = {
     docxIndex,
     type: type as SerializedBlock['type'],
     text,
     ...(runs !== undefined ? { runs } : {}),
+    ...(table !== undefined ? { table } : {}),
     ...(value.level !== undefined
       ? { level: expectNumber(value.level, `blocks[${index}].level`) }
       : {}),
@@ -697,11 +1230,220 @@ function serializeRun(run: Run): SerializedRun {
   return out
 }
 
+// ── Table model ↔ wire conversion (canonical TableModel is the source of truth) ──
+
+/** docx-engine CellBorder → wire */
+function serializeCellBorder(b: CellBorder): SerializedCellBorder {
+  return {
+    style: b.style,
+    ...(b.szEighths !== undefined ? { szEighths: b.szEighths } : {}),
+    ...(b.color !== undefined ? { color: b.color } : {}),
+  }
+}
+
+function serializeCellBorders(b: CellBorders): SerializedCellBorders {
+  const out: { -readonly [K in keyof SerializedCellBorders]: SerializedCellBorders[K] } = {}
+  if (b.top) out.top = serializeCellBorder(b.top)
+  if (b.left) out.left = serializeCellBorder(b.left)
+  if (b.bottom) out.bottom = serializeCellBorder(b.bottom)
+  if (b.right) out.right = serializeCellBorder(b.right)
+  return out
+}
+
+/**
+ * Canonical TableModel → wire SerializedTable.
+ *
+ * Tables the browser cannot safely regenerate (nested tables, anchored
+ * shapes inside cells) return undefined — the block stays byte-preserved
+ * read-only instead of getting a lossy editable payload.
+ */
+function serializeTableModel(model: TableModel): SerializedTable | undefined {
+  // Nested tables / anchored shapes are display-only model extensions whose
+  // content lives in cell paragraphs; regenerating from an editable payload
+  // would silently drop them. Keep such tables on the passthrough path.
+  for (const row of model.rows) {
+    for (const cell of row) {
+      if ((cell.nestedTables?.length ?? 0) > 0 || (cell.anchoredBoxes?.length ?? 0) > 0) {
+        return undefined
+      }
+    }
+  }
+  const rows = model.rows.map((row) =>
+    row.map((cell): SerializedTableCell => {
+      const richParas = cell.richParas?.map((p): SerializedTableParagraph => ({
+        runs: p.runs.map(serializeRun),
+        ...(p.align ? { align: p.align } : {}),
+        ...(p.styleId ? { styleId: p.styleId } : {}),
+      }))
+      const borders = cell.borders ? serializeCellBorders(cell.borders) : undefined
+      return {
+        paras: cell.paras,
+        ...(richParas ? { richParas } : {}),
+        ...(cell.colSpan && cell.colSpan > 1 ? { colSpan: cell.colSpan } : {}),
+        ...(cell.vMerge ? { vMerge: cell.vMerge } : {}),
+        ...(cell.fill ? { fill: cell.fill } : {}),
+        ...(cell.color ? { color: cell.color } : {}),
+        ...(cell.bold ? { bold: cell.bold } : {}),
+        ...(cell.align ? { align: cell.align } : {}),
+        ...(cell.vAlign && cell.vAlign !== 'top' ? { vAlign: cell.vAlign } : {}),
+        ...(borders ? { borders } : {}),
+        ...(cell.rawTcPr ? { rawTcPr: cell.rawTcPr } : {}),
+      }
+    }),
+  )
+  const headerRows = model.rawTrPrs?.map((trPr) => !!trPr && /<w:tblHeader[\s/>]/.test(trPr))
+  const borders = model.borders
+    ? (() => {
+        const out = serializeCellBorders(model.borders)
+        return {
+          ...out,
+          ...(model.borders.insideH ? { insideH: serializeCellBorder(model.borders.insideH) } : {}),
+          ...(model.borders.insideV ? { insideV: serializeCellBorder(model.borders.insideV) } : {}),
+        }
+      })()
+    : undefined
+  return {
+    rows,
+    ...(model.colWidthsPct ? { colWidthsPct: model.colWidthsPct } : {}),
+    ...(model.colWidthsTwips ? { colWidthsTwips: model.colWidthsTwips } : {}),
+    ...(model.widthPct !== undefined ? { widthPct: model.widthPct } : {}),
+    ...(model.autoLayout ? { autoLayout: model.autoLayout } : {}),
+    ...(model.cellMarTwips ? { cellMarTwips: model.cellMarTwips } : {}),
+    ...(borders ? { borders } : {}),
+    ...(model.align ? { align: model.align } : {}),
+    ...(model.indentTwips !== undefined ? { indentTwips: model.indentTwips } : {}),
+    ...(model.rowHeightsTwips ? { rowHeightsTwips: model.rowHeightsTwips } : {}),
+    ...(model.rowHeightRules ? { rowHeightRules: model.rowHeightRules } : {}),
+    ...(model.rawTrPrs ? { rawTrPrs: model.rawTrPrs } : {}),
+    ...(model.tblStyleId !== undefined ? { tblStyleId: model.tblStyleId } : {}),
+    ...(model.bidiVisual ? { bidiVisual: model.bidiVisual } : {}),
+    ...(headerRows?.some(Boolean) ? { headerRows } : {}),
+  }
+}
+
+/** wire border → docx-engine CellBorder */
+function toCellBorder(b: SerializedCellBorder): CellBorder {
+  return {
+    style: b.style,
+    ...(b.szEighths !== undefined ? { szEighths: b.szEighths } : {}),
+    ...(b.color !== undefined ? { color: b.color } : {}),
+  }
+}
+
+/**
+ * Patch the wire's headerRows flag into a row's raw <w:trPr> bytes:
+ * add <w:tblHeader/> when the flag is set, strip it when clear.
+ * (The canonical model keeps tblHeader inside rawTrPrs; the wire exposes it
+ * as a boolean so the browser can toggle header rows without XML surgery.)
+ */
+function applyHeaderRowToTrPr(
+  trPr: string | null | undefined,
+  header: boolean | undefined,
+): string | null | undefined {
+  if (header === undefined) return trPr ?? undefined
+  const has = !!trPr && /<w:tblHeader[\s/>]/.test(trPr)
+  if (header === has) return trPr ?? undefined
+  if (header) {
+    const tag = '<w:tblHeader/>'
+    if (!trPr) return `<w:trPr>${tag}</w:trPr>`
+    // tblHeader is schema-valid anywhere inside trPr in practice; Word writes it early.
+    return trPr.replace('</w:trPr>', `${tag}</w:trPr>`)
+  }
+  if (!trPr) return undefined
+  const stripped = trPr.replace(/<w:tblHeader[^>]*\/>/, '')
+  return /^<w:trPr(?:\s[^>]*)?>\s*<\/w:trPr>$/.test(stripped) ? undefined : stripped
+}
+
+/**
+ * wire SerializedTable → canonical TableModel for the engine generator.
+ * All XML generation stays inside the engine (generateTableModelXml).
+ */
+function toTableModel(t: SerializedTable): TableModel {
+  const rows = t.rows.map((row) =>
+    row.map((cell) => ({
+      paras: [...cell.paras],
+      ...(cell.richParas
+        ? {
+            richParas: cell.richParas.map((p) => ({
+              runs: p.runs.map((r): Run => ({
+                text: r.text,
+                ...(r.bold ? { bold: true } : {}),
+                ...(r.italic ? { italic: true } : {}),
+                ...(r.underline ? { underline: true } : {}),
+                ...(r.strike ? { strike: true } : {}),
+                ...(r.link
+                  ? {
+                      link: {
+                        href: r.link.href,
+                        ...(r.link.tooltip ? { tooltip: r.link.tooltip } : {}),
+                      },
+                    }
+                  : {}),
+              })),
+              ...(p.align ? { align: p.align } : {}),
+              ...(p.styleId ? { styleId: p.styleId } : {}),
+            })),
+          }
+        : {}),
+      ...(cell.colSpan && cell.colSpan > 1 ? { colSpan: cell.colSpan } : {}),
+      ...(cell.vMerge ? { vMerge: cell.vMerge } : {}),
+      ...(cell.fill ? { fill: cell.fill } : {}),
+      ...(cell.color ? { color: cell.color } : {}),
+      ...(cell.bold ? { bold: cell.bold } : {}),
+      ...(cell.align ? { align: cell.align } : {}),
+      ...(cell.vAlign ? { vAlign: cell.vAlign } : {}),
+      ...(cell.borders
+        ? {
+            borders: {
+              ...(cell.borders.top ? { top: toCellBorder(cell.borders.top) } : {}),
+              ...(cell.borders.left ? { left: toCellBorder(cell.borders.left) } : {}),
+              ...(cell.borders.bottom ? { bottom: toCellBorder(cell.borders.bottom) } : {}),
+              ...(cell.borders.right ? { right: toCellBorder(cell.borders.right) } : {}),
+            },
+          }
+        : {}),
+      ...(cell.rawTcPr ? { rawTcPr: cell.rawTcPr } : {}),
+    })),
+  )
+  const rawTrPrs =
+    t.rawTrPrs || t.headerRows
+      ? t.rows.map((_, ri) => {
+          const patched = applyHeaderRowToTrPr(t.rawTrPrs?.[ri], t.headerRows?.[ri])
+          return patched ?? null
+        })
+      : undefined
+  const model: TableModel = { rows }
+  if (t.colWidthsPct) model.colWidthsPct = [...t.colWidthsPct]
+  if (t.colWidthsTwips) model.colWidthsTwips = [...t.colWidthsTwips]
+  if (t.widthPct !== undefined) model.widthPct = t.widthPct
+  if (t.autoLayout) model.autoLayout = t.autoLayout
+  if (t.cellMarTwips) model.cellMarTwips = { ...t.cellMarTwips }
+  if (t.borders) {
+    model.borders = {
+      ...(t.borders.top ? { top: toCellBorder(t.borders.top) } : {}),
+      ...(t.borders.left ? { left: toCellBorder(t.borders.left) } : {}),
+      ...(t.borders.bottom ? { bottom: toCellBorder(t.borders.bottom) } : {}),
+      ...(t.borders.right ? { right: toCellBorder(t.borders.right) } : {}),
+      ...(t.borders.insideH ? { insideH: toCellBorder(t.borders.insideH) } : {}),
+      ...(t.borders.insideV ? { insideV: toCellBorder(t.borders.insideV) } : {}),
+    }
+  }
+  if (t.align) model.align = t.align
+  if (t.indentTwips !== undefined) model.indentTwips = t.indentTwips
+  if (t.rowHeightsTwips) model.rowHeightsTwips = [...t.rowHeightsTwips]
+  if (t.rowHeightRules) model.rowHeightRules = [...t.rowHeightRules]
+  if (rawTrPrs) model.rawTrPrs = rawTrPrs
+  if (t.tblStyleId !== undefined) model.tblStyleId = t.tblStyleId
+  if (t.bidiVisual) model.bidiVisual = t.bidiVisual
+  return model
+}
+
 function serializeBlock(block: Block): SerializedBlock {
   const runs = block.runs ?? []
   const text = runs.map((r) => r.text).join('')
   // Collapse docx-engine's rich BlockType into our wire set. Passthrough
-  // covers tables/images/charts/SmartArt/OLE — the browser shows their label.
+  // covers images/charts/SmartArt/OLE and non-editable tables — the browser
+  // shows their label. Editable tables carry a typed table payload.
   const type: SerializedBlock['type'] = block.hidden
     ? 'hidden'
     : block.type === 'heading'
@@ -718,11 +1460,15 @@ function serializeBlock(block: Block): SerializedBlock {
   // Serialize runs with inline formatting marks (bold, italic, underline,
   // strike, link) so the browser editor can render faithful rich text.
   const serializedRuns = runs.length > 0 ? runs.map(serializeRun) : undefined
+  // Editable table payload from the canonical TableModel (absent for tables
+  // the browser cannot safely regenerate — those stay read-only passthrough).
+  const table = type === 'table' && block.table ? serializeTableModel(block.table) : undefined
   return {
     docxIndex: block.docxIndex,
     type,
     text,
     ...(serializedRuns ? { runs: serializedRuns } : {}),
+    ...(table ? { table } : {}),
     level: block.level,
     listKind: block.list?.kind,
     edited: false,
@@ -759,18 +1505,46 @@ async function handleOpenDocument(
  *  - A block with `edited === true` becomes
  *    `{ kind: 'generated', block: { type, runs: [{ text }] } }` — the engine
  *    emits a fresh paragraph/heading/listItem using an existing style.
+ *  - An edited table becomes `{ kind: 'xml', xml: generateTableModelXml(model, originalXml) }`
+ *    — the CANONICAL engine generator emits the OOXML (tblPr preserved from
+ *    the original bytes); no table XML is ever built in the browser.
  *  - A block without `docxIndex` (newly inserted in the browser) is also
  *    generated.
  *
  * Hidden trailing blocks (sectPr) are re-appended by the engine automatically.
  */
-function toSaveBlocks(blocks: readonly SerializedBlock[]): SaveBlock[] {
+function toSaveBlocks(blocks: readonly SerializedBlock[], parsed: ParsedDocFull): SaveBlock[] {
   const out: SaveBlock[] = []
   for (const b of blocks) {
     if (b.hidden) continue // hidden trailing blocks are re-appended by the engine
     const edited = b.edited === true || b.docxIndex === null
     if (!edited && b.docxIndex !== null) {
       out.push({ kind: 'original', docxIndex: b.docxIndex })
+      continue
+    }
+    // ── Tables: regenerate through the canonical engine generator ──────
+    if (b.type === 'table') {
+      if (!b.table) {
+        // A table block without a payload cannot be regenerated; the wire
+        // validation already rejects edited tables without payloads, so this
+        // is only reachable for non-edited tables (kept by the branch above).
+        // Byte-preserve defensively rather than lose the block.
+        if (b.docxIndex !== null) {
+          out.push({ kind: 'original', docxIndex: b.docxIndex })
+          continue
+        }
+        throw new OfficeValidationError('validation', 'new table block carries no table payload')
+      }
+      const model = toTableModel(b.table)
+      // tblPr (borders, cell margins, style, width, bidi…) is preserved by
+      // feeding the original table's bytes to the generator — same rule the
+      // desktop editor uses.
+      const original =
+        b.docxIndex !== null ? (parsed.blocks[b.docxIndex]?.originalXml ?? null) : null
+      out.push({
+        kind: 'xml',
+        xml: generateTableModelXml(model, original ?? undefined),
+      })
       continue
     }
     // Regenerate with run-level formatting (bold, italic, underline, strike, link).
@@ -838,7 +1612,7 @@ async function handleSaveDocument(
       e instanceof Error ? e.message : 'Failed to parse document',
     )
   }
-  const saveBlocks = toSaveBlocks(req.blocks)
+  const saveBlocks = toSaveBlocks(req.blocks, parsed)
   let saved: Uint8Array
   try {
     saved = await saveDocx(parsed, saveBlocks)
