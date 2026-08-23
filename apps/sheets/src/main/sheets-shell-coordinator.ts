@@ -66,13 +66,6 @@ export interface SheetsShellCoordinatorDeps {
   readonly onCommitGate?: (sessionId: string) => Promise<void>
   readonly onMarkerWritten?: (markerPath: string, sessionId: string) => Promise<void>
   readonly pdfRenderer?: SpreadsheetPdfRenderer
-  /**
-   * INCREMENT 12: injectable sidecar client for archive entry reads
-   * (pivot definitions). The shared XlsxSidecarClient is passed in
-   * from sheets-runtime.ts — the coordinator uses it for read_entries
-   * commands on the session's snapshot.
-   */
-  readonly sidecarClient?: { request: (cmd: Readonly<Record<string, unknown>>, timeoutMs?: number) => Promise<unknown> }
 }
 
 // ── Session commit lifecycle ──
@@ -604,74 +597,34 @@ export class SheetsShellCoordinator {
     await this.withSessionLock(wcId, sessionId, async () => { await this.closeSession(wcId, sessionId) })
   }
 
-  // ── Pivot definition read (INCREMENT 12) ──
+  // ── Pivot definition read (INCREMENT 12, corrected 15) ──
 
   /**
-   * Read a pivot table definition from the session's snapshot.
+   * Read a pivot table definition from the session's workbook.
    *
-   * Uses the shared sidecar client (via the engine's injectable client)
-   * to extract XML entries from the snapshot, then parses the pivot
-   * definition via the canonical @genoffice/xlsx-gateway parser.
+   * Delegates to `service.readPivotDefinition()` which reads XML entries
+   * via `engine.readArchiveEntry()` and parses via the canonical
+   * @genoffice/xlsx-gateway `parsePivotDefinition()`.
    *
-   * The coordinator owns the session lookup (wcId + sessionId → snapshot path).
-   * The sidecar client is shared with the legacy path — no second sidecar spawn.
-   *
-   * INCREMENT 12: this replaces the legacy handler which used entry.client
-   * (XlsxSidecarClient) + entry.sessions (legacy SessionInfo). The migrated
-   * path uses the coordinator's session registry + the shared sidecar client.
+   * The coordinator owns only session lookup (wcId + sessionId).
+   * All archive I/O and parsing happen below the service boundary.
    */
   async readPivotDefinition(
     wcId: number,
     sessionId: string,
     pivotTablePath: string,
     cacheDefinitionPath: string,
-  ): Promise<{ pivotTableXml: string; cacheDefinitionXml: string }> {
+  ): Promise<unknown> {
     const session = this.getSession(wcId, sessionId)
-    // Read both XML entries from the snapshot via the sidecar
-    const [pivotXml, cacheXml] = await Promise.all([
-      this.readArchiveEntry(session.snapshotPath, pivotTablePath),
-      this.readArchiveEntry(session.snapshotPath, cacheDefinitionPath),
-    ])
-    return { pivotTableXml: pivotXml, cacheDefinitionXml: cacheXml }
+    return this.deps.service.readPivotDefinition(
+      session.domainSession,
+      session.engineHandle,
+      pivotTablePath,
+      cacheDefinitionPath,
+    )
   }
 
-  /**
-   * Read a single archive entry (XML text) from an XLSX file via the sidecar.
-   * Uses the sidecar's read_entries command: extracts the entry to a temp dir,
-   * reads the text, cleans up.
-   */
-  private async readArchiveEntry(sourcePath: string, entryName: string): Promise<string> {
-    const workDir = await mkdir(join(this.tempDirForArchive(), `genoffice-pivot-${randomUUID()}`), { recursive: true })
-    const dir = workDir ?? join(this.tempDirForArchive(), `genoffice-pivot-${randomUUID()}`)
-    try {
-      const sidecarClient = this.getSidecarClient()
-      if (!sidecarClient) throw new EngineError('Sidecar client not available for archive read', 'INTERNAL_ERROR')
-      const result = await sidecarClient.request({
-        command: 'read_entries',
-        path: sourcePath,
-        entries: [entryName],
-        outputDir: dir,
-      })
-      const extracted = result as { entries: Array<{ name: string; path: string }> }
-      const filePath = extracted.entries[0]?.path
-      if (!filePath) throw new EngineError(`Workbook is missing ${entryName}`, 'PROTOCOL_ERROR')
-      return await readFile(filePath, 'utf8')
-    } finally {
-      try { await rm(dir, { recursive: true, force: true }) } catch { /* best effort */ }
-    }
-  }
-
-  /** Temp dir for archive extraction (uses app temp). */
-  private tempDirForArchive(): string {
-    return app.getPath('temp')
-  }
-
-  /** Get the shared sidecar client (injected via deps). */
-  private getSidecarClient(): { request: (cmd: Readonly<Record<string, unknown>>, timeoutMs?: number) => Promise<unknown> } | null {
-    return this.deps.sidecarClient ?? null
-  }
-
-  // ── Auto-rename (INCREMENT 12) ──
+  // ── Auto-rename (INCREMENT 12, hardened 15) ──
 
   /**
    * Rename the workbook file on disk.
@@ -707,55 +660,64 @@ export class SheetsShellCoordinator {
     sessionId: string,
     baseName: string,
   ): Promise<{ renamed: boolean; name?: string }> {
-    const session = this.getSession(wcId, sessionId)
-
-    // Only rename untitled workbooks (matching legacy: untitledWorkbookPaths check)
-    if (!this.isUntitledPath(session.originalPath)) {
-      return { renamed: false }
-    }
-
-    // Sanitize the base name
-    const base = sanitizeAutoRenameBase(baseName)
-    if (!base) return { renamed: false }
-
-    // Compute target path (collision avoidance: name-2, name-3, ...)
-    const dir = dirname(session.originalPath)
-    let target = join(dir, `${base}.xlsx`)
-    for (let i = 2; existsSync(target) && i < 100; i++) {
-      target = join(dir, `${base}-${i}.xlsx`)
-    }
-    if (existsSync(target) || target === session.originalPath) {
-      return { renamed: false }
-    }
-
-    // Atomic rename (no copy fallback — matching legacy)
-    try {
-      renameSync(session.originalPath, target)
-    } catch (err) {
-      console.warn('[sheets] auto-rename failed:', err)
-      return { renamed: false }
-    }
-
-    // Update the coordinator's session (authoritative owner)
-    const state = this.tabs.get(wcId)
-    if (state) {
-      const updatedSession: ShellWorkbookSession = {
-        ...session,
-        originalPath: target,
+    return this.withSessionLock(wcId, sessionId, async () => {
+      // Re-fetch the session inside the lock — it may have been modified
+      // by a concurrent save or close.
+      let session: ShellWorkbookSession
+      try {
+        session = this.getSession(wcId, sessionId)
+      } catch {
+        return { renamed: false }
       }
-      state.sessions.set(sessionId, updatedSession)
-    }
 
-    // Remove from untitled set
-    this.untitledPaths.delete(session.originalPath)
+      // Only rename untitled workbooks (matching legacy: untitledWorkbookPaths check)
+      if (!this.isUntitledPath(session.originalPath)) {
+        return { renamed: false }
+      }
 
-    // Push event to the initiating renderer only
-    const name = target.split(/[\\/]/).pop() ?? target
-    if (!webContents.isDestroyed()) {
-      webContents.send('workbook:renamed', name)
-    }
+      // Sanitize the base name
+      const base = sanitizeAutoRenameBase(baseName)
+      if (!base) return { renamed: false }
 
-    return { renamed: true, name }
+      // Compute target path (collision avoidance: name-2, name-3, ...)
+      const dir = dirname(session.originalPath)
+      let target = join(dir, `${base}.xlsx`)
+      for (let i = 2; existsSync(target) && i < 100; i++) {
+        target = join(dir, `${base}-${i}.xlsx`)
+      }
+      if (existsSync(target) || target === session.originalPath) {
+        return { renamed: false }
+      }
+
+      // Atomic rename (no copy fallback — matching legacy)
+      try {
+        renameSync(session.originalPath, target)
+      } catch (err) {
+        console.warn('[sheets] auto-rename failed:', err)
+        return { renamed: false }
+      }
+
+      // Update the coordinator's session (authoritative owner)
+      const state = this.tabs.get(wcId)
+      if (state) {
+        const updatedSession: ShellWorkbookSession = {
+          ...session,
+          originalPath: target,
+        }
+        state.sessions.set(sessionId, updatedSession)
+      }
+
+      // Remove from untitled set
+      this.untitledPaths.delete(session.originalPath)
+
+      // Push event to the initiating renderer only
+      const name = basename(target)
+      if (!webContents.isDestroyed()) {
+        webContents.send('workbook:renamed', name)
+      }
+
+      return { renamed: true, name }
+    })
   }
 
   /** Check if a path is in the untitled workbook set (shell-owned state). */

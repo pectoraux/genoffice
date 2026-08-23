@@ -515,22 +515,20 @@ export function registerMigratedSheetsIpc(coordinator: SheetsShellCoordinator, s
     return readLocalImage(request.path)
   })
 
-  // ── workbook:read-pivot-definition (INCREMENT 12) ──
+  // ── workbook:read-pivot-definition (INCREMENT 12, corrected 15) ──
   // Thin adapter: validates input, calls coordinator.readPivotDefinition()
-  // The coordinator reads XML entries from the session snapshot via the
-  // shared sidecar client, then returns the raw XML. The handler parses
-  // the pivot definition via the canonical @genoffice/xlsx-gateway parser.
+  // The coordinator delegates to service.readPivotDefinition() which reads
+  // XML entries via engine.readArchiveEntry() and parses via the canonical
+  // @genoffice/xlsx-gateway parser. ZERO parser logic in the handler.
   ipcMain.removeHandler(IPC_CHANNELS.readPivotDefinition)
   ipcMain.handle(IPC_CHANNELS.readPivotDefinition, async (event, input: unknown) => {
     const { workbookPivotRequestSchema, workbookPivotDefinitionSchema } = await import('../shared/desktop-api')
     const wcId = wcIdFromEvent(event)
     const request = workbookPivotRequestSchema.parse(input)
-    const { pivotTableXml, cacheDefinitionXml } = await coordinator.readPivotDefinition(
+    const pivotDefinition = await coordinator.readPivotDefinition(
       wcId, request.sessionId, request.path, request.cachePath,
     )
-    // Parse via the canonical xlsx-gateway parser (runtime-independent)
-    const { parsePivotDefinition } = await import('@genoffice/xlsx-gateway/src/gateway/xlsx-pivot.js')
-    return workbookPivotDefinitionSchema.parse(parsePivotDefinition(pivotTableXml, cacheDefinitionXml))
+    return workbookPivotDefinitionSchema.parse(pivotDefinition)
   })
 
   // ── workbook:auto-rename (INCREMENT 12) ──

@@ -142,23 +142,16 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       // Open + adopt
       const { sessionId } = await openAndAdopt(bundle, 100, sidecarClient, pivotPath)
 
-      // Read pivot definition
-      const result = await bundle.coordinator.readPivotDefinition(
+      // Read pivot definition — now returns the parsed object (not raw XML)
+      const pivotDefinition = await bundle.coordinator.readPivotDefinition(
         100, sessionId,
         'xl/pivotTables/pivotTable1.xml',
         'xl/pivotCache/pivotCacheDefinition1.xml',
       )
 
-      // Verify the XML was extracted
-      expect(result.pivotTableXml).toContain('pivotTableDefinition')
-      expect(result.pivotTableXml).toContain('PivotTable1')
-      expect(result.cacheDefinitionXml).toContain('pivotCacheDefinition')
-      expect(result.cacheDefinitionXml).toContain('worksheetSource')
-      expect(result.cacheDefinitionXml).toContain('sheet="Data"')
-
-      // Parse via the canonical xlsx-gateway parser
-      const { parsePivotDefinition } = await import('@genoffice/xlsx-gateway/src/gateway/xlsx-pivot.js')
-      const parsed = parsePivotDefinition(result.pivotTableXml, result.cacheDefinitionXml)
+      // Verify the parsed pivot definition has real data
+      expect(pivotDefinition).toBeDefined()
+      const parsed = pivotDefinition as { outputRef: string; fields: unknown[] }
       expect(parsed.outputRef).toBeTruthy()
       expect(parsed.fields.length).toBe(3) // Name, Category, Value
 

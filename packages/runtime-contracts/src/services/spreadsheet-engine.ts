@@ -519,6 +519,26 @@ export interface SpreadsheetEngine {
   close(handle: EngineSessionHandle): Promise<void>
 
   /**
+   * Read a single archive entry (XML text) from the workbook's on-disk
+   * temp file. Used by pivot-definition reads: the handler needs the raw
+   * XML from specific parts (e.g. xl/pivotTables/pivotTable1.xml) that
+   * are not exposed by the structured read methods.
+   *
+   * @param handle — opaque engine session handle (determines which temp file)
+   * @param entryName — the archive entry path (e.g. 'xl/pivotTables/pivotTable1.xml')
+   * @returns the entry's text content (UTF-8)
+   *
+   * THROWS on failure:
+   *   - InvalidSessionError — handle was closed or never opened
+   *   - InvalidInputError    — entry not found in the archive
+   *   - EngineError          — engine/protocol failure
+   */
+  readArchiveEntry(
+    handle: EngineSessionHandle,
+    entryName: string,
+  ): Promise<string>
+
+  /**
    * Stop the engine entirely. Kills any background processes, releases
    * all resources. Called on app shutdown.
    */

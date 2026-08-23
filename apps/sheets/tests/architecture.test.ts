@@ -454,9 +454,12 @@ describe('@genoffice/sheets architecture boundary (Increment 3I/5/5A — AST-bas
     expect(stripped).not.toMatch(/from\s+['"]\.\/xlsx-sidecar-client['"]/)
   })
 
-  test('migrated pivot handler uses canonical xlsx-gateway parser', () => {
+  test('migrated pivot handler delegates to coordinator.readPivotDefinition', () => {
     const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
-    expect(src).toMatch(/parsePivotDefinition/)
+    expect(src).toMatch(/coordinator\.readPivotDefinition/)
+    // The parser now lives in the service, not the handler
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/parsePivotDefinition/)
   })
 
   test('migrated rename handler delegates to coordinator.renameWorkbook', () => {

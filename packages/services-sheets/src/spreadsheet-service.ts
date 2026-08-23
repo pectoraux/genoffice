@@ -235,6 +235,23 @@ export class SpreadsheetServiceImpl implements SpreadsheetService {
     return result.data
   }
 
+  async readPivotDefinition(
+    session: WorkbookSession,
+    engineHandle: EngineSessionHandle,
+    pivotTablePath: string,
+    cacheDefinitionPath: string,
+  ): Promise<unknown> {
+    // Read both XML entries from the engine's temp file
+    const [pivotTableXml, cacheDefinitionXml] = await Promise.all([
+      this.deps.engine.readArchiveEntry(engineHandle, pivotTablePath),
+      this.deps.engine.readArchiveEntry(engineHandle, cacheDefinitionPath),
+    ])
+
+    // Parse via the canonical @genoffice/xlsx-gateway parser
+    const { parsePivotDefinition } = await import('@genoffice/xlsx-gateway/src/gateway/xlsx-pivot.js')
+    return parsePivotDefinition(pivotTableXml, cacheDefinitionXml)
+  }
+
   // ── Internal: sheet-id translation (fail-closed) ───────────────────
 
   /**

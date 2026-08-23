@@ -515,6 +515,44 @@ export class ElectronXlsxSidecarEngine implements SpreadsheetEngine {
     }
   }
 
+  async readArchiveEntry(
+    handle: EngineSessionHandle,
+    entryName: string,
+  ): Promise<string> {
+    const session = this.resolveSession(handle)
+    const workDir = mkdtempSync(join(tmpdir(), 'genoffice-archive-read-'))
+    try {
+      const raw = await this.client.request(
+        {
+          command: 'read_entries',
+          path: session.tempPath,
+          entries: [entryName],
+          outputDir: workDir,
+        },
+        SidecarProtocolClient.ARCHIVE_TIMEOUT_MS,
+      )
+      // Runtime-validate the read_entries response — NO raw cast
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        throw new EngineErrorClass('Invalid read_entries response: not an object', 'PROTOCOL_ERROR')
+      }
+      const obj = raw as Record<string, unknown>
+      if (!Array.isArray(obj.entries)) {
+        throw new EngineErrorClass('Invalid read_entries response: missing entries array', 'PROTOCOL_ERROR')
+      }
+      const entries = obj.entries as Array<Record<string, unknown>>
+      if (entries.length === 0 || typeof entries[0]?.path !== 'string') {
+        throw new InvalidInputError(`Archive entry not found: ${entryName}`)
+      }
+      const filePath = entries[0].path
+      const content = readFileSync(filePath, 'utf8')
+      return content
+    } catch (error) {
+      throw this.translateError(error)
+    } finally {
+      try { rmSync(workDir, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
   async stop(): Promise<void> {
     this.invalidateAllSessions()
     if (this.ownsClient) {
@@ -601,7 +639,10 @@ export class ElectronXlsxSidecarEngine implements SpreadsheetEngine {
   private parseRange(range: string): { startRow: number; endRow: number; startColumn: number; endColumn: number } {
     const match = range.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/)
     if (!match) throw new InvalidInputError(`Invalid range: ${range}`)
-    const [, col1, row1, col2, row2] = match
+    const col1 = match[1] ?? ''
+    const row1 = match[2] ?? '0'
+    const col2 = match[3] ?? ''
+    const row2 = match[4] ?? '0'
     return {
       startColumn: this.colToIdx(col1),
       endColumn: this.colToIdx(col2),

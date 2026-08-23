@@ -399,4 +399,26 @@ export interface SpreadsheetService {
     engineHandle: EngineSessionHandle,
     request: SaveRequest,
   ): Promise<Uint8Array>
+
+  /**
+   * Read a pivot table definition from the workbook's archive.
+   *
+   * The service reads the pivotTable XML and pivotCacheDefinition XML
+   * from the engine's temp file via `engine.readArchiveEntry()`, then
+   * parses them via the canonical @genoffice/xlsx-gateway
+   * `parsePivotDefinition()` — runtime-independent, no duplication.
+   *
+   * THROWS on failure:
+   *   - InvalidSessionError — handle was closed or never opened
+   *   - InvalidInputError    — entry not found or malformed XML
+   *   - EngineError          — engine/protocol failure
+   *
+   * @returns the parsed pivot definition (typed by xlsx-gateway)
+   */
+  readPivotDefinition(
+    session: WorkbookSession,
+    engineHandle: EngineSessionHandle,
+    pivotTablePath: string,
+    cacheDefinitionPath: string,
+  ): Promise<unknown>
 }
