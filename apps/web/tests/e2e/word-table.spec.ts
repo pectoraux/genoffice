@@ -350,15 +350,67 @@ test.describe('Word editable tables (real HTTP + real engine)', () => {
 
     // ── 13. Merge cells: build a real prosemirror-tables CellSelection over
     // the two plain cells of row 1 ("Filled center" + "Top right") via the
-    // Vite-served test host module, then Merge Cells. ──────────────────────
-    const selected = await page.evaluate(async () => {
-      const hostModuleUrl = '/tests/e2e/table-actions-host.ts'
-      const host = (await import(hostModuleUrl)) as {
-        selectCellRange(r0: number, c0: number, r1: number, c1: number): boolean
+    // app's E2E hooks (window.__genofficeWordEditor + CellSelection), then
+    // Merge Cells. Works against local dev and deployed builds alike. ─────
+    const selected = await page.evaluate(() => {
+      type PmNode = {
+        type: { name: string }
+        nodeSize: number
+        childCount: number
+        child(i: number): PmNode
+      }
+      const w = window as unknown as {
+        __genofficeWordEditor?: {
+          state: {
+            doc: {
+              descendants(fn: (node: PmNode, pos: number) => boolean | void): void
+              nodeAt(pos: number): PmNode | null
+            }
+            tr: { setSelection(sel: unknown): unknown }
+          }
+          view: { dispatch(tr: unknown): void }
+        }
+        __genofficeCellSelection?: { create(doc: unknown, anchor: number, head: number): unknown }
+      }
+      const editor = w.__genofficeWordEditor
+      const CellSelection = w.__genofficeCellSelection
+      if (!editor || !CellSelection) return false
+      const { state, view } = editor
+      const { doc } = state
+      let tablePos = -1
+      doc.descendants((node, pos) => {
+        if (tablePos === -1 && node.type.name === 'table') {
+          tablePos = pos
+          return false
+        }
+        return true
+      })
+      if (tablePos === -1) return false
+      const table = doc.nodeAt(tablePos)
+      if (!table) return false
+      const cellPos = (ri: number, ci: number): number | null => {
+        let rowOffset = tablePos + 1
+        for (let r = 0; r < table.childCount; r++) {
+          const row = table.child(r)
+          if (r === ri) {
+            let cellOffset = rowOffset + 1
+            for (let c = 0; c < row.childCount; c++) {
+              if (c === ci) return cellOffset
+              cellOffset += row.child(c).nodeSize
+            }
+            return null
+          }
+          rowOffset += row.nodeSize
+        }
+        return null
       }
       // Row 0 DOM cells: [rowspanned merged cell, "Filled center", "Top right"]
       // → select DOM cell indexes 1..2 of row 0.
-      return host.selectCellRange(0, 1, 0, 2)
+      const anchor = cellPos(0, 1)
+      const head = cellPos(0, 2)
+      if (anchor === null || head === null) return false
+      view.dispatch(state.tr.setSelection(CellSelection.create(doc, anchor, head)))
+      return true
     })
     expect(selected).toBe(true)
     await page.getByRole('button', { name: 'Merge Cells', exact: true }).click()

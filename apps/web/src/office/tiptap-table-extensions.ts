@@ -13,6 +13,16 @@ import { Table } from '@tiptap/extension-table'
 import TableRow from '@tiptap/extension-table-row'
 import TableCell from '@tiptap/extension-table-cell'
 import TableHeader from '@tiptap/extension-table-header'
+import { CellSelection } from '@tiptap/pm/tables'
+
+// E2E hook: expose the prosemirror-tables CellSelection constructor so
+// Playwright can drive real cell selections on the app editor (exposed as
+// window.__genofficeWordEditor). Synthetic mouse drags do not reliably
+// produce cell selections in headless Chromium, and importing a test-host
+// module only works on the Vite dev server — this hook works identically
+// against local dev and deployed production builds.
+const e2eWindow = window as { __genofficeCellSelection?: unknown }
+e2eWindow.__genofficeCellSelection = CellSelection
 
 /** Shared docxIndex attribute definition (mirrors the paragraph extension). */
 const docxIndexAttribute = {
