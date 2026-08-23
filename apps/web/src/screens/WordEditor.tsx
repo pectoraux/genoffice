@@ -6,28 +6,21 @@ import Link from '@tiptap/extension-link'
 import { styles } from '../styles'
 import { openDocument, saveDocument, readFileBytes } from '../api/office-client'
 import type { SerializedBlock, SerializedRun, OfficeDocumentHandle } from '../api/office-client'
+import { DocxParagraph, DocxHeading, DocxListItem, PassthroughBlock } from '../office/tiptap-docx-extensions'
 
 /**
  * WordEditor — real DOCX I/O backed by the GenOffice office API.
  *
- * Phase 3 Increment 4:
- *  - Inline formatting: bold, italic, underline, strike, links via Tiptap marks.
- *    SerializedBlock now carries SerializedRun[] with run-level marks.
- *  - Lists: proper <ul>/<ol> Tiptap structures, not paragraphs.
- *  - Tables/images: typed passthrough (preserved on no-op save).
- *  - Stable docxIndex: original blocks keep their canonical index via
- *    data-docx-index attribute; new blocks get docxIndex: null.
- *
- * Flow:
- *   New: creates a blank Tiptap document
- *   Open: user picks .docx → upload bytes → API parses DOCX → receive blocks → render in Tiptap
- *   Save: read Tiptap content → build SerializedBlocks with runs → API patches DOCX → download
- *
- * The browser is a thin client — the actual DOCX parsing/mutation happens
- * server-side via @genoffice/docx-engine.
+ * Phase 3 Increment 6:
+ *  - Schema-backed source identity: docxIndex is a proper Tiptap node attribute
+ *    on DocxParagraph, DocxHeading, DocxListItem, and PassthroughBlock — not
+ *    an arbitrary HTML attribute. It survives setContent() → editing → getHTML().
+ *  - PassthroughBlock: a custom atomic Tiptap node for tables/images/embedded
+ *    content. Not flattened to a paragraph. Preserves docxIndex + passthroughType.
+ *  - Dirty-state: fingerprint-based — unchanged blocks are sent as edited=false.
+ *  - Run fidelity: text-leaf walking with mark collection + adjacent merge.
+ *  - Safe DOM narrowing: no `as Text` / `as Element` casts.
  */
-
-const DOCX_INDEX_ATTR = 'data-docx-index'
 
 /** Escape HTML special characters in text. */
 function escapeHtml(text: string): string {
@@ -40,7 +33,6 @@ function runToHtml(run: SerializedRun): string {
   if (run.link) {
     html = `<a href="${escapeHtml(run.link.href)}">${html}</a>`
   }
-  // Wrap in marks — Tiptap supports nested marks.
   if (run.bold) html = `<strong>${html}</strong>`
   if (run.italic) html = `<em>${html}</em>`
   if (run.underline) html = `<u>${html}</u>`
@@ -54,36 +46,42 @@ function runsToHtml(runs: readonly SerializedRun[] | undefined, fallbackText: st
   return runs.map(runToHtml).join('')
 }
 
+// ── Safe DOM narrowing helpers (Objective 5) ──────────────────────────────
+
+function isTextNode(node: Node): node is Text {
+  return node.nodeType === Node.TEXT_NODE
+}
+
+function isElementNode(node: Node): node is Element {
+  return node.nodeType === Node.ELEMENT_NODE
+}
+
 /**
  * Parse a Tiptap HTML element's content into SerializedRun[].
- *
- * Phase 3 Increment 5 fix: walks DOM text leaves (not container textContent)
- * to correctly handle nested marks like <strong>bold <em>bold+italic</em></strong>.
- * Each text leaf collects its complete ancestor mark set, then adjacent runs
- * with identical mark sets are merged.
+ * Walks DOM text leaves (not container textContent) to correctly handle
+ * nested marks. Adjacent runs with identical mark sets are merged.
  */
 function parseRuns(element: Element): SerializedRun[] {
-  // Walk all text nodes within the element, collecting ancestor marks.
   interface LeafRun { text: string; bold: boolean; italic: boolean; underline: boolean; strike: boolean; linkHref: string | undefined }
   const leafRuns: LeafRun[] = []
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
   while (walker.nextNode()) {
-    const textNode = walker.currentNode as Text
-    const text = textNode.textContent ?? ''
+    const currentNode = walker.currentNode
+    if (!isTextNode(currentNode)) continue
+    const text = currentNode.textContent ?? ''
     if (text.length === 0) continue
-    // Walk up from the text node to the element, collecting marks.
     let bold = false, italic = false, underline = false, strike = false
     let linkHref: string | undefined
-    let current: Node | null = textNode.parentElement
+    let current: Node | null = currentNode.parentElement
     while (current && current !== element) {
-      if (current.nodeType === Node.ELEMENT_NODE) {
-        const ct = (current as Element).tagName.toLowerCase()
+      if (isElementNode(current)) {
+        const ct = current.tagName.toLowerCase()
         if (ct === 'strong' || ct === 'b') bold = true
         else if (ct === 'em' || ct === 'i') italic = true
         else if (ct === 'u') underline = true
         else if (ct === 's' || ct === 'del' || ct === 'strike') strike = true
         else if (ct === 'a') {
-          const href = (current as Element).getAttribute('href')
+          const href = current.getAttribute('href')
           if (href) linkHref = href
         }
       }
@@ -103,7 +101,6 @@ function parseRuns(element: Element): SerializedRun[] {
       merged.push({ ...lr })
     }
   }
-  // Convert to SerializedRun shape.
   return merged.map(lr => {
     const r: { text: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; link?: { href: string; tooltip?: string } } = { text: lr.text }
     if (lr.bold) r.bold = true
@@ -115,40 +112,42 @@ function parseRuns(element: Element): SerializedRun[] {
   })
 }
 
+/** Compute a deterministic fingerprint for a block's editable content. */
+function blockFingerprint(runs: readonly SerializedRun[] | undefined, text: string): string {
+  return JSON.stringify({ runs: runs ?? [{ text }], text })
+}
+
 export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
   const [title, setTitle] = useState('Document')
   const [saved, setSaved] = useState(true)
   const [status, setStatus] = useState('Ready')
   const handleRef = useRef<OfficeDocumentHandle | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  /**
-   * Phase 3 Increment 5: original block fingerprints for dirty-state tracking.
-   * Keyed by docxIndex — stores a JSON fingerprint of the block's text + runs
-   * at open time. When saving, a block whose fingerprint matches its original
-   * is sent as edited=false (the engine copies original bytes byte-identically).
-   * Blocks without a fingerprint (new browser-created) are always edited=true.
-   */
   const originalFingerprintsRef = useRef<Map<number, string>>(new Map())
 
   const editor = useEditor({
-    extensions: [StarterKit, Underline, Link.configure({ openOnClick: false })],
+    extensions: [
+      StarterKit.configure({
+        paragraph: false,
+        heading: false,
+        listItem: false,
+      }),
+      DocxParagraph,
+      DocxHeading,
+      DocxListItem,
+      Underline,
+      Link.configure({ openOnClick: false }),
+      PassthroughBlock,
+    ],
     content: '<h1>Untitled document</h1><p>Start writing your document here.</p>',
     onUpdate: () => setSaved(false),
     immediatelyRender: false,
   })
 
-  /** Compute a deterministic fingerprint for a block's editable content. */
-  function blockFingerprint(runs: readonly SerializedRun[] | undefined, text: string): string {
-    return JSON.stringify({ runs: runs ?? [{ text }], text })
-  }
-
   /**
    * Convert Tiptap HTML content into SerializedBlock[] for the API.
-   * P6 fix: docxIndex is read from data-docx-index attribute.
-   * P4 fix: runs carry inline marks (bold, italic, underline, strike, link).
-   * P3 Increment 5 fix: edited state is determined by comparing the current
-   * block fingerprint against the original fingerprint stored at open time.
-   * Unchanged original blocks are sent as edited=false (byte-identical copy).
+   * docxIndex is read from the schema-backed data-docx-index attribute
+   * (rendered by DocxParagraph/DocxHeading/DocxListItem/PassthroughBlock).
    */
   const buildBlocks = useCallback((): SerializedBlock[] => {
     if (!editor) return []
@@ -160,32 +159,27 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
 
     for (const node of body.children) {
       const tag = node.tagName.toLowerCase()
-      const rawIndex = node.getAttribute(DOCX_INDEX_ATTR)
+      const rawIndex = node.getAttribute('data-docx-index')
       const docxIndex = rawIndex !== null ? parseInt(rawIndex, 10) : null
       const runs = parseRuns(node)
       const text = node.textContent ?? ''
-      // Determine edited state: if the block has an original fingerprint and
-      // the current content matches it, send edited=false (byte-identical).
-      // New blocks (docxIndex === null) are always edited=true.
+
+      // Determine edited state via fingerprint comparison.
       let edited: boolean
       if (docxIndex !== null) {
         const original = fingerprints.get(docxIndex)
-        if (original !== undefined) {
-          edited = original !== blockFingerprint(runs, text)
-        } else {
-          // No fingerprint stored — this shouldn't happen for original blocks.
-          // Fall back to edited=true to be safe.
-          edited = true
-        }
+        edited = original !== undefined
+          ? original !== blockFingerprint(runs, text)
+          : true
       } else {
-        edited = true // New browser-created block
+        edited = true
       }
 
       if (tag.match(/^h[1-6]$/)) {
         blocks.push({ docxIndex, type: 'heading', text, runs, level: parseInt(tag.slice(1), 10), edited })
       } else if (tag === 'ul' || tag === 'ol') {
         for (const li of node.querySelectorAll(':scope > li')) {
-          const liRawIndex = li.getAttribute(DOCX_INDEX_ATTR)
+          const liRawIndex = li.getAttribute('data-docx-index')
           const liDocxIndex = liRawIndex !== null ? parseInt(liRawIndex, 10) : null
           const liRuns = parseRuns(li)
           const liText = li.textContent ?? ''
@@ -208,8 +202,8 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
           })
         }
       } else if (tag === 'div' && node.getAttribute('data-passthrough') === 'true') {
+        // PassthroughBlock node — preserved without destruction.
         const ptType = node.getAttribute('data-passthrough-type') ?? 'passthrough'
-        // Passthrough blocks (tables, images) are never edited by the browser.
         blocks.push({ docxIndex, type: ptType as SerializedBlock['type'], text, edited: false })
       } else {
         blocks.push({ docxIndex, type: 'paragraph', text, runs, edited })
@@ -220,8 +214,7 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
 
   /**
    * Render API SerializedBlock[] into Tiptap HTML.
-   * P4+5 fix: lists as <ul>/<ol>, tables/images as typed passthrough.
-   * P4 fix: runs produce inline marks (bold, italic, underline, strike, links).
+   * Uses data-docx-index on all node types (now schema-backed).
    */
   const renderBlocks = useCallback((blocks: readonly SerializedBlock[]): string => {
     if (blocks.length === 0) return '<p></p>'
@@ -239,7 +232,7 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
 
     for (const block of blocks) {
       if (block.hidden) continue
-      const indexAttr = block.docxIndex !== null ? ` ${DOCX_INDEX_ATTR}="${block.docxIndex}"` : ''
+      const indexAttr = block.docxIndex !== null ? ` data-docx-index="${block.docxIndex}"` : ''
       const innerHtml = runsToHtml(block.runs, block.text || '')
 
       switch (block.type) {
@@ -283,8 +276,6 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
       const bytes = await readFileBytes(file)
       const res = await openDocument({ fileName: file.name, fileBytes: bytes })
       handleRef.current = { fileName: file.name, sourceBytes: bytes }
-      // Store original block fingerprints for dirty-state tracking.
-      // At save time, a block whose fingerprint matches is sent as edited=false.
       const fingerprints = originalFingerprintsRef.current
       fingerprints.clear()
       for (const block of res.blocks) {
