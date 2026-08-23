@@ -66,6 +66,25 @@ function wcIdFromEvent(event: IpcMainInvokeEvent): number {
 }
 
 /**
+ * Resolve the UI locale for the migrated open handler.
+ *
+ * The coordinator's `openWorkbook` accepts a `locale` argument (used to
+ * drive the engine's formula/function name resolution). The legacy
+ * `selectWorkbook` handler used `getUiLang()` from `sheets-main.ts`.
+ *
+ * To avoid a static import cycle (sheets-main.ts → sheets-migrated-handlers.ts
+ * → sheets-main.ts), the locale is injected via the `localeProvider` argument
+ * to `registerMigratedSheetsIpc`. When not provided, falls back to 'en'.
+ */
+function getUiLangForHandler(): string {
+  // Read the locale provider injected via registerMigratedSheetsIpc.
+  // This avoids a static import cycle (sheets-main.ts ↔ sheets-migrated-handlers.ts).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const provider = (globalThis as any).__sheetsLocaleProvider as (() => string) | undefined
+  return provider?.() ?? 'en'
+}
+
+/**
  * Convert a numeric {startRow,startColumn,endRow,endColumn} range (0-indexed)
  * to Excel A1 notation (e.g. {0,0,0,1} → "A1:B1").
  *
@@ -110,18 +129,52 @@ function parseCellRef(ref: string): { row: number; column: number } {
 let migratedIpcRegistered = false
 
 /**
- * Register the 5 migrated Sheets IPC handlers.
+ * Register the migrated Sheets IPC handlers.
  * Must be called AFTER the coordinator is constructed and AFTER
  * the legacy registerSheetsIpc() has run (so the migrated handlers
  * replace the legacy ones).
  *
- * The coordinator MUST have its sessions registered via the legacy
- * open path (workbook:select is NOT yet migrated). The migrated
- * handlers resolve sessions from the coordinator's registry.
+ * The coordinator is the SOLE owner of workbook sessions (Phase 2
+ * Increment 16). The migrated handlers resolve sessions from the
+ * coordinator's registry — there is NO legacy SessionInfo ownership,
+ * NO adoption bridge, NO XlsxSidecarClient usage.
  */
-export function registerMigratedSheetsIpc(coordinator: SheetsShellCoordinator, screenCapture?: ScreenCapture): void {
+export function registerMigratedSheetsIpc(
+  coordinator: SheetsShellCoordinator,
+  screenCapture?: ScreenCapture,
+  localeProvider?: () => string,
+): void {
   if (migratedIpcRegistered) return
   migratedIpcRegistered = true
+  // Inject the locale provider (avoids a static import cycle with sheets-main.ts).
+  if (localeProvider) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(globalThis as any).__sheetsLocaleProvider = localeProvider
+  }
+
+  // ── workbook:select (Phase 2 Increment 16 — migrated open path) ──
+  // Thin adapter: the renderer asks to open a workbook (either via a
+  // shell-queued path or via the file dialog). The coordinator owns the
+  // entire open lifecycle: dialog, recovery prompt, .xls/.csv conversion,
+  // snapshot creation, engine.open(), session registration. The handler
+  // just maps the result to the renderer's frozen WorkbookFile shape.
+  //
+  // ZERO: XlsxSidecarClient, child_process, filesystem implementation,
+  //       XLSX parsing, recovery implementation, global session state.
+  ipcMain.removeHandler(IPC_CHANNELS.selectWorkbook)
+  ipcMain.handle(IPC_CHANNELS.selectWorkbook, async (event) => {
+    const wcId = wcIdFromEvent(event)
+    const callerWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const result = await coordinator.openWorkbook(wcId, callerWindow, {
+      locale: getUiLangForHandler(),
+    })
+    if (!result) return null
+    // Build the renderer-facing WorkbookFile from the coordinator's session.
+    // The session is the authoritative owner — buildWorkbookFile reads
+    // originalPath, diskFingerprint, metadata, needsSaveAs, restoredFromRecovery.
+    const file = buildWorkbookFile(result.session)
+    return file
+  })
 
   // ── workbook:read-range ──
   ipcMain.removeHandler(IPC_CHANNELS.readWorkbookRange)

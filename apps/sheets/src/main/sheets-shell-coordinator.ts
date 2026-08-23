@@ -54,6 +54,18 @@ export interface ShellWorkbookSession {
   readonly csvImport?: boolean | undefined
   readonly restoreTarget?: string | undefined
   readonly restoreTargetSha?: string | undefined
+  /**
+   * True when the session opened a converted import (.xls/.csv): the first
+   * save opens a Save As dialog, so background flows (AutoSave) must not
+   * trigger mode 'save'. Mirrors the renderer-facing WorkbookFile.needsSaveAs.
+   */
+  readonly needsSaveAs?: boolean | undefined
+  /**
+   * True when the session opened a restored crash-recovery copy: Save
+   * silently writes back to the original file, and the 30s recovery
+   * writer stands down. Mirrors WorkbookFile.restoredFromRecovery.
+   */
+  readonly restoredFromRecovery?: boolean | undefined
   readonly engineHandle: EngineSessionHandle
   readonly domainSession: WorkbookSession
   readonly metadata: import('@genoffice/runtime-contracts').WorkbookMetadata
@@ -90,6 +102,47 @@ export interface SheetsShellCoordinatorDeps {
    *   does NOT push any IPC event, avoiding the duplicate-push hazard.
    */
   readonly onWorkbookRenamed?: (wcId: number, oldPath: string, newPath: string) => void
+  /**
+   * Localized recovery-dialog text provider. The coordinator calls this
+   * when `prepareWorkbookForOpen` finds a pending crash-recovery copy —
+   * the dialog must use the user's UI language (the coordinator itself
+   * is language-agnostic and does NOT import the i18n module).
+   *
+   * Returns the four localized strings the legacy dialog used:
+   *   - restoreButton / discardButton (button labels)
+   *   - title / body (the prompt text)
+   *
+   * When undefined, the coordinator uses English fallbacks
+   * ('Restore' / 'Discard' / 'Crash recovery copy found' / '...').
+   */
+  readonly recoveryDialogText?: () => {
+    readonly restoreButton: string
+    readonly discardButton: string
+    readonly title: string
+    readonly body: string
+  }
+  /**
+   * Optional callback invoked after a SUCCESSFUL open (the workbook is
+   * registered and the renderer is about to receive the WorkbookFile).
+   *
+   * Used by the shell to:
+   *   - fire `workbookOpenedHook` (for the shell's "open" tab tracking)
+   *   - consume the shell-queued workbook path (so the next selectWorkbook
+   *     shows the dialog, not the queued path)
+   *
+   * The callback MUST NOT throw — failures are logged and swallowed
+   * (the open already succeeded; a callback failure must not undo it).
+   */
+  readonly onWorkbookOpened?: (wcId: number, openedPath: string) => void
+  /**
+   * Optional callback that returns the shell-queued workbook path (set
+   * by the shell's `setForcedWorkbookPath()` / the dev capture server).
+   * When set, `openWorkbook` consumes it WITHOUT showing the dialog —
+   * matching the legacy `forcedWorkbookPath` behavior. When undefined
+   * or returns undefined, the coordinator shows the dialog (unless
+   * `options.queuedPath` is passed directly).
+   */
+  readonly consumeQueuedWorkbookPath?: () => string | undefined
 }
 
 // ── Session commit lifecycle ──
@@ -235,7 +288,11 @@ export class SheetsShellCoordinator {
     }
     const startEpoch = state.epoch
 
-    let path = options.queuedPath
+    // Consume the shell-queued path (if any) BEFORE showing the dialog.
+    // The shell sets this via `setForcedWorkbookPath()` (shell routing)
+    // or the dev capture server. When consumed, the next selectWorkbook
+    // opens the queued path WITHOUT a dialog — matching legacy behavior.
+    let path = options.queuedPath ?? this.deps.consumeQueuedWorkbookPath?.()
     if (!path) {
       const selection = callerWindow
         ? await dialog.showOpenDialog(callerWindow, { properties: ['openFile'], filters: [{ name: 'Spreadsheets', extensions: ['xlsx', 'xls', 'csv'] }] })
@@ -275,17 +332,47 @@ export class SheetsShellCoordinator {
 
       this.checkEpoch(wcId, startEpoch)
       const sessionId = randomUUID()
+      // The renderer-facing path: for a restored recovery copy, this is the
+      // ORIGINAL file (so a plain Save writes back to it). For a converted
+      // import, the user opened `path` — the coordinator keeps `path` as
+      // the renderer-facing identifier (Save As routes via suggestSaveAs).
+      const rendererPath = prepared.restoreTarget ?? path
       const shellSession: ShellWorkbookSession = {
-        sessionId, originalPath: path, snapshotPath, diskFingerprint,
-        suggestSaveAs: prepared.suggestSaveAs, csvImport: prepared.csvImport,
-        restoreTarget: prepared.restoreTarget, restoreTargetSha,
-        engineHandle: openResult.engineHandle, domainSession: openResult.session,
-        metadata: openResult.metadata, locale: options.locale, recoveryEpoch: 0,
+        sessionId,
+        originalPath: rendererPath,
+        snapshotPath,
+        diskFingerprint,
+        ...(prepared.suggestSaveAs !== undefined ? { suggestSaveAs: prepared.suggestSaveAs } : {}),
+        ...(prepared.csvImport === true ? { csvImport: prepared.csvImport } : {}),
+        ...(prepared.restoreTarget !== undefined ? { restoreTarget: prepared.restoreTarget } : {}),
+        ...(restoreTargetSha !== undefined ? { restoreTargetSha } : {}),
+        // needsSaveAs: any converted import (.xls/.csv) requires Save As.
+        ...(prepared.suggestSaveAs !== undefined ? { needsSaveAs: true } : {}),
+        // restoredFromRecovery: only true when restoreTarget is set.
+        ...(prepared.restoreTarget !== undefined ? { restoredFromRecovery: true } : {}),
+        engineHandle: openResult.engineHandle,
+        domainSession: openResult.session,
+        metadata: openResult.metadata,
+        locale: options.locale,
+        recoveryEpoch: 0,
       }
       state = this.tabs.get(wcId)!
       state.sessions.set(sessionId, shellSession)
       state.commitStates.set(sessionId, SessionCommitState.IDLE)
       owned.transfer()
+
+      // Fire the onWorkbookOpened callback AFTER the session is registered
+      // but BEFORE returning to the renderer. The shell uses this to fire
+      // `workbookOpenedHook` (tab tracking) and to consume the shell-queued
+      // path. Failures are swallowed — the open already succeeded.
+      const onWorkbookOpened = this.deps.onWorkbookOpened
+      if (onWorkbookOpened) {
+        try {
+          onWorkbookOpened(wcId, path)
+        } catch (err) {
+          console.warn('[sheets] onWorkbookOpened callback failed:', err)
+        }
+      }
 
       return { sessionId, session: shellSession }
     } catch (error) {
@@ -294,55 +381,27 @@ export class SheetsShellCoordinator {
     }
   }
 
-  // ── Legacy session adoption (Increment 5A) ──
+  // ── Read operations ──
 
   /**
-   * Adopt a legacy-opened session into the coordinator's registry.
+   * Register a pre-constructed `ShellWorkbookSession` directly — for
+   * test harnesses that construct fake sessions without invoking the
+   * real `openWorkbook` (e.g. sidecar-free rename-race tests using a
+   * `MockSpreadsheetService`).
    *
-   * This is the compatibility handoff between the legacy `workbook:select`
-   * open lifecycle (which uses `XlsxSidecarClient.open()` directly) and the
-   * migrated read/recalc/media/close path (which uses the coordinator-backed
-   * `SpreadsheetService`).
+   * NOT used by production code: the production open path is
+   * `openWorkbook()` (which constructs the session via the real engine).
+   * This method exists so tests can exercise the coordinator's session
+   * registry + lock semantics without a real sidecar.
    *
-   * The caller (sheets-runtime.ts) has ALREADY:
-   *   - Opened the workbook via the legacy `XlsxSidecarClient.open()`.
-   *   - Built a snapshot, computed its sha256, captured sheet names.
-   *   - Constructed a `ShellWorkbookSession` whose `engineHandle` was produced
-   *     by `ElectronXlsxSidecarEngine.adoptExternalSession()` — a pure
-   *     in-process handle wrap with NO wire call, NO file IO, NO spawn.
-   *
-   * The coordinator just registers the session under (wcId, sessionId) and
-   * initializes its commit state to IDLE. There is NO re-open, NO re-spawn,
-   * NO duplicate snapshot, NO recomputed fingerprint.
-   *
-   * OWNERSHIP: After adoption, the coordinator is the EXCLUSIVE owner of:
-   *   - The engine handle (and the underlying sidecar session it wraps).
-   *   - The snapshot path.
-   *   - The recovery resources.
-   * The legacy `SessionInfo` keeps a NON-OWNING reference (marked
-   * `adopted: true`) for the legacy `save`/`write-recovery` paths to keep
-   * working — but it MUST NOT independently `client.close(sessionId)` or
-   * `rm(snapshotPath)` once adopted.
-   *
-   * SESSION IDENTITY: The coordinator registers the session under the SAME
-   * `sessionId` the legacy open returned — preserving renderer continuity.
-   * The renderer's existing `sessionId` is valid for both legacy
-   * `save`/`write-recovery` AND migrated reads/closes without remapping.
-   *
-   * THREAD SAFETY: Acquires the per-session mutation lock. If a concurrent
-   * teardown already holds the session's lock (e.g., the renderer is being
-   * destroyed), adoption still completes — the session is registered but
-   * will be cleaned up by the teardown that owns the lock.
-   *
-   * @returns the registered session (same as the input).
+   * Lazily registers the renderer if this is the first call for this wcId.
+   * Acquires the per-session mutation lock. Throws if a session already
+   * exists under this sessionId (caller must close before re-registering).
    */
-  async adoptLegacySession(
+  async registerSession(
     wcId: number,
     session: ShellWorkbookSession,
   ): Promise<ShellWorkbookSession> {
-    // Lazily register the renderer if this is the first call for this wcId.
-    // The legacy `workbook:select` path does not call registerRenderer()
-    // explicitly — adoption is the first coordinator contact for a tab.
     let state = this.tabs.get(wcId)
     if (!state) {
       state = {
@@ -354,19 +413,13 @@ export class SheetsShellCoordinator {
       this.tabs.set(wcId, state)
     }
     return this.withSessionLock(wcId, session.sessionId, async () => {
-      // Re-fetch inside the lock — the renderer may have been torn down
-      // between the lazy register above and the lock acquisition.
       const cur = this.tabs.get(wcId)
       if (!cur) {
-        throw new InvalidSessionError(`Renderer ${wcId} torn down during adoption`)
+        throw new InvalidSessionError(`Renderer ${wcId} torn down during register`)
       }
-      // If a session already exists under this sessionId, it means adoption
-      // was called twice (a bug, or a save-reopen path that hasn't been
-      // migrated yet). The previous session's resources must be cleaned up
-      // by the caller BEFORE re-adoption — we throw to surface the bug.
       if (cur.sessions.has(session.sessionId)) {
         throw new InvalidSessionError(
-          `Session ${session.sessionId} already adopted — caller must close before re-adopting`,
+          `Session ${session.sessionId} already registered — caller must close before re-registering`,
         )
       }
       cur.sessions.set(session.sessionId, session)
@@ -374,8 +427,6 @@ export class SheetsShellCoordinator {
       return session
     })
   }
-
-  // ── Read operations ──
 
   async readRange(wcId: number, sessionId: string, sheetId: string, range: string): Promise<EngineRangeResult> {
     const s = this.getSession(wcId, sessionId)
@@ -923,7 +974,24 @@ export class SheetsShellCoordinator {
     if (extension !== 'csv' && extension !== 'xls') {
       const recovery = this.pendingRecoveryFor(path)
       if (recovery) {
-        const opts = { type: 'question' as const, buttons: ['Restore', 'Discard'], defaultId: 0, cancelId: 1, message: 'Crash recovery copy found', detail: 'Unsaved work from a previous session was found. Restore it?' }
+        // Localized recovery dialog — the coordinator itself is
+        // language-agnostic; the shell provides the localized text via
+        // the `recoveryDialogText` dep callback. English fallbacks when
+        // the callback is undefined (e.g. in unit tests).
+        const text = this.deps.recoveryDialogText?.() ?? {
+          restoreButton: 'Restore',
+          discardButton: 'Discard',
+          title: 'Crash recovery copy found',
+          body: 'Unsaved work from a previous session was found. Restore it?',
+        }
+        const opts = {
+          type: 'question' as const,
+          buttons: [text.restoreButton, text.discardButton],
+          defaultId: 0,
+          cancelId: 1,
+          message: text.title,
+          detail: text.body,
+        }
         const answer = parent ? await dialog.showMessageBox(parent, opts) : await dialog.showMessageBox(opts)
         if (answer.response === 0) return { openPath: recovery, restoreTarget: path }
         this.clearWorkbookRecovery(path)
@@ -939,9 +1007,28 @@ export class SheetsShellCoordinator {
       const csvBytes = await readFile(path)
       await writeFile(openPath, await csvToXlsxBuffer(decodeCsvBuffer(csvBytes)))
       return { openPath, suggestSaveAs: path.replace(/\.[^.]+$/, '.xlsx'), csvImport: true, conversionDir: directory }
-    } else {
-      try { await rm(directory, { recursive: true, force: true }) } catch {}
-      throw new EngineError('.xls conversion not yet supported — requires SpreadsheetEngine.convertWorkbook wired through SpreadsheetService', 'INTERNAL_ERROR')
+    }
+    // .xls conversion — delegate to the engine via the service. The service
+    // accepts the legacy file's bytes (NOT a path) and returns the converted
+    // .xlsx bytes; the coordinator writes them to the temp file. This is
+    // the Phase 2 Increment 16 cutover: previously the coordinator threw
+    // '.xls conversion not yet supported' — now it works end-to-end.
+    try {
+      const legacyBytes = await readFile(path)
+      const converted = await this.deps.service.convertWorkbook(
+        new Uint8Array(legacyBytes),
+        path.split(/[\\/]/).pop() ?? 'workbook.xls',
+      )
+      await writeFile(openPath, converted.data)
+      return {
+        openPath,
+        suggestSaveAs: path.replace(/\.[^.]+$/, '.xlsx'),
+        conversionDir: directory,
+      }
+    } catch (error) {
+      // Best-effort cleanup of the empty temp dir on failure.
+      try { await rm(directory, { recursive: true, force: true }) } catch { /* */ }
+      throw error
     }
   }
 

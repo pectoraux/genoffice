@@ -128,6 +128,20 @@ export class SpreadsheetServiceImpl implements SpreadsheetService {
     await this.deps.engine.close(engineHandle)
   }
 
+  async convertWorkbook(
+    workbook: Uint8Array,
+    fileName: string,
+  ): Promise<{ data: Uint8Array; fileName: string }> {
+    // Delegate to the engine. The engine implementation writes the bytes
+    // to a temp file, asks the sidecar to convert via `convert_workbook`,
+    // reads the converted .xlsx bytes back, and cleans up the temp file.
+    // The service performs NO filesystem I/O — it accepts bytes and
+    // returns bytes.
+    //
+    // Typed engine failures (InvalidInputError, EngineError) propagate.
+    return this.deps.engine.convertWorkbook(workbook, fileName)
+  }
+
   // ── Workbook operations ─────────────────────────────────────────────
 
   async readRange(

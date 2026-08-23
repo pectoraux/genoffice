@@ -598,4 +598,99 @@ describe('@genoffice/sheets architecture boundary (Increment 3I/5/5A — AST-bas
     expect(helperBody.length).toBeGreaterThan(0)
     expect(helperBody).not.toMatch(/\.send\(/)
   })
+
+  // ═══ INCREMENT 16 — Legacy open cutover architecture guards ═══
+
+  test('migrated selectWorkbook handler delegates to coordinator.openWorkbook (Increment 16)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    expect(src).toMatch(/coordinator\.openWorkbook\b/)
+  })
+
+  test('migrated selectWorkbook handler replaces legacy handler (Increment 16)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    expect(src).toMatch(/removeHandler\(IPC_CHANNELS\.selectWorkbook\)/)
+  })
+
+  test('migrated selectWorkbook handler has ZERO XlsxSidecarClient imports (Increment 16)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/from\s+['"]\.\/xlsx-sidecar-client['"]/)
+  })
+
+  test('migrated selectWorkbook handler has ZERO filesystem implementation (Increment 16)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/readFileSync|writeFileSync|mkdirSync|rmSync|existsSync|copyFileSync/)
+  })
+
+  test('coordinator has openWorkbook method (Increment 16)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    expect(src).toMatch(/async openWorkbook\b/)
+  })
+
+  test('coordinator has NO adoptLegacySession method (Increment 16 — removed)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/async adoptLegacySession\b/)
+    expect(stripped).not.toMatch(/\.adoptLegacySession\b/)
+  })
+
+  test('sheets-runtime has NO adoptLegacySessionIntoCoordinator export (Increment 16 — removed)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-runtime.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/export function adoptLegacySessionIntoCoordinator\b/)
+    expect(stripped).not.toMatch(/export interface LegacySessionAdoption\b/)
+  })
+
+  test('sheets-main has NO legacy openWorkbookSession function (Increment 16 — removed)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/^async function openWorkbookSession\b/m)
+  })
+
+  test('sheets-main has NO legacy prepareWorkbookForOpen function (Increment 16 — removed)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/^async function prepareWorkbookForOpen\b/m)
+  })
+
+  test('sheets-main has NO adoptLegacySessionFromWorkbookFile function (Increment 16 — removed)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/adoptLegacySessionFromWorkbookFile\b/)
+  })
+
+  test('coordinator openWorkbook uses service.convertWorkbook for .xls (Increment 16)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    expect(src).toMatch(/this\.deps\.service\.convertWorkbook\b/)
+  })
+
+  test('coordinator has recoveryDialogText dep callback (Increment 16)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    expect(src).toMatch(/recoveryDialogText\??\s*:\s*\(\)\s*=>\s*\{/)
+  })
+
+  test('coordinator has onWorkbookOpened dep callback (Increment 16)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    expect(src).toMatch(/onWorkbookOpened\??\s*:\s*\(wcId:\s*number,\s*openedPath:\s*string\)\s*=>\s*void/)
+  })
+
+  test('coordinator has consumeQueuedWorkbookPath dep callback (Increment 16)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    expect(src).toMatch(/consumeQueuedWorkbookPath\??\s*:\s*\(\)\s*=>\s*string\s*\|\s*undefined/)
+  })
+
+  test('sheets-main resolveSheetsSessionPath reads from coordinator (NOT legacy mirror) (Increment 16)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    expect(src).toMatch(/getMigratedRuntime\(\)\.coordinator\.getSession/)
+  })
+
+  test('SpreadsheetService contract has convertWorkbook (Increment 16)', () => {
+    const src = readFileSync(
+      join(__dirname, '..', '..', '..', 'packages', 'runtime-contracts', 'src', 'services', 'sheets.ts'),
+      'utf8',
+    )
+    expect(src).toMatch(/convertWorkbook\s*\(/)
+    expect(src).toMatch(/Promise<\{\s*data:\s*Uint8Array;\s*fileName:\s*string\s*\}>/)
+  })
 })

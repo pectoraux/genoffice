@@ -423,8 +423,8 @@ export function buildWorkbookFile(session: ShellWorkbookSession): WorkbookFile {
       return result
     }),
     readOnly: false,
-    needsSaveAs: false,
-    restoredFromRecovery: false,
+    needsSaveAs: session.needsSaveAs ?? (session.suggestSaveAs !== undefined),
+    restoredFromRecovery: session.restoredFromRecovery ?? (session.restoreTarget !== undefined),
     ...(m.themeColors.length > 0 ? { themeColors: m.themeColors } : {}),
     ...(m.themeFonts.major !== '' || m.themeFonts.minor !== ''
       ? { themeFonts: m.themeFonts }

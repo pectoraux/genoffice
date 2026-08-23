@@ -172,6 +172,14 @@ class MockSpreadsheetService implements SpreadsheetService {
   async close(engineHandle: EngineSessionHandle): Promise<void> {
     this.closeInvocations.push(engineHandle)
   }
+  async convertWorkbook(
+    workbook: Uint8Array,
+    fileName: string,
+  ): Promise<{ data: Uint8Array; fileName: string }> {
+    // Minimal stub — the rename tests don't convert workbooks. Returns
+    // the input bytes unchanged so the contract is satisfied.
+    return { data: workbook, fileName: fileName.replace(/\.[^.]+$/, '.xlsx') }
+  }
   async readRange(): Promise<EngineRangeResult> {
     return {
       cells: [], rows: [], merges: [], columns: [],
@@ -223,8 +231,9 @@ function makeMockWc() {
 }
 
 /**
- * Helper: register a session with the coordinator by direct adoption
- * (no engine, no sidecar). Returns the session.
+ * Helper: register a session with the coordinator by direct registration
+ * (no engine, no sidecar). Returns the session. Uses the test-only
+ * `registerSession` method — production code uses `openWorkbook`.
  */
 async function adoptSession(
   coordinator: SheetsShellCoordinator,
@@ -232,7 +241,7 @@ async function adoptSession(
   fixturePath: string,
 ): Promise<ShellWorkbookSession> {
   const session = makeShellSession(fixturePath)
-  return coordinator.adoptLegacySession(wcId, session)
+  return coordinator.registerSession(wcId, session)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

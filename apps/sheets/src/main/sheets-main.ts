@@ -118,7 +118,7 @@ import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { closeGuardDecision } from './close-guard'
 import { exportPdf } from './pdf-export'
 import { XlsxSidecarClient } from './xlsx-sidecar-client'
-import { initSheetsRuntime, adoptLegacySessionIntoCoordinator, type SheetsRuntimeBundle, type LegacySessionAdoption } from './sheets-runtime'
+import { initSheetsRuntime, type SheetsRuntimeBundle } from './sheets-runtime'
 import { registerMigratedSheetsIpc } from './sheets-migrated-handlers'
 import { registerMigratedSheetsAiIpc, abortStreamsForRenderer } from './sheets-ai-handlers'
 import type { WorkbookMetadata, WorksheetMetadata } from '@genoffice/runtime-contracts'
@@ -1109,24 +1109,58 @@ let migratedRuntime: ReturnType<typeof initSheetsRuntime> | null = null
 function getMigratedRuntime(): ReturnType<typeof initSheetsRuntime> {
   if (!migratedRuntime) {
     const sidecarPath = resolveSidecarPath()
-    // Share the legacy sidecar client (if already created by
-    // createSheetsWindow/createSheetsView) with the engine. This is the
-    // integration point that enables legacy session adoption — the engine
-    // and the legacy client speak to the SAME sidecar process.
+    // Share the legacy sidecar client (constructed lazily by
+    // createSheetsWindow / createSheetsView) with the engine. This
+    // preserves the "exactly ONE sidecar process" invariant — the engine
+    // and any remaining legacy handlers speak to the SAME process.
+    //
+    // Phase 2 Increment 16: the coordinator is the SOLE owner of workbook
+    // sessions. The shell plumbs four callbacks:
+    //   - onWorkbookRenamed: update the legacy `sheetsTabs.sessions[].path`
+    //     mirror (kept until resolveSheetsSessionPath is migrated — Phase F).
+    //   - recoveryDialogText: localized recovery prompt text (the coordinator
+    //     is language-agnostic; this callback returns the current lang's text).
+    //   - onWorkbookOpened: fire `workbookOpenedHook` (tab tracking) after a
+    //     successful open.
+    //   - consumeQueuedWorkbookPath: return the shell-queued path (set by
+    //     setForcedWorkbookPath / the dev capture server). The coordinator
+    //     consumes it WITHOUT showing the dialog — matching legacy behavior.
     const sharedClient = sidecar ?? new XlsxSidecarClient(sidecarPath)
     sidecar = sharedClient
     sharedClient.start()
-    // INCREMENT 15A: wire the legacy `SessionInfo.path` mirror update
-    // callback. After a successful auto-rename the coordinator invokes
-    // this callback so the legacy `sheetsTabs.sessions[].path` is kept
-    // in sync with the new path. The callback updates the legacy mirror
-    // ONLY — the coordinator pushes `workbook:renamed` itself, avoiding
-    // a duplicate push. Without this, legacy consumers like
-    // `resolveSheetsSessionPath` (used by project:rebindChat) would see
-    // a stale path after an auto-rename.
+    console.log('[DEBUG-16] getMigratedRuntime: sidecar PID =', sharedClient.getProcessId(), ', sidecarClient provided to engine =', !!sharedClient)
     migratedRuntime = initSheetsRuntime(
       { binaryPath: sidecarPath, sidecarClient: sharedClient },
-      { onWorkbookRenamed: updateLegacySessionPath },
+      {
+        onWorkbookRenamed: updateLegacySessionPath,
+        recoveryDialogText: () => ({
+          restoreButton: tm('autosaveRestore'),
+          discardButton: tm('autosaveDiscard'),
+          title: tm('autosaveFoundTitle'),
+          body: tm('autosaveFoundBody'),
+        }),
+        onWorkbookOpened: (_wcId, openedPath) => {
+          // The coordinator already registered the session + consumed the
+          // queued path. Fire the shell's opened hook (tab tracking) — but
+          // we need the WebContents, not the wcId. The shell's hook is
+          // keyed by WebContents; we look it up via the active wc.
+          const wc = activeSheetsWebContents
+          if (wc && !wc.isDestroyed()) {
+            workbookOpenedHook?.(wc, openedPath)
+          }
+        },
+        consumeQueuedWorkbookPath: () => {
+          // Consume the shell-queued path (one-shot for shell-queued;
+          // sticky for the dev capture server's forcedWorkbookPath).
+          if (shellQueuedWorkbook) {
+            const p = forcedWorkbookPath
+            forcedWorkbookPath = undefined
+            shellQueuedWorkbook = false
+            return p ?? undefined
+          }
+          return forcedWorkbookPath
+        },
+      },
     )
   }
   return migratedRuntime
@@ -1489,7 +1523,7 @@ export async function createSheetsWindow(
   mainWindow = window
   registerSheetsIpc()
   const bundle = getMigratedRuntime()
-  registerMigratedSheetsIpc(bundle.coordinator, bundle.screenCapture)
+  registerMigratedSheetsIpc(bundle.coordinator, bundle.screenCapture, getUiLang)
   if (options.includeAiHandlers ?? true) registerMigratedSheetsAiIpc()
   if (options.includeAiHandlers ?? true) registerProjectIpc()
   registerSheetsSession(window.webContents, client)
@@ -1538,7 +1572,7 @@ export function createSheetsView(options: { includeAiHandlers?: boolean } = {}):
   })
   registerSheetsIpc()
   const bundle = getMigratedRuntime()
-  registerMigratedSheetsIpc(bundle.coordinator, bundle.screenCapture)
+  registerMigratedSheetsIpc(bundle.coordinator, bundle.screenCapture, getUiLang)
   if (options.includeAiHandlers ?? true) registerMigratedSheetsAiIpc()
   registerSheetsSession(view.webContents, client)
   view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -1847,62 +1881,6 @@ export function registerSheetsIpc(): void {
    */
   ipcMain.handle('sheets:has-queued-workbook', () => hasQueuedWorkbook())
 
-  ipcMain.handle(IPC_CHANNELS.selectWorkbook, async (event) => {
-    const entry = sessionFor(event)
-    let path = forcedWorkbookPath
-    if (shellQueuedWorkbook) {
-      // consume immediately (before the slow session open) so the shell's
-      // retry loop stops re-sending 'open' for the same file
-      forcedWorkbookPath = undefined
-      shellQueuedWorkbook = false
-    }
-    if (!path) {
-      const selection = await openFileDialog(event, {
-        properties: ['openFile'],
-        filters: [{ name: tm('filterSpreadsheets'), extensions: ['xlsx', 'xls', 'csv'] }],
-      })
-      if (selection.canceled || !selection.filePaths[0]) return null
-      path = selection.filePaths[0]
-    }
-    const prepared = await prepareWorkbookForOpen(entry.client, path, dialogParent(event))
-    const result = await openWorkbookSession(entry.client, prepared.openPath, entry.sessions, {
-      suggestSaveAs: prepared.suggestSaveAs,
-      csvImport: prepared.csvImport,
-      restoreTarget: prepared.restoreTarget,
-    })
-    // INCREMENT 5A — Adopt the legacy-opened session into the coordinator's
-    // registry so the migrated read/recalc/media/close IPC handlers can
-    // resolve it. Adoption happens ONLY after openWorkbookSession succeeds:
-    //   - If the dialog is cancelled, openWorkbookSession returns null and
-    //     we return early above (cancellation → no adoption).
-    //   - If open fails (sidecar error, file IO error), openWorkbookSession
-    //     throws — we never reach here (failure → no adoption).
-    //   - If adoption itself fails (e.g., coordinator not constructed), we
-    //     log and continue — the renderer will fall back to the legacy
-    //     session registry only (read/recalc/etc. would fail with
-    //     InvalidSessionError, surfacing the integration gap rather than
-    //     silently succeeding with a half-wired session).
-    if (result) {
-      try {
-        await adoptLegacySessionFromWorkbookFile(
-                          getMigratedRuntime(),
-                          event.sender.id,
-                          result,
-                          entry.sessions.get(result.sessionId),
-                          prepared.restoreTarget,
-                          getUiLang(),
-                        )
-        // Mark the legacy SessionInfo as adopted — closeAllSessions will
-        // skip it (the coordinator owns the sidecar session + snapshot now).
-        const legacy = entry.sessions.get(result.sessionId)
-        if (legacy) entry.sessions.set(result.sessionId, { ...legacy, adopted: true })
-      } catch (error) {
-        console.warn('[sheets] legacy session adoption failed — migrated reads will not work:', error)
-      }
-      workbookOpenedHook?.(event.sender, path)
-    }
-    return result
-  })
 
   ipcMain.handle(IPC_CHANNELS.readWorkbookRange, async (event, input: unknown) => {
     const entry = sessionFor(event)
@@ -2125,138 +2103,8 @@ export function registerSheetsIpc(): void {
     return exportPdf(event, request)
   })
 
-  ipcMain.handle(IPC_CHANNELS.saveWorkbook, async (event, input: unknown) => {
-    const entry = sessionFor(event)
-    const client = entry.client
-    const request = workbookSaveRequestSchema.parse(input)
-    const session = entry.sessions.get(request.sessionId)
-    if (!session) throw new Error('Unknown workbook session.')
 
-    let targetPath = session.path
-    // Converted imports (.xls/.csv) never save silently over the temp copy —
-    // the first save always asks where the .xlsx should live.
-    if (request.mode === 'save-as' || session.suggestSaveAs !== undefined) {
-      const selection = await saveFileDialog(event, {
-        defaultPath: session.suggestSaveAs ?? session.restoreTarget ?? session.path,
-        filters: [{ name: tm('filterXlsx'), extensions: ['xlsx'] }],
-        // CSV import: explain why the save goes through .xlsx (CSV keeps values only)
-        ...(session.csvImport
-          ? { title: tm('csvSaveAsNotice'), message: tm('csvSaveAsNotice') }
-          : {}),
-      })
-      if (selection.canceled || !selection.filePath) return { canceled: true }
-      targetPath = selection.filePath.endsWith('.xlsx')
-        ? selection.filePath
-        : `${selection.filePath}.xlsx`
-    } else if (session.restoreTarget !== undefined) {
-      // Restored crash-recovery copy: the restore prompt was the confirmation,
-      // so Save writes straight back to the original — unless someone else
-      // changed it since the restore.
-      const currentSha = await sha256File(session.restoreTarget).catch(() => undefined)
-      if (currentSha !== undefined && currentSha !== session.restoreTargetSha) {
-        throw new Error(tm('errDiskChanged'))
-      }
-      targetPath = session.restoreTarget
-    } else {
-      // Plain in-place save: refuse to silently overwrite a file some other
-      // program changed after this session opened it. Save As (above) skips
-      // this guard on purpose — it patches the session snapshot, not the live
-      // file, and writes to a path the user just confirmed, so it stays
-      // usable as the escape hatch this error message points to. A file that
-      // was deleted on disk is fine: saving recreates it.
-      const currentSha = await sha256File(session.path).catch(() => undefined)
-      if (currentSha !== undefined && currentSha !== session.sha256) {
-        throw new Error(tm('errDiskChanged'))
-      }
-    }
 
-    const mutation = await writeWorkbookTo(client, session, request, targetPath)
-
-    // The sidecar session still streams the pre-save bytes; swap it for a
-    // fresh session over the saved file so future reads match the disk state.
-    entry.sessions.delete(request.sessionId)
-    await client.close(request.sessionId).catch(() => undefined)
-    void rm(session.snapshotPath, { force: true }).catch(() => undefined)
-    const file = await openWorkbookSession(client, targetPath, entry.sessions)
-    // Notify shell (if running) so it can update the tab title and record the
-    // saved path in recent files (mirrors the open hook; covers Save As + first
-    // save after converting an .xls/.csv import).
-    workbookOpenedHook?.(event.sender, targetPath)
-    // The file on disk now carries these edits
-    clearWorkbookRecovery(targetPath)
-    if (session.suggestSaveAs !== undefined) clearWorkbookRecovery(session.suggestSaveAs)
-    // Restored session saved (possibly Save As elsewhere): the unsaved work is
-    // persisted, so the original's recovery copy must not re-offer it.
-    if (session.restoreTarget !== undefined) clearWorkbookRecovery(session.restoreTarget)
-    return { canceled: false, file, touchedEntries: mutation.touchedEntries }
-  })
-
-  // Crash-recovery copy of a dirty workbook: the same save pipeline with a
-  // userData target, no session swap and no dialogs — best-effort, silent on failure.
-  ipcMain.handle(IPC_CHANNELS.writeWorkbookRecovery, async (event, input: unknown) => {
-    const entry = sessionFor(event)
-    const request = workbookSaveRequestSchema.parse(input)
-    const session = entry.sessions.get(request.sessionId)
-    // A converted import has no original file to recover into; a restored
-    // recovery session is backed by the recovery copy itself — writing over
-    // the file the sidecar streams from would corrupt the open session.
-    if (!session || session.suggestSaveAs !== undefined || session.restoreTarget !== undefined)
-      return { ok: false }
-    try {
-      await mkdir(recoveryDir(), { recursive: true })
-      await writeWorkbookTo(entry.client, session, request, recoveryPathFor(session.path))
-      return { ok: true }
-    } catch (error) {
-      console.warn('[sheets] recovery copy failed:', error)
-      return { ok: false }
-    }
-  })
-
-  ipcMain.handle(IPC_CHANNELS.closeWorkbook, async (event, sessionId: unknown) => {
-    const entry = sessionFor(event)
-    const validatedSessionId = z.string().uuid().parse(sessionId)
-    const session = entry.sessions.get(validatedSessionId)
-    if (!entry.sessions.delete(validatedSessionId)) return
-    try {
-      // Close the sidecar session (it has the snapshot open) before removing it
-      await entry.client.close(validatedSessionId)
-    } finally {
-      // Best-effort either way: the session is already out of the map, so a
-      // failed close must not leave the temp snapshot behind forever.
-      if (session) void rm(session.snapshotPath, { force: true }).catch(() => undefined)
-    }
-  })
-
-  // Content-derived naming for AI-generated workbooks (sheets' analog of slides'
-  // deckName): the renderer proposes a base name after an AI run lands; the file
-  // is renamed only while it still carries the shell's auto-created untitled name.
-  ipcMain.handle(
-    IPC_CHANNELS.autoRenameWorkbook,
-    (event, sessionId: unknown, baseName: unknown) => {
-      const entry = sessionFor(event)
-      const validatedSessionId = z.string().uuid().parse(sessionId)
-      const session = entry.sessions.get(validatedSessionId)
-      if (!session || !untitledWorkbookPaths.has(session.path)) return { renamed: false }
-      const base = sanitizeAutoRenameBase(z.string().min(1).max(100).parse(baseName))
-      if (!base) return { renamed: false }
-      const dir = dirname(session.path)
-      let target = join(dir, `${base}.xlsx`)
-      for (let i = 2; existsSync(target) && i < 100; i++) target = join(dir, `${base}-${i}.xlsx`)
-      if (existsSync(target) || target === session.path) return { renamed: false }
-      try {
-        renameSync(session.path, target)
-      } catch (err) {
-        console.warn('[sheets] auto-rename failed:', err)
-        return { renamed: false }
-      }
-      untitledWorkbookPaths.delete(session.path)
-      entry.sessions.set(validatedSessionId, { ...session, path: target })
-      event.sender.send(IPC_CHANNELS.workbookRenamed, basename(target))
-      // Same contract as open/save: shell updates the tab title and recents
-      workbookOpenedHook?.(event.sender, target)
-      return { renamed: true, name: basename(target) }
-    },
-  )
 
   ipcMain.handle(IPC_CHANNELS.openExternal, async (event, url: unknown) => {
     sessionFor(event)
@@ -2661,9 +2509,21 @@ export function registerProjectIpc(): void {
  * sessionId → workbook file path reverse lookup (injected into docs-main's
  * project:resolveChat in shell mode). In standalone mode the handler registered
  * above queries sheetsTabs directly.
+ *
+ * Phase 2 Increment 16: the coordinator is the SOLE owner of workbook
+ * sessions. This function reads from `coordinator.getSession(wcId, sessionId).originalPath`
+ * — NOT from the legacy `sheetsTabs.sessions[].path` mirror. The mirror
+ * is kept only for the manual-rename path (`sheetsFileRenamed`) until that
+ * is also migrated.
  */
 export function resolveSheetsSessionPath(senderId: number, sessionId: string): string | null {
-  return sheetsTabs.get(senderId)?.sessions.get(sessionId)?.path ?? null
+  try {
+    const session = getMigratedRuntime().coordinator.getSession(senderId, sessionId)
+    return session.originalPath
+  } catch {
+    // Session not found (closed, never opened, or renderer torn down).
+    return null
+  }
 }
 
 /**
@@ -2924,236 +2784,6 @@ async function writeWorkbookTo(
   return mutation
 }
 
-/** Copies the workbook into the temp snapshot dir; the copy is the session's
- * save base (see SessionInfo.snapshotPath). */
-async function snapshotWorkbook(path: string): Promise<string> {
-  const dir = join(app.getPath('temp'), 'genoffice-sheets-sessions')
-  await mkdir(dir, { recursive: true })
-  const snapshotPath = join(dir, `${randomUUID()}.xlsx`)
-  await copyFile(path, snapshotPath)
-  return snapshotPath
-}
-
-async function openWorkbookSession(
-  client: XlsxSidecarClient,
-  path: string,
-  sessions: Map<string, SessionInfo>,
-  options?: {
-    suggestSaveAs?: string | undefined
-    csvImport?: boolean | undefined
-    restoreTarget?: string | undefined
-  },
-): Promise<WorkbookFile> {
-  const { suggestSaveAs, csvImport, restoreTarget } = options ?? {}
-  // Snapshot first, then the sidecar opens the snapshot (not the live path):
-  // everything the session serves — cell reads, media, recalc, saves — comes
-  // from the same bytes, even if the file on disk changes right after the
-  // copy. The digest also describes exactly those bytes.
-  const snapshotPath = await snapshotWorkbook(path)
-  try {
-    const [opened, digest, restoreTargetSha] = await Promise.all([
-      client
-        .open(snapshotPath, getUiLang())
-        .then((result) => sidecarOpenResultSchema.parse(result)),
-      sha256File(snapshotPath),
-      // Missing original (deleted since the crash) is fine: the write-back recreates it.
-      restoreTarget === undefined
-        ? Promise.resolve(undefined)
-        : sha256File(restoreTarget).catch(() => undefined),
-    ])
-    sessions.set(opened.sessionId, {
-      path,
-      snapshotPath,
-      sha256: digest,
-      sheetNames: new Map(opened.sheets.map((sheet) => [sheet.id, sheet.name])),
-      ...(suggestSaveAs === undefined ? {} : { suggestSaveAs }),
-      ...(csvImport ? { csvImport } : {}),
-      ...(restoreTarget === undefined ? {} : { restoreTarget }),
-      ...(restoreTargetSha === undefined ? {} : { restoreTargetSha }),
-    })
-    return workbookFileSchema.parse({
-      ...opened,
-      // The renderer-facing path is what the user opened: for a restored
-      // recovery copy that is the original file, not the copy under userData.
-      path: restoreTarget ?? path,
-      sha256: digest,
-      readOnly: false,
-      needsSaveAs: suggestSaveAs !== undefined,
-      restoredFromRecovery: restoreTarget !== undefined,
-    })
-  } catch (error) {
-    void rm(snapshotPath, { force: true }).catch(() => undefined)
-    throw error
-  }
-}
-
-// ── INCREMENT 5A: Legacy session adoption helper ─────────────────────
-//
-// Build a `LegacySessionAdoption` from the legacy `WorkbookFile` +
-// `SessionInfo` and delegate to `adoptLegacySessionIntoCoordinator` in
-// sheets-runtime.ts. The helper is intentionally a thin adapter — all
-// adoption semantics (engine wrap, coordinator registration, ownership
-// transfer) live in the runtime layer.
-//
-// Architecture guards verified by tests:
-//   - This helper imports NO @genoffice/platform-electron symbols directly
-//     (it goes through `sheets-runtime.ts`, which is the only permitted
-//     module to construct the engine).
-//   - It does NOT spawn child_process, read/write workbook files, or
-//     call getFocusedWindow. It only translates data shapes.
-
-async function adoptLegacySessionFromWorkbookFile(
-  bundle: SheetsRuntimeBundle,
-  wcId: number,
-  file: WorkbookFile,
-  legacy: SessionInfo | undefined,
-  restoreTarget: string | undefined,
-  locale: string,
-): Promise<void> {
-  if (!legacy) {
-    // The legacy SessionInfo was not registered — openWorkbookSession
-    // either failed or did not run. This is a defensive check; the
-    // caller already gates on `result` being truthy.
-    return
-  }
-
-  // INCREMENT 6: Build contract-level WorksheetMetadata from the legacy
-  // WorkbookFile's sheets. The contract now carries opaque arrays
-  // (columnWidths, tables, comments, pivotRanges) so the save response
-  // can return them to the renderer without loss.
-  const sheets: WorksheetMetadata[] = file.sheets.map((s, i) => {
-    const result: WorksheetMetadata = {
-      id: s.id,
-      name: s.name,
-      index: i,
-      hidden: s.hidden,
-      rtl: false,
-      showGridlines: s.showGridLines,
-      rowCount: s.rowCount,
-      columnCount: s.columnCount,
-      defaultRowHeight: s.defaultRowHeight ?? 15,
-      defaultColumnWidth: s.defaultColumnWidth ?? 8.43,
-    }
-    if (s.tabColor !== null && s.tabColor !== undefined) result.tabColor = s.tabColor
-    if (s.columnWidths) result.columnWidths = s.columnWidths
-    if (s.tables) result.tables = s.tables
-    if (s.comments) result.comments = s.comments
-    // The legacy schema uses `pivotRanges` (camelCase).
-    const pr = (s as { pivotRanges?: unknown[] }).pivotRanges
-    if (pr) result.pivotRanges = pr
-    return result
-  })
-
-  // INCREMENT 6: definedNames now use { name, formula, sheetIndex? }
-  // (matching the sidecar's native shape and the renderer's expectation).
-  // No translation needed — pass through directly.
-  const metadata: WorkbookMetadata = {
-    name: file.name,
-    sha256: file.sha256,
-    entryCount: file.entryCount,
-    sheets,
-    activeTab: file.activeTab,
-    definedNames: file.definedNames.map((d) => {
-      const r: { name: string; formula: string; sheetIndex?: number } = { name: d.name, formula: d.formula }
-      if (d.sheetIndex !== undefined) r.sheetIndex = d.sheetIndex
-      return r
-    }),
-    themeColors: file.themeColors ?? [],
-    themeFonts: file.themeFonts ?? { major: '', minor: '' },
-  }
-  // INCREMENT 6: Carry styles/dxfStyles/visuals if the legacy file has them.
-  if (file.styles) metadata.styles = file.styles
-  if (file.dxfStyles) metadata.dxfStyles = file.dxfStyles
-  if (file.visuals) metadata.visuals = file.visuals
-
-  // The `originalPath` the renderer should consider for save: if the session
-  // opened a restored crash-recovery copy, the renderer-facing path is the
-  // ORIGINAL file (file.path), not the snapshot. openWorkbookSession already
-  // sets `file.path = restoreTarget ?? path` — so file.path is correct here.
-  const originalPath = file.path ?? legacy.path
-
-  const adoption: LegacySessionAdoption = {
-    sidecarSessionId: file.sessionId,
-    originalPath,
-    snapshotPath: legacy.snapshotPath,
-    diskFingerprint: legacy.sha256,
-    ...(legacy.suggestSaveAs !== undefined ? { suggestSaveAs: legacy.suggestSaveAs } : {}),
-    ...(legacy.csvImport === true ? { csvImport: legacy.csvImport } : {}),
-    ...(restoreTarget !== undefined ? { restoreTarget } : {}),
-    ...(legacy.restoreTargetSha !== undefined ? { restoreTargetSha: legacy.restoreTargetSha } : {}),
-    sheetNames: legacy.sheetNames,
-    metadata,
-    locale,
-  }
-
-  await adoptLegacySessionIntoCoordinator(bundle, wcId, adoption)
-}
-
-/** which legacy charset an Excel CSV most likely uses, judged by the UI language */
-function legacyCsvCharset(): string | undefined {
-  const byLang: Partial<Record<Lang, string>> = {
-    zh: 'gb18030',
-    'zh-TW': 'big5',
-    ja: 'shift_jis',
-    ko: 'euc-kr',
-  }
-  return byLang[getUiLang()]
-}
-
-/// .xls and .csv open as a converted copy in the temp dir; the session
-/// remembers the original's .xlsx sibling as the Save As default.
-async function prepareWorkbookForOpen(
-  client: XlsxSidecarClient,
-  path: string,
-  parent?: BrowserWindow | undefined,
-): Promise<{
-  openPath: string
-  suggestSaveAs?: string
-  csvImport?: boolean
-  restoreTarget?: string
-}> {
-  const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
-  if (extension !== 'csv' && extension !== 'xls') {
-    // Unsaved work from a lost session: offer the recovery copy. Restoring
-    // opens it with restoreTarget pointing back at the original, so a plain
-    // Save writes straight back over the file the user opened — the restore
-    // prompt (which spells out the overwrite) was the confirmation.
-    const recovery = pendingRecoveryFor(path)
-    if (recovery) {
-      const options = {
-        type: 'question' as const,
-        buttons: [tm('autosaveRestore'), tm('autosaveDiscard')],
-        defaultId: 0,
-        cancelId: 1,
-        message: tm('autosaveFoundTitle'),
-        detail: tm('autosaveFoundBody'),
-      }
-      const answer = parent
-        ? await dialog.showMessageBox(parent, options)
-        : await dialog.showMessageBox(options)
-      if (answer.response === 0) return { openPath: recovery, restoreTarget: path }
-      clearWorkbookRecovery(path)
-    }
-    return { openPath: path }
-  }
-  const stem = basename(path).replace(/\.[^.]+$/, '')
-  const directory = join(app.getPath('temp'), 'genoffice-imports', randomUUID())
-  await mkdir(directory, { recursive: true })
-  const openPath = join(directory, `${stem}.xlsx`)
-  if (extension === 'csv') {
-    await writeFile(
-      openPath,
-      await csvToXlsxBuffer(decodeCsvBuffer(await readFile(path), legacyCsvCharset())),
-    )
-  } else {
-    await client.convertWorkbook({ path, targetPath: openPath })
-  }
-  return {
-    openPath,
-    suggestSaveAs: path.replace(/\.[^.]+$/, '.xlsx'),
-    ...(extension === 'csv' ? { csvImport: true } : {}),
-  }
-}
 
 /** shell-injected items appended to the File menu (e.g. Back to Home) */
 let extraFileMenuItems: MenuItemConstructorOptions[] = []

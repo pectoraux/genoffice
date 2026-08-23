@@ -1,18 +1,22 @@
 /**
- * Increment 14 — Real pivot + auto-rename E2E tests.
+ * Increment 16 — Real pivot + auto-rename E2E tests (cutover to coordinator.openWorkbook).
  *
  * Tests:
  *   1. Pivot fixture creation
- *   2. Real sidecar: open pivot fixture → adopt → readPivotDefinition → verify
+ *   2. Real sidecar: open pivot fixture via coordinator.openWorkbook → readPivotDefinition → verify
  *   3. Auto-rename: coordinator.renameWorkbook with real file on disk
  *   4. Session continuity after rename
  *   5. Legacy mirror update after rename
+ *
+ * Phase 2 Increment 16: the coordinator is the SOLE owner of workbook sessions.
+ * Tests use `coordinator.openWorkbook(wcId, undefined, { queuedPath, locale })`
+ * directly — no legacy open, no adoption bridge.
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest'
-import { writeFileSync, mkdirSync, existsSync, rmSync, copyFileSync, renameSync } from 'node:fs'
+import { writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { randomUUID, createHash } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -29,19 +33,12 @@ vi.mock('electron', () => ({
 import { XlsxSidecarClient } from '../src/main/xlsx-sidecar-client'
 import { ElectronXlsxSidecarEngine } from '@genoffice/platform-electron'
 import { SpreadsheetServiceImpl } from '@genoffice/services-sheets/src/spreadsheet-service.js'
-import { SheetsShellCoordinator, type ShellWorkbookSession } from '../src/main/sheets-shell-coordinator'
-import {
-  initSheetsRuntime,
-  adoptLegacySessionIntoCoordinator,
-  type SheetsRuntimeBundle,
-  type LegacySessionAdoption,
-} from '../src/main/sheets-runtime'
+import { SheetsShellCoordinator } from '../src/main/sheets-shell-coordinator'
+import { initSheetsRuntime, type SheetsRuntimeBundle } from '../src/main/sheets-runtime'
 import { buildPivotFixture } from './pivot-fixture-builder'
-import type { WorkbookMetadata, WorksheetMetadata } from '@genoffice/runtime-contracts'
 import { InvalidSessionError } from '@genoffice/runtime-contracts'
 
 const here = dirname(fileURLToPath(import.meta.url))
-// here = .../apps/sheets/tests — go up 3 levels to reach the repo root
 const repoRoot = resolve(here, '..', '..', '..')
 const SIDECAR_BIN = join(repoRoot, 'apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar')
 const SIDECAR_AVAILABLE = existsSync(SIDECAR_BIN)
@@ -54,59 +51,28 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
-function sha256OfFile(path: string): string {
-  const { readFileSync } = require('node:fs')
-  return createHash('sha256').update(readFileSync(path)).digest('hex')
-}
-
-function makeMetadata(name = 'test.xlsx'): WorkbookMetadata {
-  const sheets: WorksheetMetadata[] = [{
-    id: 'sheet-1', name: 'Data', index: 0, hidden: false, rtl: false,
-    showGridlines: true, rowCount: 100, columnCount: 26,
-    defaultRowHeight: 15, defaultColumnWidth: 8.43,
-  }]
-  return {
-    name, sha256: 'abc123', entryCount: 10, sheets, activeTab: 0,
-    definedNames: [], themeColors: [], themeFonts: { major: '', minor: '' },
-  }
-}
-
-async function openAndAdopt(
+/**
+ * Open a workbook via `coordinator.openWorkbook()` with `queuedPath` —
+ * the migrated open path. No legacy open, no adoption bridge.
+ * The coordinator owns the entire lifecycle: snapshot, engine.open, session registration.
+ */
+async function openViaCoordinator(
   bundle: SheetsRuntimeBundle,
   wcId: number,
-  mockClient: XlsxSidecarClient,
   workbookPath: string,
   locale = 'en',
-): Promise<{ sessionId: string; session: ShellWorkbookSession; snapshotPath: string }> {
-  const snapshotDir = join(tmpdir(), `genoffice-test-snapshots-${randomUUID()}`)
-  mkdirSync(snapshotDir, { recursive: true })
-  const snapshotPath = join(snapshotDir, `${randomUUID()}.xlsx`)
-  copyFileSync(workbookPath, snapshotPath)
-  const opened = await mockClient.open(snapshotPath, locale) as {
-    sessionId: string
-    sheets: Array<{ id: string; name: string }>
-  }
-  const sessionId = opened.sessionId
-  const diskFingerprint = sha256OfFile(snapshotPath)
-  const sheetNames = new Map<string, string>()
-  for (const s of opened.sheets) sheetNames.set(s.id, s.name)
-  const metadata = makeMetadata(workbookPath.split(/[\\/]/).pop() ?? 'workbook.xlsx')
-  const adoption: LegacySessionAdoption = {
-    sidecarSessionId: sessionId,
-    originalPath: workbookPath,
-    snapshotPath,
-    diskFingerprint,
-    sheetNames,
-    metadata,
+): Promise<{ sessionId: string; session: ReturnType<SheetsShellCoordinator['getSession']> }> {
+  const result = await bundle.coordinator.openWorkbook(wcId, undefined, {
+    queuedPath: workbookPath,
     locale,
-  }
-  const session = await adoptLegacySessionIntoCoordinator(bundle, wcId, adoption)
-  return { sessionId, session, snapshotPath }
+  })
+  if (!result) throw new Error('openWorkbook returned null')
+  return { sessionId: result.sessionId, session: result.session }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
 
-describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E2E', () => {
+describe.skipIf(!SIDECAR_AVAILABLE)('Increment 16 — Real pivot + auto-rename E2E (coordinator.open)', () => {
   beforeEach(() => {
     testDir = join(tmpdir(), `genoffice-test-${randomUUID()}`)
     mkdirSync(testDir, { recursive: true })
@@ -119,44 +85,35 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
     test('buildPivotFixture creates a valid XLSX', async () => {
       const buf = await buildPivotFixture()
       expect(buf.length).toBeGreaterThan(1000)
-      // Write to disk for sidecar verification
       const pivotPath = join(testDir, 'pivot.xlsx')
       writeFileSync(pivotPath, buf)
       expect(existsSync(pivotPath)).toBe(true)
     })
   })
 
-  // ═══ 2. Real sidecar pivot read ═══
+  // ═══ 2. Real sidecar pivot read via coordinator.open ═══
 
-  describe('real sidecar pivot read', () => {
-    test('open pivot fixture → adopt → readPivotDefinition → verify', async () => {
+  describe('real sidecar pivot read (coordinator.open)', () => {
+    test('open pivot fixture via coordinator → readPivotDefinition → verify', async () => {
       const sidecarClient = new XlsxSidecarClient(SIDECAR_BIN)
       sidecarClient.start()
       const bundle = initSheetsRuntime({ binaryPath: SIDECAR_BIN, sidecarClient })
 
-      // Create pivot fixture
       const pivotBuf = await buildPivotFixture()
       const pivotPath = join(testDir, 'pivot.xlsx')
       writeFileSync(pivotPath, pivotBuf)
 
-      // Open + adopt
-      const { sessionId } = await openAndAdopt(bundle, 100, sidecarClient, pivotPath)
+      const { sessionId } = await openViaCoordinator(bundle, 100, pivotPath)
 
-      // Read pivot definition — returns the typed WorkbookPivotDefinition
-      // contract (NOT `unknown`). The handler in sheets-migrated-handlers.ts
-      // runs the value through workbookPivotDefinitionSchema.parse() as a
-      // frozen-IPC sanity check; here we verify the typed fields directly.
       const pivotDefinition = await bundle.coordinator.readPivotDefinition(
         100, sessionId,
         'xl/pivotTables/pivotTable1.xml',
         'xl/pivotCache/pivotCacheDefinition1.xml',
       )
 
-      // Verify the parsed pivot definition has real data — typed access,
-      // no `as` cast (the coordinator returns WorkbookPivotDefinition).
       expect(pivotDefinition).toBeDefined()
       expect(pivotDefinition.outputRef).toBeTruthy()
-      expect(pivotDefinition.fields.length).toBe(3) // Name, Category, Value
+      expect(pivotDefinition.fields.length).toBe(3)
 
       await bundle.coordinator.teardown(100)
       sidecarClient.stop()
@@ -171,10 +128,8 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       const pivotPath = join(testDir, 'pivot.xlsx')
       writeFileSync(pivotPath, pivotBuf)
 
-      // Open in renderer A (wcId=100)
-      const { sessionId } = await openAndAdopt(bundle, 100, sidecarClient, pivotPath)
+      const { sessionId } = await openViaCoordinator(bundle, 100, pivotPath)
 
-      // Try to read from renderer B (wcId=200) — should fail
       await expect(bundle.coordinator.readPivotDefinition(
         200, sessionId,
         'xl/pivotTables/pivotTable1.xml',
@@ -194,12 +149,10 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       const pivotPath = join(testDir, 'pivot.xlsx')
       writeFileSync(pivotPath, pivotBuf)
 
-      const { sessionId } = await openAndAdopt(bundle, 100, sidecarClient, pivotPath)
+      const { sessionId } = await openViaCoordinator(bundle, 100, pivotPath)
 
-      // Close the session
       await bundle.coordinator.closeWorkbook(100, sessionId)
 
-      // Pivot read should fail
       await expect(bundle.coordinator.readPivotDefinition(
         100, sessionId,
         'xl/pivotTables/pivotTable1.xml',
@@ -218,30 +171,23 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       sidecarClient.start()
       const engine = new ElectronXlsxSidecarEngine({ binaryPath: SIDECAR_BIN, sidecarClient })
       const service = new SpreadsheetServiceImpl({ engine })
-      const coordinator = new SheetsShellCoordinator({
-        service,
-      })
-      const bundle = { engine, service, coordinator } as SheetsRuntimeBundle
+      const onWorkbookRenamed = vi.fn()
+      const coordinator = new SheetsShellCoordinator({ service, onWorkbookRenamed })
+      const bundle = { engine, service, coordinator } as unknown as SheetsRuntimeBundle
 
-      // Create a fixture file
       const fixturePath = join(testDir, 'Untitled.xlsx')
       const pivotBuf = await buildPivotFixture()
       writeFileSync(fixturePath, pivotBuf)
 
-      // Open + adopt
-      const { sessionId, session } = await openAndAdopt(bundle, 100, sidecarClient, fixturePath)
-
-      // Mark as untitled
+      const { sessionId, session } = await openViaCoordinator(bundle, 100, fixturePath)
       coordinator.markUntitledPath(fixturePath)
 
-      // Mock webContents
       const sendCalls: string[] = []
       const mockWc = {
         isDestroyed: () => false,
         send: (channel: string, data: unknown) => { sendCalls.push(`${channel}:${data}`) },
       }
 
-      // Rename
       const result = await coordinator.renameWorkbook(
         100, mockWc as unknown as import('electron').WebContents,
         sessionId, 'My Renamed Sheet',
@@ -250,24 +196,18 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       expect(result.renamed).toBe(true)
       expect(result.name).toBe('My Renamed Sheet.xlsx')
 
-      // New path exists
       const newPath = join(testDir, 'My Renamed Sheet.xlsx')
       expect(existsSync(newPath)).toBe(true)
-
-      // Old path no longer exists
       expect(existsSync(fixturePath)).toBe(false)
 
-      // Push event was sent to the owning renderer
       expect(sendCalls).toContain('workbook:renamed:My Renamed Sheet.xlsx')
 
-      // Session still valid — originalPath updated
       const updatedSession = coordinator.getSession(100, sessionId)
       expect(updatedSession.sessionId).toBe(sessionId)
       expect(updatedSession.originalPath).toBe(newPath)
       expect(updatedSession.engineHandle).toBe(session.engineHandle)
       expect(updatedSession.snapshotPath).toBe(session.snapshotPath)
 
-      // Read still works
       const readResult = await coordinator.readRange(100, sessionId, 'sheet-1', 'A1:B1')
       expect(readResult.cells).toBeDefined()
 
@@ -280,58 +220,47 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       sidecarClient.start()
       const engine = new ElectronXlsxSidecarEngine({ binaryPath: SIDECAR_BIN, sidecarClient })
       const service = new SpreadsheetServiceImpl({ engine })
-      const coordinator = new SheetsShellCoordinator({
-        service,
-      })
-      const bundle = { engine, service, coordinator } as SheetsRuntimeBundle
+      const coordinator = new SheetsShellCoordinator({ service })
+      const bundle = { engine, service, coordinator } as unknown as SheetsRuntimeBundle
 
       const fixturePath = join(testDir, 'Named.xlsx')
       const pivotBuf = await buildPivotFixture()
       writeFileSync(fixturePath, pivotBuf)
 
-      const { sessionId } = await openAndAdopt(bundle, 100, sidecarClient, fixturePath)
+      const { sessionId } = await openViaCoordinator(bundle, 100, fixturePath)
 
-      // NOT marked as untitled — rename should be refused
-      const mockWc = {
-        isDestroyed: () => false,
-        send: () => {},
-      }
+      const mockWc = { isDestroyed: () => false, send: () => {} }
       const result = await coordinator.renameWorkbook(
         100, mockWc as unknown as import('electron').WebContents,
         sessionId, 'New Name',
       )
 
       expect(result.renamed).toBe(false)
-      // File still exists at original path
       expect(existsSync(fixturePath)).toBe(true)
 
       await coordinator.teardown(100)
       sidecarClient.stop()
     })
 
-    test('name collision → rename refused with suffix', async () => {
+    test('name collision → rename with suffix', async () => {
       const sidecarClient = new XlsxSidecarClient(SIDECAR_BIN)
       sidecarClient.start()
       const engine = new ElectronXlsxSidecarEngine({ binaryPath: SIDECAR_BIN, sidecarClient })
       const service = new SpreadsheetServiceImpl({ engine })
-      const coordinator = new SheetsShellCoordinator({
-        service,
-      })
-      const bundle = { engine, service, coordinator } as SheetsRuntimeBundle
+      const coordinator = new SheetsShellCoordinator({ service })
+      const bundle = { engine, service, coordinator } as unknown as SheetsRuntimeBundle
 
       const fixturePath = join(testDir, 'Untitled.xlsx')
       const pivotBuf = await buildPivotFixture()
       writeFileSync(fixturePath, pivotBuf)
 
-      // Create a colliding file
       const collisionPath = join(testDir, 'Collision.xlsx')
       writeFileSync(collisionPath, 'other')
 
-      const { sessionId } = await openAndAdopt(bundle, 100, sidecarClient, fixturePath)
+      const { sessionId } = await openViaCoordinator(bundle, 100, fixturePath)
       coordinator.markUntitledPath(fixturePath)
 
       const mockWc = { isDestroyed: () => false, send: () => {} }
-      // Rename to "Collision" — file exists, should get "Collision-2.xlsx"
       const result = await coordinator.renameWorkbook(
         100, mockWc as unknown as import('electron').WebContents,
         sessionId, 'Collision',
@@ -343,7 +272,6 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       const newPath = join(testDir, 'Collision-2.xlsx')
       expect(existsSync(newPath)).toBe(true)
       expect(existsSync(fixturePath)).toBe(false)
-      // Original collision file is untouched
       expect(existsSync(collisionPath)).toBe(true)
 
       await coordinator.teardown(100)
@@ -355,20 +283,17 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       sidecarClient.start()
       const engine = new ElectronXlsxSidecarEngine({ binaryPath: SIDECAR_BIN, sidecarClient })
       const service = new SpreadsheetServiceImpl({ engine })
-      const coordinator = new SheetsShellCoordinator({
-        service,
-      })
-      const bundle = { engine, service, coordinator } as SheetsRuntimeBundle
+      const coordinator = new SheetsShellCoordinator({ service })
+      const bundle = { engine, service, coordinator } as unknown as SheetsRuntimeBundle
 
       const fixturePath = join(testDir, 'Untitled.xlsx')
       const pivotBuf = await buildPivotFixture()
       writeFileSync(fixturePath, pivotBuf)
 
-      const { sessionId } = await openAndAdopt(bundle, 100, sidecarClient, fixturePath)
+      const { sessionId } = await openViaCoordinator(bundle, 100, fixturePath)
       coordinator.markUntitledPath(fixturePath)
 
       const mockWc = { isDestroyed: () => false, send: () => {} }
-      // Name with only illegal chars → sanitized to empty → refused
       const result = await coordinator.renameWorkbook(
         100, mockWc as unknown as import('electron').WebContents,
         sessionId, '   ',
@@ -386,12 +311,9 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       sidecarClient.start()
       const engine = new ElectronXlsxSidecarEngine({ binaryPath: SIDECAR_BIN, sidecarClient })
       const service = new SpreadsheetServiceImpl({ engine })
-      const coordinator = new SheetsShellCoordinator({
-        service,
-      })
+      const coordinator = new SheetsShellCoordinator({ service })
 
       const mockWc = { isDestroyed: () => false, send: () => {} }
-      // Unknown renderer (wcId=999) → InvalidSessionError
       await expect(coordinator.renameWorkbook(
         999, mockWc as unknown as import('electron').WebContents,
         randomUUID(), 'New Name',

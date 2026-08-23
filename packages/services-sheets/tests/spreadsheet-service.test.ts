@@ -565,3 +565,56 @@ describe('SpreadsheetServiceImpl', () => {
     })
   })
 })
+
+// ═══ INCREMENT 16 — convertWorkbook service port ═══
+
+describe('SpreadsheetServiceImpl — convertWorkbook (Increment 16)', () => {
+  test('delegates to engine.convertWorkbook with bytes + fileName', async () => {
+    const { service, engine } = makeService()
+    const legacyBytes = new Uint8Array([0, 1, 2, 3, 4, 5])
+    const result = await service.convertWorkbook(legacyBytes, 'legacy.xls')
+    expect(engine.convertWorkbook).toHaveBeenCalledTimes(1)
+    expect(engine.convertWorkbook).toHaveBeenCalledWith(legacyBytes, 'legacy.xls')
+    expect(result.data).toBeInstanceOf(Uint8Array)
+    expect(result.fileName).toBe('converted.xlsx')
+  })
+
+  test('returns the converted bytes (no filesystem I/O in the service)', async () => {
+    const convertedBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]) // ZIP magic
+    const engine = makeMockEngine()
+    ;(engine.convertWorkbook as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      data: convertedBytes,
+      fileName: 'report.xlsx',
+    })
+    const { service } = makeService(engine)
+    const result = await service.convertWorkbook(new Uint8Array([1, 2, 3]), 'report.xls')
+    expect(result.data).toBe(convertedBytes)
+    expect(result.fileName).toBe('report.xlsx')
+  })
+
+  test('propagates engine errors (does NOT swallow them)', async () => {
+    const engine = makeMockEngine()
+    const engineError = new EngineError('conversion failed', 'INTERNAL_ERROR')
+    ;(engine.convertWorkbook as ReturnType<typeof vi.fn>).mockRejectedValueOnce(engineError)
+    const { service } = makeService(engine)
+    await expect(
+      service.convertWorkbook(new Uint8Array([1, 2, 3]), 'bad.xls'),
+    ).rejects.toThrow(EngineError)
+  })
+
+  test('performs NO filesystem I/O — accepts bytes, returns bytes', async () => {
+    // The service contract is data-oriented: it accepts Uint8Array content,
+    // NOT a filesystem path. The engine implementation may write the bytes
+    // to a temp file internally (private to the adapter), but the service
+    // itself touches no filesystem.
+    const { service, engine } = makeService()
+    const spy = vi.spyOn(service, 'convertWorkbook')
+    const inputBytes = new Uint8Array([1, 2, 3, 4, 5])
+    await service.convertWorkbook(inputBytes, 'input.xls')
+    expect(spy).toHaveBeenCalledWith(inputBytes, 'input.xls')
+    // Verify the engine was called with bytes (not a path string).
+    const call = (engine.convertWorkbook as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(call![0]).toBeInstanceOf(Uint8Array)
+    expect(typeof call![1]).toBe('string')
+  })
+})

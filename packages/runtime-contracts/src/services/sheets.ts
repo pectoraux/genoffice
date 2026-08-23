@@ -291,6 +291,34 @@ export interface SpreadsheetService {
    */
   close(engineHandle: EngineSessionHandle): Promise<void>
 
+  /**
+   * Convert a legacy workbook (.xls) to .xlsx format.
+   *
+   * Phase 2 Increment 16 — this is the service-level port of the engine's
+   * `convertWorkbook()` method. The coordinator calls this during
+   * `prepareWorkbookForOpen()` when the user opens a `.xls` file: the
+   * converted `.xlsx` bytes are written to a temp file and that temp
+   * file is what the engine actually opens (the legacy `.xls` stays
+   * untouched on disk; the user is prompted to Save As on first save).
+   *
+   * The service performs NO filesystem I/O — it accepts the legacy
+   * file's bytes and returns the converted bytes. The shell (coordinator)
+   * writes the bytes to a temp file.
+   *
+   * THROWS on failure:
+   *   - InvalidInputError — the bytes are not a valid legacy workbook
+   *   - EngineError       — engine/protocol failure
+   *
+   * @param workbook — the raw legacy file content (Uint8Array)
+   * @param fileName — the legacy file name (e.g. 'old.xls')
+   * @returns the converted .xlsx content as bytes + the new file name
+   *          (the new file name is the legacy stem with `.xlsx` extension)
+   */
+  convertWorkbook(
+    workbook: Uint8Array,
+    fileName: string,
+  ): Promise<{ data: Uint8Array; fileName: string }>
+
   // ── Workbook operations ──
 
   /**
