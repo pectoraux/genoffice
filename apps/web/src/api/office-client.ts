@@ -65,10 +65,20 @@ export type SerializedBlockType =
   | 'passthrough'
   | 'hidden'
 
+export interface SerializedRun {
+  readonly text: string
+  readonly bold?: boolean
+  readonly italic?: boolean
+  readonly underline?: boolean
+  readonly strike?: boolean
+  readonly link?: { readonly href: string; readonly tooltip?: string }
+}
+
 export interface SerializedBlock {
   readonly docxIndex: number | null
   readonly type: SerializedBlockType
   readonly text: string
+  readonly runs?: readonly SerializedRun[]
   readonly level?: number
   readonly listKind?: 'bullet' | 'ordered'
   readonly edited?: boolean
@@ -245,11 +255,39 @@ export function downloadBytes(
  */
 function isOfficeApiErrorBody(value: unknown): value is { error: string; message: string } {
   if (typeof value !== 'object' || value === null) return false
-  const v = value as { error?: unknown; message?: unknown }
+  const v = value as Record<string, unknown>
   return typeof v.error === 'string' && typeof v.message === 'string'
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+// ── Response type guards ────────────────────────────────────────────────────
+
+function isString(v: unknown): v is string { return typeof v === 'string' }
+function isObject(v: unknown): v is Record<string, unknown> { return typeof v === 'object' && v !== null && !Array.isArray(v) }
+
+function isOpenWorkbookResponse(v: unknown): v is OpenWorkbookResponse {
+  if (!isObject(v)) return false
+  if (!isObject(v.snapshot)) return false
+  if (!Array.isArray(v.snapshot.sheets)) return false
+  if (!isObject(v.sheetNamesById)) return false
+  return true
+}
+
+function isSaveWorkbookResponse(v: unknown): v is SaveWorkbookResponse {
+  if (!isObject(v)) return false
+  return isString(v.fileBytes)
+}
+
+function isOpenDocumentResponse(v: unknown): v is OpenDocumentResponse {
+  if (!isObject(v)) return false
+  return Array.isArray(v.blocks)
+}
+
+function isSaveDocumentResponse(v: unknown): v is SaveDocumentResponse {
+  if (!isObject(v)) return false
+  return isString(v.fileBytes)
+}
+
+async function postJson<T>(path: string, body: unknown, guard?: (v: unknown) => v is T): Promise<T> {
   const res = await fetch(`/api/office${path}`, {
     method: 'POST',
     credentials: 'same-origin',
@@ -281,12 +319,17 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
       message: `Office API request failed (${res.status})`,
     })
   }
-  // The caller is responsible for shaping `parsed` into the expected
-  // response type. We return `parsed` cast to T because the wire-shape
-  // validation already happened server-side; doing a full client-side
-  // runtime check on every response would duplicate the route's
-  // validators. Callers that want full type safety can wrap the result
-  // in their own type guard.
+  // Runtime-verify the response shape if a type guard was provided.
+  if (guard) {
+    if (!guard(parsed)) {
+      throw new OfficeApiRequestError({
+        status: res.status,
+        error: 'internal',
+        message: 'Office API returned a malformed response (failed type guard)',
+      })
+    }
+    return parsed
+  }
   return parsed as T
 }
 
@@ -307,7 +350,7 @@ export async function openWorkbook(input: {
     input.fileBytes instanceof Uint8Array ? input.fileBytes : new Uint8Array(input.fileBytes),
   )
   const req: OpenWorkbookRequest = { fileName: input.fileName, fileBytes }
-  return postJson<OpenWorkbookResponse>('/workbooks/open', req)
+  return postJson<OpenWorkbookResponse>('/workbooks/open', req, isOpenWorkbookResponse)
 }
 
 /**
@@ -335,7 +378,7 @@ export async function saveWorkbook(input: {
     fileBytes,
     savePlan: input.savePlan,
   }
-  const res = await postJson<SaveWorkbookResponse>('/workbooks/save', req)
+  const res = await postJson<SaveWorkbookResponse>('/workbooks/save', req, isSaveWorkbookResponse)
   return codec.decode(res.fileBytes)
 }
 
@@ -354,7 +397,7 @@ export async function openDocument(input: {
     input.fileBytes instanceof Uint8Array ? input.fileBytes : new Uint8Array(input.fileBytes),
   )
   const req: OpenDocumentRequest = { fileName: input.fileName, fileBytes }
-  return postJson<OpenDocumentResponse>('/documents/open', req)
+  return postJson<OpenDocumentResponse>('/documents/open', req, isOpenDocumentResponse)
 }
 
 /**
@@ -376,7 +419,7 @@ export async function saveDocument(input: {
     fileBytes,
     blocks: input.blocks,
   }
-  const res = await postJson<SaveDocumentResponse>('/documents/save', req)
+  const res = await postJson<SaveDocumentResponse>('/documents/save', req, isSaveDocumentResponse)
   return codec.decode(res.fileBytes)
 }
 

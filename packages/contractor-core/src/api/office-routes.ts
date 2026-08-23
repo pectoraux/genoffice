@@ -34,6 +34,7 @@ import {
   saveDocx,
   type Block,
   type ParsedDocFull,
+  type Run,
   type SaveBlock,
 } from '@genoffice/docx-engine'
 
@@ -98,26 +99,50 @@ export interface SaveWorkbookResponse {
 }
 
 /**
+ * Serialized run — browser-safe representation of a docx-engine Run.
+ *
+ * Carries inline formatting marks (bold, italic, underline, strike, links)
+ * so the browser editor can faithfully render and edit rich text.
+ * Derived from docx-engine's Run type; only the browser-relevant subset
+ * is serialized (display-only fields like rawRPr, charSpacingTwips, etc.
+ * are preserved by the server's original-block passthrough).
+ */
+export interface SerializedRun {
+  readonly text: string
+  readonly bold?: boolean
+  readonly italic?: boolean
+  readonly underline?: boolean
+  readonly strike?: boolean
+  readonly link?: { readonly href: string; readonly tooltip?: string }
+}
+
+/**
  * Simplified Tiptap-compatible block representation.
  *
  * The browser renders blocks in Tiptap; the docx-engine's rich Block type
  * carries display-only fields (charts, ink, image data URLs…) that we do not
  * round-trip through JSON. SerializedBlock keeps just enough to:
- *   - render the block (type + text + level)
+ *   - render the block (type + runs + level)
  *   - save the block back: `docxIndex` lets the server re-emit the original
  *     XML byte-identically when the block is unchanged; `edited` lets the
- *     server regenerate the paragraph from `text` when the user typed into it.
+ *     server regenerate the paragraph from `runs` when the user typed into it.
  *
  * Stable identity rule: `docxIndex` is the index of the original
  * <w:body> child the block came from. New blocks inserted by the editor
  * carry `docxIndex: null`. Deleted blocks are simply absent from the save
  * request. The browser must NOT renumber blocks by their visible position —
  * that would corrupt patch anchors when an edit changes the block order.
+ *
+ * Run-level formatting: `runs` carries the inline marks (bold, italic, etc.)
+ * so the browser can render faithful rich text. When `edited` is false and
+ * `docxIndex` is not null, the server copies original bytes; runs are only
+ * used when `edited` is true.
  */
 export interface SerializedBlock {
   readonly docxIndex: number | null
   readonly type: 'paragraph' | 'heading' | 'listItem' | 'table' | 'image' | 'passthrough' | 'hidden'
   readonly text: string
+  readonly runs?: readonly SerializedRun[]
   readonly level?: number
   readonly listKind?: 'bullet' | 'ordered'
   /** true when the browser editor modified the block; the server regenerates it. */
@@ -584,6 +609,16 @@ async function handleSaveWorkbook(
 
 // ── Document (DOCX) handlers ────────────────────────────────────────────────
 
+function serializeRun(run: Run): SerializedRun {
+  const out: { text: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; link?: { href: string; tooltip?: string } } = { text: run.text }
+  if (run.bold) out.bold = true
+  if (run.italic) out.italic = true
+  if (run.underline) out.underline = true
+  if (run.strike) out.strike = true
+  if (run.link) out.link = { href: run.link.href, ...(run.link.tooltip ? { tooltip: run.link.tooltip } : {}) }
+  return out
+}
+
 function serializeBlock(block: Block): SerializedBlock {
   const runs = block.runs ?? []
   const text = runs.map((r) => r.text).join('')
@@ -602,10 +637,14 @@ function serializeBlock(block: Block): SerializedBlock {
             : block.type === 'image'
               ? 'image'
               : 'passthrough'
+  // Serialize runs with inline formatting marks (bold, italic, underline,
+  // strike, link) so the browser editor can render faithful rich text.
+  const serializedRuns = runs.length > 0 ? runs.map(serializeRun) : undefined
   return {
     docxIndex: block.docxIndex,
     type,
     text,
+    ...(serializedRuns ? { runs: serializedRuns } : {}),
     level: block.level,
     listKind: block.list?.kind,
     edited: false,
@@ -656,14 +695,24 @@ function toSaveBlocks(blocks: readonly SerializedBlock[]): SaveBlock[] {
       out.push({ kind: 'original', docxIndex: b.docxIndex })
       continue
     }
-    // Regenerate as a paragraph/heading/listItem with plain-text runs.
+    // Regenerate with run-level formatting (bold, italic, underline, strike, link).
+    // If the browser sent `runs`, use them; otherwise fall back to plain text.
+    const runs: Array<{ text: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; link?: { href: string; tooltip?: string } }> =
+      b.runs && b.runs.length > 0 ? b.runs.map(r => ({
+        text: r.text,
+        ...(r.bold ? { bold: true } : {}),
+        ...(r.italic ? { italic: true } : {}),
+        ...(r.underline ? { underline: true } : {}),
+        ...(r.strike ? { strike: true } : {}),
+        ...(r.link ? { link: r.link } : {}),
+      })) : [{ text: b.text }]
     if (b.type === 'heading') {
       out.push({
         kind: 'generated',
         block: {
           type: 'heading',
           level: b.level ?? 1,
-          runs: [{ text: b.text }],
+          runs,
         },
       })
     } else if (b.type === 'listItem') {
@@ -672,7 +721,7 @@ function toSaveBlocks(blocks: readonly SerializedBlock[]): SaveBlock[] {
         block: {
           type: 'listItem',
           list: { kind: b.listKind ?? 'bullet', numId: '1', ilvl: 0 },
-          runs: [{ text: b.text }],
+          runs,
         },
       })
     } else {
@@ -680,7 +729,7 @@ function toSaveBlocks(blocks: readonly SerializedBlock[]): SaveBlock[] {
         kind: 'generated',
         block: {
           type: 'paragraph',
-          runs: [{ text: b.text }],
+          runs,
         },
       })
     }
