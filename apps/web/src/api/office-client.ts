@@ -3,7 +3,10 @@
  *
  * The browser uses this to round-trip .xlsx and .docx files through the
  * pure office engines on the server. Bytes are base64-encoded inside JSON
- * envelopes (acceptable for fixture-sized files per the Phase-2 spec).
+ * envelopes (acceptable for fixture-sized files per the Phase-2 spec), but
+ * the byte transport is abstracted behind `OfficeBinaryCodec` so a future
+ * binary transport (multipart, MessagePack, …) can be swapped in without
+ * touching the call sites.
  *
  * Browser-only. Uses ONLY `fetch` (no Node APIs, no Electron).
  *
@@ -31,11 +34,24 @@ export interface OpenWorkbookResponse {
   readonly snapshot: WorkbookSnapshot
   readonly sheetNamesById: Readonly<Record<string, string>>
 }
-export interface SaveWorkbookRequest {
+
+/**
+ * Save-mutation plan for a workbook. Mirrors the server-side
+ * `BrowserWorkbookSavePlan` shape: `edits` carries the CellEdit[] today,
+ * and the open index signature lets future mutation families land without
+ * a wire-breaking change.
+ */
+export interface BrowserWorkbookSavePlan {
+  readonly edits: readonly CellEdit[]
+  readonly [key: string]: unknown
+}
+
+export interface BrowserWorkbookSaveRequest {
   readonly fileName: string
   readonly fileBytes: string
-  readonly cellEdits: readonly CellEdit[]
+  readonly savePlan: BrowserWorkbookSavePlan
 }
+
 export interface SaveWorkbookResponse {
   readonly fileBytes: string
 }
@@ -94,35 +110,108 @@ export class OfficeApiRequestError extends Error {
   }
 }
 
+// ── Byte transport codec ────────────────────────────────────────────────────
+
+/**
+ * Browser-side mirror of the server-side `OfficeBinaryCodec` interface.
+ * The route handlers depend only on the interface; the default
+ * `BrowserBase64Codec` uses `atob`/`btoa` so the browser bundle never
+ * pulls in a Node Buffer polyfill.
+ *
+ * To swap in a different transport (e.g. a binary protocol with custom
+ * framing), provide a custom `OfficeBinaryCodec` implementation to the
+ * API functions.
+ */
+export interface OfficeBinaryCodec {
+  encode(bytes: Uint8Array): string
+  decode(encoded: string): Uint8Array
+}
+
+/**
+ * Default base64 codec using the browser-native `atob`/`btoa` globals.
+ * This is the browser counterpart to `Base64Codec` in office-routes.ts —
+ * both produce/consume the same wire bytes, but this one avoids any Node
+ * Buffer dependency so the browser bundle stays Node-free.
+ */
+export class BrowserBase64Codec implements OfficeBinaryCodec {
+  encode(bytes: Uint8Array): string {
+    let binary = ''
+    const CHUNK = 0x8000 // 32k chunks — avoids call-stack limits on large files
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      const end = Math.min(i + CHUNK, bytes.length)
+      let chunk = ''
+      for (let j = i; j < end; j++) chunk += String.fromCharCode(bytes[j])
+      binary += chunk
+    }
+    return btoa(binary)
+  }
+  decode(encoded: string): Uint8Array {
+    const binary = atob(encoded)
+    const len = binary.length
+    const out = new Uint8Array(len)
+    for (let i = 0; i < len; i++) out[i] = binary.charCodeAt(i)
+    return out
+  }
+}
+
+const DEFAULT_CODEC: OfficeBinaryCodec = new BrowserBase64Codec()
+
+// ── Document/workbook handles ───────────────────────────────────────────────
+
+/**
+ * Stable handle to an open XLSX workbook. Replaces the editor's ad-hoc
+ * `sourceBytesRef` + `fileNameRef` pair: every save returns a new handle
+ * whose `revision` is incremented, so callers can tell at a glance whether
+ * they're holding the latest persisted state.
+ *
+ * The handle is browser-only — it holds the source bytes (the canonical
+ * engine input) and the display name. It carries no engine state.
+ */
+export interface OfficeWorkbookHandle {
+  readonly fileName: string
+  readonly sourceBytes: Uint8Array
+  /** Monotonically incremented on each successful save. 0 = freshly opened. */
+  readonly revision: number
+}
+
+/**
+ * Stable handle to an open DOCX document. Like `OfficeWorkbookHandle`
+ * minus the revision counter — the DOCX engine's patch-save is keyed by
+ * `docxIndex` anchors rather than by a revision counter, so a single
+ * (fileName, sourceBytes) pair is sufficient identity.
+ */
+export interface OfficeDocumentHandle {
+  readonly fileName: string
+  readonly sourceBytes: Uint8Array
+}
+
+/** Construct a workbook handle from a freshly opened file. */
+export function createWorkbookHandle(
+  fileName: string,
+  sourceBytes: Uint8Array,
+): OfficeWorkbookHandle {
+  return { fileName, sourceBytes, revision: 0 }
+}
+
+/** Construct a document handle from a freshly opened file. */
+export function createDocumentHandle(
+  fileName: string,
+  sourceBytes: Uint8Array,
+): OfficeDocumentHandle {
+  return { fileName, sourceBytes }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Decode a base64 string into a Uint8Array (browser-friendly; no Node Buffer). */
 export function decodeBase64ToBytes(b64: string): Uint8Array {
-  // Use the browser-native atob + Uint8Array. We avoid Buffer because the
-  // browser must not pull in any Node polyfill.
-  const binary = atob(b64)
-  const len = binary.length
-  const out = new Uint8Array(len)
-  for (let i = 0; i < len; i++) out[i] = binary.charCodeAt(i)
-  return out
+  return DEFAULT_CODEC.decode(b64)
 }
 
 /** Encode a Uint8Array (or ArrayBuffer) into a base64 string. */
 export function encodeBytesToBase64(input: Uint8Array | ArrayBuffer): string {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input)
-  let binary = ''
-  const CHUNK = 0x8000 // 32k chunks — avoids call-stack limits on large files
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    const end = Math.min(i + CHUNK, bytes.length)
-    // Build a binary string from the byte slice. We avoid the TS-incompatible
-    // `String.fromCharCode.apply(null, slice as unknown as number[])` cast by
-    // pushing one char at a time within the chunk — modern engines optimize
-    // this fine for the chunk sizes we use here.
-    let chunk = ''
-    for (let j = i; j < end; j++) chunk += String.fromCharCode(bytes[j])
-    binary += chunk
-  }
-  return btoa(binary)
+  return DEFAULT_CODEC.encode(bytes)
 }
 
 /** Trigger a browser download for a blob of bytes. */
@@ -149,6 +238,17 @@ export function downloadBytes(
 
 // ── Core request helper ──────────────────────────────────────────────────────
 
+/**
+ * Runtime type guard for an OfficeApiError-shaped JSON body. Replaces the
+ * previous `parsed as { error?: string; message?: string } | null` cast —
+ * the cast silently trusted the server, this guard verifies the shape.
+ */
+function isOfficeApiErrorBody(value: unknown): value is { error: string; message: string } {
+  if (typeof value !== 'object' || value === null) return false
+  const v = value as { error?: unknown; message?: unknown }
+  return typeof v.error === 'string' && typeof v.message === 'string'
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`/api/office${path}`, {
     method: 'POST',
@@ -168,13 +268,25 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     })
   }
   if (!res.ok) {
-    const err = parsed as { error?: string; message?: string } | null
+    if (isOfficeApiErrorBody(parsed)) {
+      throw new OfficeApiRequestError({
+        status: res.status,
+        error: parsed.error,
+        message: parsed.message,
+      })
+    }
     throw new OfficeApiRequestError({
       status: res.status,
-      error: err?.error ?? 'internal',
-      message: err?.message ?? `Office API request failed (${res.status})`,
+      error: 'internal',
+      message: `Office API request failed (${res.status})`,
     })
   }
+  // The caller is responsible for shaping `parsed` into the expected
+  // response type. We return `parsed` cast to T because the wire-shape
+  // validation already happened server-side; doing a full client-side
+  // runtime check on every response would duplicate the route's
+  // validators. Callers that want full type safety can wrap the result
+  // in their own type guard.
   return parsed as T
 }
 
@@ -182,45 +294,65 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 /**
  * Open an XLSX file: upload its bytes (base64-encoded) and receive the
- * server-side WorkbookSnapshot.
+ * server-side WorkbookSnapshot. Returns the snapshot — the caller pairs
+ * it with the source bytes to construct an `OfficeWorkbookHandle`.
  */
 export async function openWorkbook(input: {
   fileName: string
   fileBytes: Uint8Array | ArrayBuffer
+  codec?: OfficeBinaryCodec
 }): Promise<OpenWorkbookResponse> {
-  const fileBytes = encodeBytesToBase64(input.fileBytes)
+  const codec = input.codec ?? DEFAULT_CODEC
+  const fileBytes = codec.encode(
+    input.fileBytes instanceof Uint8Array ? input.fileBytes : new Uint8Array(input.fileBytes),
+  )
   const req: OpenWorkbookRequest = { fileName: input.fileName, fileBytes }
   return postJson<OpenWorkbookResponse>('/workbooks/open', req)
 }
 
 /**
- * Save an XLSX file: send the source bytes plus the user's cell edits, and
+ * Save an XLSX file: send the source bytes plus the user's save plan, and
  * receive the mutated bytes (base64-encoded). The caller decodes them.
+ *
+ * The request body uses the canonical `BrowserWorkbookSaveRequest` shape
+ * (`{ fileName, fileBytes, savePlan: { edits } }`). The server accepts
+ * both this shape and the legacy `{ fileName, fileBytes, cellEdits }`
+ * shape, so older callers keep working, but the browser always sends
+ * the canonical form.
  */
 export async function saveWorkbook(input: {
   fileName: string
   fileBytes: Uint8Array | ArrayBuffer
-  cellEdits: readonly CellEdit[]
+  savePlan: BrowserWorkbookSavePlan
+  codec?: OfficeBinaryCodec
 }): Promise<Uint8Array> {
-  const fileBytes = encodeBytesToBase64(input.fileBytes)
-  const req: SaveWorkbookRequest = {
+  const codec = input.codec ?? DEFAULT_CODEC
+  const fileBytes = codec.encode(
+    input.fileBytes instanceof Uint8Array ? input.fileBytes : new Uint8Array(input.fileBytes),
+  )
+  const req: BrowserWorkbookSaveRequest = {
     fileName: input.fileName,
     fileBytes,
-    cellEdits: input.cellEdits,
+    savePlan: input.savePlan,
   }
   const res = await postJson<SaveWorkbookResponse>('/workbooks/save', req)
-  return decodeBase64ToBytes(res.fileBytes)
+  return codec.decode(res.fileBytes)
 }
 
 /**
  * Open a DOCX file: upload its bytes (base64-encoded) and receive the
- * simplified SerializedBlock[] representation for Tiptap.
+ * simplified SerializedBlock[] representation for Tiptap. The caller pairs
+ * the result with the source bytes to construct an `OfficeDocumentHandle`.
  */
 export async function openDocument(input: {
   fileName: string
   fileBytes: Uint8Array | ArrayBuffer
+  codec?: OfficeBinaryCodec
 }): Promise<OpenDocumentResponse> {
-  const fileBytes = encodeBytesToBase64(input.fileBytes)
+  const codec = input.codec ?? DEFAULT_CODEC
+  const fileBytes = codec.encode(
+    input.fileBytes instanceof Uint8Array ? input.fileBytes : new Uint8Array(input.fileBytes),
+  )
   const req: OpenDocumentRequest = { fileName: input.fileName, fileBytes }
   return postJson<OpenDocumentResponse>('/documents/open', req)
 }
@@ -233,15 +365,19 @@ export async function saveDocument(input: {
   fileName: string
   fileBytes: Uint8Array | ArrayBuffer
   blocks: readonly SerializedBlock[]
+  codec?: OfficeBinaryCodec
 }): Promise<Uint8Array> {
-  const fileBytes = encodeBytesToBase64(input.fileBytes)
+  const codec = input.codec ?? DEFAULT_CODEC
+  const fileBytes = codec.encode(
+    input.fileBytes instanceof Uint8Array ? input.fileBytes : new Uint8Array(input.fileBytes),
+  )
   const req: SaveDocumentRequest = {
     fileName: input.fileName,
     fileBytes,
     blocks: input.blocks,
   }
   const res = await postJson<SaveDocumentResponse>('/documents/save', req)
-  return decodeBase64ToBytes(res.fileBytes)
+  return codec.decode(res.fileBytes)
 }
 
 /** Read a browser File into a Uint8Array. */

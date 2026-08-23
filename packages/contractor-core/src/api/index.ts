@@ -5,12 +5,17 @@ export type { CommercialApiServices } from './commercial-routes.js'
 export {
   mapEstimateRevision, mapEstimateReplay, mapBid, mapBOQ, mapBOQItem, mapPlanMeasurement, mapMoney,
 } from './commercial-mappers.js'
-export { routeOffice, OfficeValidationError } from './office-routes.js'
+export { routeOffice, OfficeValidationError, Base64Codec } from './office-routes.js'
 export type {
   OfficeApiRequest,
   OfficeApiResponse,
+  OfficeRouteServices,
+  OfficeBinaryCodec,
   OpenWorkbookRequest,
   OpenWorkbookResponse,
+  BrowserWorkbookSavePlan,
+  BrowserWorkbookSaveRequest,
+  LegacyWorkbookSaveRequest,
   SaveWorkbookRequest,
   SaveWorkbookResponse,
   OpenDocumentRequest,
