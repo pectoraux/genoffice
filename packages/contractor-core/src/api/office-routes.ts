@@ -28,6 +28,8 @@ import {
   readBasicWorkbook,
   type CellEdit,
   type EditableBorderStyle,
+  type SheetStructuralOps,
+  type StructuralOp,
   type WorkbookSnapshot,
   type WorkbookStyleEdit,
 } from '@genoffice/xlsx-gateway'
@@ -71,8 +73,15 @@ export interface OpenWorkbookResponse {
  */
 export interface BrowserWorkbookSavePlan {
   readonly edits: readonly CellEdit[]
+  /**
+   * Row/column structural operations (insert/delete rows/columns) per sheet.
+   * The engine replays these BEFORE the cell edits — journaled cell edits
+   * are in the POST-operation coordinate space, which is exactly what the
+   * browser's mutation-captured dirty map produces.
+   */
+  readonly structuralOps?: readonly SheetStructuralOps[]
   // Extensibility seam — future mutation families land here as optional
-  // readonly fields (structuralOps?, chartEdits?, hyperlinkEdits?, …).
+  // readonly fields (chartEdits?, hyperlinkEdits?, …).
   // The route handler ignores unknown keys, so adding a field is a
   // forward-compatible wire change.
   readonly [key: string]: unknown
@@ -1618,6 +1627,58 @@ function parseOpenWorkbookRequest(
  * and the legacy `{ fileName, fileBytes, cellEdits }` shape, normalizing
  * them into the canonical shape. This is the single backward-compat seam.
  */
+// ── StructuralOp validation (row/column insert/delete) ──────────────────────
+
+const STRUCTURAL_KINDS = ['insert-rows', 'remove-rows', 'insert-cols', 'remove-cols'] as const
+const MAX_STRUCTURAL_COUNT = 10_000
+
+/**
+ * Validate a StructuralOp from the wire (the browser only emits
+ * insert/remove row/column ops this increment). Malformed ops throw
+ * OfficeValidationError → the existing 400 validation error shape.
+ */
+function expectStructuralOp(value: unknown, field: string): StructuralOp {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const kind = expectString(value.kind, `${field}.kind`)
+  if (!(STRUCTURAL_KINDS as readonly string[]).includes(kind)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.kind must be one of: ${STRUCTURAL_KINDS.join(', ')}`,
+    )
+  }
+  const index = expectNumber(value.index, `${field}.index`)
+  if (!Number.isInteger(index) || index < 0 || index > 1_048_576) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.index must be a non-negative integer row/column index`,
+    )
+  }
+  const count = expectNumber(value.count, `${field}.count`)
+  if (!Number.isInteger(count) || count < 1 || count > MAX_STRUCTURAL_COUNT) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.count must be an integer 1..${MAX_STRUCTURAL_COUNT}`,
+    )
+  }
+  return { kind: kind as (typeof STRUCTURAL_KINDS)[number], index, count }
+}
+
+function expectSheetStructuralOps(value: unknown, index: number): SheetStructuralOps {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `structuralOps[${index}] must be an object`)
+  }
+  const sheetName = expectString(value.sheetName, `structuralOps[${index}].sheetName`)
+  const ops = expectArray(value.ops, `structuralOps[${index}].ops`, (op, i) =>
+    expectStructuralOp(op, `structuralOps[${index}].ops[${i}]`),
+  )
+  if (ops.length > 100) {
+    throw new OfficeValidationError('validation', `structuralOps[${index}].ops exceeds 100 entries`)
+  }
+  return { sheetName, ops }
+}
+
 function parseSaveWorkbookRequest(
   body: unknown,
   codec: OfficeBinaryCodec,
@@ -1628,13 +1689,21 @@ function parseSaveWorkbookRequest(
   const fileName = validateFileName(body.fileName)
   const fileBytes = decodeFileBytes(body.fileBytes, codec)
 
-  // Canonical path: savePlan.edits.
+  // Canonical path: savePlan.edits (+ optional structuralOps).
   if (body.savePlan !== undefined) {
     if (!isRecord(body.savePlan)) {
       throw new OfficeValidationError('validation', 'savePlan must be an object')
     }
     const edits = expectArray(body.savePlan.edits, 'savePlan.edits', expectCellEdit)
-    return { fileName, fileBytes, savePlan: { edits } }
+    const structuralOps =
+      body.savePlan.structuralOps !== undefined && body.savePlan.structuralOps !== null
+        ? expectArray(
+            body.savePlan.structuralOps,
+            'savePlan.structuralOps',
+            expectSheetStructuralOps,
+          )
+        : undefined
+    return { fileName, fileBytes, savePlan: { edits, ...(structuralOps ? { structuralOps } : {}) } }
   }
 
   // Legacy path: top-level cellEdits.
@@ -1701,9 +1770,10 @@ async function handleSaveWorkbook(
   const req = parseSaveWorkbookRequest(body, codec)
   const buf = Buffer.from(req.fileBytes)
   const edits = req.savePlan.edits
+  const structuralOps = req.savePlan.structuralOps ?? []
   let mutation
   try {
-    mutation = await applyCellEditsToXlsx(buf, edits)
+    mutation = await applyCellEditsToXlsx(buf, edits, structuralOps)
   } catch (e) {
     throw new OfficeValidationError(
       'malformed',

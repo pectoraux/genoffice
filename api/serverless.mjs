@@ -42459,6 +42459,50 @@ function parseOpenWorkbookRequest(body, codec) {
   const fileBytes = decodeFileBytes(body.fileBytes, codec);
   return { fileName, fileBytes };
 }
+var STRUCTURAL_KINDS = ["insert-rows", "remove-rows", "insert-cols", "remove-cols"];
+var MAX_STRUCTURAL_COUNT = 1e4;
+function expectStructuralOp(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const kind = expectString(value.kind, `${field}.kind`);
+  if (!STRUCTURAL_KINDS.includes(kind)) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.kind must be one of: ${STRUCTURAL_KINDS.join(", ")}`
+    );
+  }
+  const index = expectNumber(value.index, `${field}.index`);
+  if (!Number.isInteger(index) || index < 0 || index > 1048576) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.index must be a non-negative integer row/column index`
+    );
+  }
+  const count = expectNumber(value.count, `${field}.count`);
+  if (!Number.isInteger(count) || count < 1 || count > MAX_STRUCTURAL_COUNT) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.count must be an integer 1..${MAX_STRUCTURAL_COUNT}`
+    );
+  }
+  return { kind, index, count };
+}
+function expectSheetStructuralOps(value, index) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `structuralOps[${index}] must be an object`);
+  }
+  const sheetName = expectString(value.sheetName, `structuralOps[${index}].sheetName`);
+  const ops = expectArray(
+    value.ops,
+    `structuralOps[${index}].ops`,
+    (op, i) => expectStructuralOp(op, `structuralOps[${index}].ops[${i}]`)
+  );
+  if (ops.length > 100) {
+    throw new OfficeValidationError("validation", `structuralOps[${index}].ops exceeds 100 entries`);
+  }
+  return { sheetName, ops };
+}
 function parseSaveWorkbookRequest(body, codec) {
   if (!isRecord(body)) {
     throw new OfficeValidationError("validation", "Request body must be a JSON object");
@@ -42470,7 +42514,12 @@ function parseSaveWorkbookRequest(body, codec) {
       throw new OfficeValidationError("validation", "savePlan must be an object");
     }
     const edits = expectArray(body.savePlan.edits, "savePlan.edits", expectCellEdit);
-    return { fileName, fileBytes, savePlan: { edits } };
+    const structuralOps = body.savePlan.structuralOps !== void 0 && body.savePlan.structuralOps !== null ? expectArray(
+      body.savePlan.structuralOps,
+      "savePlan.structuralOps",
+      expectSheetStructuralOps
+    ) : void 0;
+    return { fileName, fileBytes, savePlan: { edits, ...structuralOps ? { structuralOps } : {} } };
   }
   if (body.cellEdits !== void 0) {
     const edits = expectArray(body.cellEdits, "cellEdits", expectCellEdit);
@@ -42516,9 +42565,10 @@ async function handleSaveWorkbook(body, codec) {
   const req = parseSaveWorkbookRequest(body, codec);
   const buf = Buffer.from(req.fileBytes);
   const edits = req.savePlan.edits;
+  const structuralOps = req.savePlan.structuralOps ?? [];
   let mutation;
   try {
-    mutation = await applyCellEditsToXlsx(buf, edits);
+    mutation = await applyCellEditsToXlsx(buf, edits, structuralOps);
   } catch (e) {
     throw new OfficeValidationError(
       "malformed",

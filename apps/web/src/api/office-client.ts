@@ -38,8 +38,23 @@ export interface OpenWorkbookResponse {
  * and the open index signature lets future mutation families land without
  * a wire-breaking change.
  */
+/** One journaled structural operation (insert/remove rows/columns). */
+export interface BrowserStructuralOp {
+  readonly kind: 'insert-rows' | 'remove-rows' | 'insert-cols' | 'remove-cols'
+  readonly index: number
+  readonly count: number
+}
+
+/** Per-sheet structural operations for a save plan. */
+export interface BrowserSheetStructuralOps {
+  readonly sheetName: string
+  readonly ops: readonly BrowserStructuralOp[]
+}
+
 export interface BrowserWorkbookSavePlan {
   readonly edits: readonly CellEdit[]
+  /** Row/column structural operations, replayed by the engine BEFORE edits. */
+  readonly structuralOps?: readonly BrowserSheetStructuralOps[]
   readonly [key: string]: unknown
 }
 

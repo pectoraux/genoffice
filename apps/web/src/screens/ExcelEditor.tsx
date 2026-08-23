@@ -44,6 +44,36 @@ import { styles } from '../styles'
 
 const SET_RANGE_VALUES_MUTATION_ID = 'sheet.mutation.set-range-values'
 
+/** Structural mutation IDs (insert/remove row/column). */
+const STRUCTURAL_MUTATION_IDS = new Set([
+  'sheet.mutation.insert-row',
+  'sheet.mutation.remove-rows',
+  'sheet.mutation.insert-col',
+  'sheet.mutation.remove-col',
+])
+
+/** One canonical StructuralOp journaled for the save plan. */
+interface JournaledStructuralOp {
+  readonly kind: 'insert-rows' | 'remove-rows' | 'insert-cols' | 'remove-cols'
+  readonly index: number
+  readonly count: number
+}
+
+/**
+ * Shift a 0-based row/column index past an insert/remove boundary.
+ * Mirrors the engine's replay semantics: entries at or below the boundary
+ * move by delta; entries above stay.
+ */
+function shiftIndex(index: number, boundary: number, delta: number): number | null {
+  if (index < boundary) return index
+  if (delta > 0) return index + delta
+  // Removal of |delta| entries starting at boundary: entries inside the
+  // removed range are DROPPED (their row/column no longer exists), entries
+  // below shift up.
+  if (index < boundary - delta) return null
+  return index + delta
+}
+
 /** Unit id for the browser workbook — stable across open/save cycles. */
 const WORKBOOK_UNIT_ID = 'genoffice-web-workbook'
 
@@ -365,6 +395,10 @@ export function ExcelEditor({ onRoute }: { onRoute: (route: string) => void }) {
    * the same cell). Emptied after each successful save.
    */
   const dirtyCellsRef = useRef<Map<string, CellEdit>>(new Map())
+  /** Journaled structural ops per sheet (insert/remove row/col), in order.
+   *  Replay BEFORE the cell edits — the engine expects post-op coordinates,
+   *  which is what the dirty map holds after shifting. */
+  const structuralOpsRef = useRef<Map<string, JournaledStructuralOp[]>>(new Map())
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState<string>('Ready')
   const [fileName, setFileName] = useState<string>('workbook.xlsx')
@@ -383,9 +417,17 @@ export function ExcelEditor({ onRoute }: { onRoute: (route: string) => void }) {
     // Single subscription for the editor's lifetime. It listens at the
     // Univer-instance level, so it survives workbook swaps (loadSnapshot
     // disposes only the workbook unit, never the whole instance).
-    const sub = subscribeToCellMutations(runtime, dirtyCellsRef, () => setDirty(true))
+    const sub = subscribeToCellMutations(runtime, dirtyCellsRef, structuralOpsRef, () =>
+      setDirty(true),
+    )
+    // Test hook: exposes the runtime so Playwright can drive real Univer
+    // commands/structural operations in E2E (same pattern as the Word
+    // editor's __genofficeWordEditor hook).
+    const w = window as { __genofficeExcelRuntime?: unknown }
+    w.__genofficeExcelRuntime = runtime
     return () => {
       sub.dispose()
+      delete w.__genofficeExcelRuntime
       runtime.univer.dispose()
       runtimeRef.current = null
     }
@@ -446,8 +488,10 @@ export function ExcelEditor({ onRoute }: { onRoute: (route: string) => void }) {
       for (const sheet of snapshot.sheets) {
         applyCellStyles(newWb, sheet)
       }
-      // Reset the dirty map — the snapshot is the new baseline.
+      // Reset the dirty map and the structural journal — the snapshot is the
+      // new baseline.
       dirtyCellsRef.current.clear()
+      structuralOpsRef.current.clear()
       setDirty(false)
     },
     [fileName],
@@ -485,6 +529,12 @@ export function ExcelEditor({ onRoute }: { onRoute: (route: string) => void }) {
       // Change-driven save: emit ONLY the cells the user touched since the
       // last save (or open). No full-grid scan.
       const edits = Array.from(dirtyCellsRef.current.values())
+      // Journaled structural ops (insert/remove row/col): replayed by the
+      // engine BEFORE the cell edits — the dirty map is already in post-op
+      // coordinates, which is what the engine expects.
+      const structuralOps = Array.from(structuralOpsRef.current.entries())
+        .map(([sheetName, ops]) => ({ sheetName, ops }))
+        .filter((s) => s.ops.length > 0)
       let nextFileName = handle.fileName
       if (saveAs) {
         const newName = window.prompt('Save as:', nextFileName)
@@ -497,7 +547,10 @@ export function ExcelEditor({ onRoute }: { onRoute: (route: string) => void }) {
       const savedBytes = await saveWorkbook({
         fileName: nextFileName,
         fileBytes: handle.sourceBytes,
-        savePlan: { edits },
+        savePlan: {
+          edits,
+          ...(structuralOps.length > 0 ? { structuralOps } : {}),
+        },
       })
       // The handle now reflects the persisted state: the new source bytes
       // and the incremented revision.
@@ -507,8 +560,10 @@ export function ExcelEditor({ onRoute }: { onRoute: (route: string) => void }) {
         revision: handle.revision + 1,
       }
       setFileName(nextFileName)
-      // Clear the dirty map — every edit it held is now in the saved bytes.
+      // Clear the dirty map and the structural journal — every edit they
+      // held is now baked into the saved bytes.
       dirtyCellsRef.current.clear()
+      structuralOpsRef.current.clear()
       // Offer the saved file as a download.
       const blob = new Blob([savedBytes.buffer as ArrayBuffer], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -597,9 +652,75 @@ export function ExcelEditor({ onRoute }: { onRoute: (route: string) => void }) {
 function subscribeToCellMutations(
   runtime: BrowserUniverRuntime,
   dirtyRef: React.MutableRefObject<Map<string, CellEdit>>,
+  structuralRef: React.MutableRefObject<Map<string, JournaledStructuralOp[]>>,
   onDirty: () => void,
 ): { dispose(): void } {
   const sub = runtime.univerAPI.addEvent(runtime.univerAPI.Event.CommandExecuted, (event) => {
+    // ── Structural mutations (insert/remove row/col): journal the op, then
+    //    shift every existing dirty entry on the same sheet so the dirty
+    //    map stays in POST-op coordinates (what the engine expects).
+    if (STRUCTURAL_MUTATION_IDS.has(event.id)) {
+      const params = event.params as
+        | {
+            subUnitId?: string
+            range?: { startRow?: number; endRow?: number; startColumn?: number; endColumn?: number }
+          }
+        | undefined
+      if (!params?.subUnitId || !params.range) return
+      const wb = runtime.univerAPI.getActiveWorkbook()
+      if (!wb) return
+      const ws = wb.getSheetBySheetId(params.subUnitId)
+      if (!ws) return
+      const sheetName = ws.getSheetName()
+      const range = params.range
+      const isRow = event.id.endsWith('row') || event.id.endsWith('rows')
+      const isInsert = event.id.startsWith('sheet.mutation.insert')
+      const start = isRow ? (range.startRow ?? 0) : (range.startColumn ?? 0)
+      const end = isRow ? (range.endRow ?? 0) : (range.endColumn ?? 0)
+      const count = Math.max(1, end - start + 1)
+      const delta = isInsert ? count : -count
+
+      // Journal the op (canonical kind name + 0-based index).
+      const kind = isRow
+        ? isInsert
+          ? 'insert-rows'
+          : 'remove-rows'
+        : isInsert
+          ? 'insert-cols'
+          : 'remove-cols'
+      const ops = structuralRef.current.get(sheetName) ?? []
+      ops.push({ kind, index: start, count })
+      structuralRef.current.set(sheetName, ops)
+
+      // Shift dirty entries on the same sheet past the boundary.
+      const shifted = new Map<string, CellEdit>()
+      for (const [key, edit] of dirtyRef.current.entries()) {
+        const [editSheet, rowStr, colStr] = key.split(':')
+        if (editSheet !== sheetName) {
+          shifted.set(key, edit)
+          continue
+        }
+        const axis = isRow ? Number(rowStr) : Number(colStr)
+        const newAxis = shiftIndex(axis, start, delta)
+        if (newAxis === null) continue // row/col removed — entry dropped
+        if (isRow) {
+          shifted.set(dirtyKey(sheetName, newAxis, Number(colStr)), {
+            ...edit,
+            row: newAxis,
+          })
+        } else {
+          shifted.set(dirtyKey(sheetName, Number(rowStr), newAxis), {
+            ...edit,
+            column: newAxis,
+          })
+        }
+      }
+      dirtyRef.current.clear()
+      for (const [key, edit] of shifted.entries()) dirtyRef.current.set(key, edit)
+      onDirty()
+      return
+    }
+
     if (event.id !== SET_RANGE_VALUES_MUTATION_ID) return
     const params = event.params as
       { subUnitId?: string; cellValue?: unknown; unitId?: string } | undefined
