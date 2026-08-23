@@ -994,12 +994,22 @@ export class SheetsShellCoordinator {
       const recovery = this.pendingRecoveryFor(path)
       if (recovery) {
         // Test-only env var: GENOFFICE_RECOVERY_TEST_RESPONSE.
-        // When set to 'restore' or 'discard', the coordinator skips the
-        // native dialog and returns the specified response — enabling
-        // deterministic CDP smoke testing of the recovery path under Xvfb
-        // (where a modal dialog would block forever). Production never
-        // sets this env var.
-        const testResponse = process.env['GENOFFICE_RECOVERY_TEST_RESPONSE']
+        // Phase 2 Increment 21 hardening: the coordinator checks this env
+        // var ONLY in dev mode (app.isPackaged === false). In a packaged
+        // build, the env var is NEVER read — the real recovery dialog is
+        // always used, regardless of what a local process might set.
+        //
+        // When set to 'restore' or 'discard' (in dev mode), the coordinator
+        // skips the native dialog and returns the specified response —
+        // enabling deterministic CDP smoke testing of the recovery path
+        // under Xvfb (where a modal dialog would block forever).
+        //
+        // Security: the /recovery-response capture-server endpoint (which
+        // sets this env var) is only reachable in dev mode + when
+        // XLSX_DEBUG_PORT is set. In production, neither the endpoint nor
+        // this env var check is active.
+        const isDevMode = !app.isPackaged
+        const testResponse = isDevMode ? process.env['GENOFFICE_RECOVERY_TEST_RESPONSE'] : undefined
         let response: number
         if (testResponse === 'restore') {
           response = 0

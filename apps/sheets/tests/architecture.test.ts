@@ -739,4 +739,49 @@ describe('@genoffice/sheets architecture boundary (Increment 3I/5/5A — AST-bas
     const gatewayZod = gatewayPkg.dependencies?.zod ?? ''
     expect(gatewayZod).toMatch(/^[~^]3\./)
   })
+
+  // ═══ INCREMENT 21 — Test-hook security guards ═══
+  //
+  // The recovery test hook (GENOFFICE_RECOVERY_TEST_RESPONSE) must be
+  // gated on dev mode. The /recovery-response capture-server endpoint
+  // must reject arbitrary values. No renderer IPC channel may exist
+  // for recovery test control.
+
+  test('coordinator gates GENOFFICE_RECOVERY_TEST_RESPONSE on dev mode (Increment 21)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    // The env var check must be gated on !app.isPackaged.
+    expect(stripped).toMatch(/app\.isPackaged/)
+  })
+
+  test('capture server /recovery-response accepts only restore/discard/clear (Increment 21)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    // Must explicitly reject invalid values with 400.
+    expect(stripped).toMatch(/response\.writeHead\(400\)/)
+    // Must accept exactly 'restore', 'discard', 'clear'.
+    expect(stripped).toMatch(/r === 'restore'/)
+    expect(stripped).toMatch(/r === 'discard'/)
+    expect(stripped).toMatch(/r === 'clear'/)
+  })
+
+  test('NO renderer IPC channel for recovery test control (Increment 21)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/ipcMain\.handle.*recovery.test/i)
+    expect(stripped).not.toMatch(/ipcMain\.handle.*set-recovery/i)
+  })
+
+  test('capture server is localhost-only (Increment 21)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).toMatch(/server\.listen.*'127\.0\.0\.1'/)
+  })
+
+  test('capture server does not start in packaged builds (Increment 21)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    // debugPort must be undefined when packaged.
+    expect(stripped).toMatch(/app\.isPackaged\s*\?\s*undefined/)
+  })
 })

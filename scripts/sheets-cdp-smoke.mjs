@@ -807,7 +807,7 @@ async function main() {
       }
     })()`)
     // Clear the test response via IPC
-    await postRecoveryResponse(null)
+    await postRecoveryResponse('clear')
 
     if (!restoreOpenResult.ok || !restoreOpenResult.result) fail(`Recovery restore selectWorkbook failed: ${restoreOpenResult.error}`)
     const restoreSessionId = restoreOpenResult.result.sessionId
@@ -859,7 +859,7 @@ async function main() {
       }
     })()`)
     // Clear the test response via IPC
-    await postRecoveryResponse(null)
+    await postRecoveryResponse('clear')
 
     if (!discardOpenResult.ok || !discardOpenResult.result) fail(`Recovery discard selectWorkbook failed: ${discardOpenResult.error}`)
     const discardSessionId = discardOpenResult.result.sessionId
@@ -896,7 +896,7 @@ async function main() {
     // ═══ INCREMENT 20: No-recovery through real CDP ═══
     log('NO-RECOVERY', 'opening normal workbook (no recovery copy)...')
     // Ensure no recovery response is set — the dialog should NOT appear (no recovery copy)
-    await postRecoveryResponse(null)
+    await postRecoveryResponse('clear')
     const normalPath = join(tmpDir, 'normal.xlsx')
     copyFileSync(fixturePath, normalPath)
     await postCapture(normalPath)

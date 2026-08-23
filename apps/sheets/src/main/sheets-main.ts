@@ -1353,18 +1353,27 @@ function startCaptureServer(): void {
       return
     }
     // Test-only: set the recovery dialog response for CDP smoke testing.
-    // When 'restore' or 'discard' is set, the coordinator's recovery dialog
-    // is bypassed and the specified response is used. When 'clear' or
-    // empty, the env var is deleted and the real dialog is shown.
+    // Phase 2 Increment 21 hardening:
+    //   - Accepts EXACTLY 'restore', 'discard', or 'clear' (nothing else).
+    //   - 'restore'/'discard' set the env var; 'clear' deletes it.
+    //   - Any other value returns 400 (no env mutation).
+    //   - This endpoint is only reachable in dev mode (debugPort requires
+    //     !app.isPackaged && XLSX_DEBUG_PORT). In production, the capture
+    //     server never starts.
     if (url.pathname === '/recovery-response') {
       const r = url.searchParams.get('response')
       if (r === 'restore' || r === 'discard') {
         process.env['GENOFFICE_RECOVERY_TEST_RESPONSE'] = r
-      } else {
+        response.writeHead(200)
+        response.end('ok')
+      } else if (r === 'clear' || r === null || r === '') {
         delete process.env['GENOFFICE_RECOVERY_TEST_RESPONSE']
+        response.writeHead(200)
+        response.end('ok')
+      } else {
+        response.writeHead(400)
+        response.end('invalid response value — must be restore, discard, or clear')
       }
-      response.writeHead(200)
-      response.end('ok')
       return
     }
     // Drives the File menu from test scripts: CDP input can't reach native
