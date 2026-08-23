@@ -128,6 +128,12 @@ test.describe('Excel browser E2E (real HTTP + real engine)', () => {
       }
     }
     expect(saveBody.fileName).toBe('e2e-excel-fixture.xlsx')
+    // Change-driven save: EXACTLY ONE edit — the A1 cell the user touched.
+    // A1 carries styling in the fixture (bold + colored font), and Univer
+    // reports the cell's full state on a value edit, so the edit also
+    // echoes that style — the server resolves it against A1's existing xf
+    // and dedupes to the identical entry (the saved XML assertions below
+    // prove the formatting is unchanged: s="1" kept).
     expect(saveBody.savePlan.edits).toEqual([
       {
         sheetName: 'Data',
@@ -135,6 +141,12 @@ test.describe('Excel browser E2E (real HTTP + real engine)', () => {
         column: 0,
         writeValue: true,
         cell: { value: 'E2E Edited Cell' },
+        style: {
+          bold: true,
+          fontColor: '#9C3B00',
+          fontFamily: 'Calibri',
+          fontSize: 11,
+        },
       },
     ])
 

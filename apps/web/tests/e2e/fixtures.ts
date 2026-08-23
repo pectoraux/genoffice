@@ -41,6 +41,180 @@ async function toBytes(zip: JSZip): Promise<Buffer> {
  *   Sheet "HiddenSheet" (state="hidden" in workbook.xml):
  *     A1 — "Hidden Value"
  */
+// ── Excel formatting fixture (cell-formatting E2E) ────────────────────────────
+
+/**
+ * Deterministic XLSX exercising the cell-formatting surfaces:
+ *
+ *   Sheet "Formats" (visible):
+ *     A1 "Bold"          — bold (font 1)
+ *     B1 "Italic"        — italic (font 2)
+ *     C1 "Decorated"     — underline + strike + fontColor C00000 (font 3)
+ *     D1 "Big red"       — fontSize 14 + fontColor C00000 (font 4)
+ *     E1 "Filled"        — solid fill FFD966 (fill 2)
+ *     A2 "Centered"      — alignment horizontal=center vertical=center
+ *                          wrapText=1 (xf 6)
+ *     B2 "Right"         — alignment horizontal=right (xf 7)
+ *     A3 "Merged"        — merge A3:B3
+ *     B4 "Plain"         — no formatting (control)
+ *     row 5              — custom height 30pt
+ *     col A              — custom width 24 chars
+ *   Sheet "Other" (visible):
+ *     A1 "Untouched"     — no formatting (dirty-isolation control)
+ */
+export async function buildExcelFormatFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Formats" sheetId="1" r:id="rId1"/>
+    <sheet name="Other" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="8" uniqueCount="8">
+  <si><t>Bold</t></si>
+  <si><t>Italic</t></si>
+  <si><t>Decorated</t></si>
+  <si><t>Big red</t></si>
+  <si><t>Filled</t></si>
+  <si><t>Centered</t></si>
+  <si><t>Right</t></si>
+  <si><t>Merged</t></si>
+  <si><t>Plain</t></si>
+  <si><t>Untouched</t></si>
+</sst>`,
+  )
+
+  // fonts: 0 default, 1 bold, 2 italic, 3 underline+strike+color, 4 size14+color
+  // fills: 0 none, 1 gray125, 2 solid FFD966
+  // xf:   0 default, 1 font1, 2 font2, 3 font3, 4 font4, 5 fill2, 6 align center/center/wrap, 7 align right
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="5">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+    <font><i/><sz val="11"/><name val="Calibri"/></font>
+    <font><u val="single"/><strike/><sz val="11"/><color rgb="FFC00000"/><name val="Calibri"/></font>
+    <font><sz val="14"/><color rgb="FFC00000"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFFD966"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="8">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right"/></xf>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <cols>
+    <col min="1" max="1" width="24" customWidth="1"/>
+  </cols>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s" s="1"><v>0</v></c>
+      <c r="B1" t="s" s="2"><v>1</v></c>
+      <c r="C1" t="s" s="3"><v>2</v></c>
+      <c r="D1" t="s" s="4"><v>3</v></c>
+      <c r="E1" t="s" s="5"><v>4</v></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s" s="6"><v>5</v></c>
+      <c r="B2" t="s" s="7"><v>6</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="s"><v>7</v></c>
+    </row>
+    <row r="4">
+      <c r="B4" t="s"><v>8</v></c>
+    </row>
+    <row r="5" ht="30" customHeight="1"/>
+  </sheetData>
+  <mergeCells count="1">
+    <mergeCell ref="A3:B3"/>
+  </mergeCells>
+</worksheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet2.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="s"><v>9</v></c></row>
+  </sheetData>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}
+
 export async function buildExcelFixture(): Promise<Buffer> {
   const zip = new JSZip()
 

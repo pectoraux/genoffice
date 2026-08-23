@@ -22045,6 +22045,80 @@ function toArgb3(hexColor) {
 function escapeXmlAttribute9(input) {
   return input.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }
+function argbToRgb(argb) {
+  const hex = argb.trim();
+  if (!/^[0-9A-Fa-f]{6}$/.test(hex) && !/^[0-9A-Fa-f]{8}$/.test(hex)) return void 0;
+  return (hex.length === 8 ? hex.slice(2) : hex).toUpperCase();
+}
+var StylesheetReader = class {
+  fonts;
+  fills;
+  cellXfs;
+  cache = /* @__PURE__ */ new Map();
+  constructor(stylesXml) {
+    const fontsInner = sectionInner(stylesXml, "fonts");
+    const fillsInner = sectionInner(stylesXml, "fills");
+    const cellXfsInner = sectionInner(stylesXml, "cellXfs");
+    this.fonts = fontsInner === null ? [] : extractElements(fontsInner, "font");
+    this.fills = fillsInner === null ? [] : extractElements(fillsInner, "fill");
+    this.cellXfs = cellXfsInner === null ? [] : extractElements(cellXfsInner, "xf");
+  }
+  /**
+   * Resolved editable format of cellXfs[index]; undefined when the index is
+   * out of range, or the resolved format carries no property the editor
+   * models (absent = "no explicit format", per WorksheetState.styles).
+   */
+  formatAt(xfIndex) {
+    if (xfIndex < 0 || xfIndex >= this.cellXfs.length) return void 0;
+    const cached = this.cache.get(xfIndex);
+    if (cached !== void 0 || this.cache.has(xfIndex)) return cached;
+    const resolved = this.resolve(xfIndex);
+    this.cache.set(xfIndex, resolved);
+    return resolved;
+  }
+  resolve(xfIndex) {
+    const xf = this.cellXfs[xfIndex] ?? "";
+    const format = {};
+    const fontId = Number(readAttribute2(xf, "fontId") ?? 0);
+    const font = this.fonts[fontId] ?? "";
+    if (/<b\b[^>]*\/?>/.test(font)) format.bold = true;
+    if (/<i\b[^>]*\/?>/.test(font)) format.italic = true;
+    const uVal = readAttribute2(/<u\b[^>]*\/?>/.exec(font)?.[0] ?? "", "val");
+    if (/<u\b[^>]*\/?>/.test(font) && uVal !== "none") format.underline = true;
+    if (/<strike\b[^>]*\/?>/.test(font)) format.strikethrough = true;
+    const sz = Number(readAttribute2(/<sz\b[^>]*\/?>/.exec(font)?.[0] ?? "", "val"));
+    if (Number.isFinite(sz) && sz > 0) format.fontSize = sz;
+    const name = readAttribute2(/<name\b[^>]*\/?>/.exec(font)?.[0] ?? "", "val");
+    if (name) format.fontFamily = decodeXmlText(name);
+    const fontColor = argbToRgb(
+      readAttribute2(/<color\b[^>]*\/?>/.exec(font)?.[0] ?? "", "rgb") ?? ""
+    );
+    if (fontColor) format.fontColor = fontColor;
+    const fillId = Number(readAttribute2(xf, "fillId") ?? 0);
+    const fill = this.fills[fillId] ?? "";
+    const pattern = /<patternFill\b([^>]*)>/.exec(fill)?.[1] ?? "";
+    if (readAttribute2(pattern, "patternType") === "solid") {
+      const fg = argbToRgb(readAttribute2(/<fgColor\b[^>]*\/?>/.exec(fill)?.[0] ?? "", "rgb") ?? "");
+      if (fg) format.fillColor = fg;
+    }
+    const alignment = /<alignment\b[^>]*\/?>/.exec(xf)?.[0] ?? "";
+    if (alignment) {
+      const horizontal = readAttribute2(alignment, "horizontal");
+      if (horizontal === "left" || horizontal === "center" || horizontal === "right") {
+        format.horizontalAlign = horizontal;
+      }
+      const vertical = readAttribute2(alignment, "vertical");
+      if (vertical === "top" || vertical === "center" || vertical === "bottom") {
+        format.verticalAlign = vertical;
+      }
+      if (readAttribute2(alignment, "wrapText") === "1") format.wrapText = true;
+    }
+    return Object.keys(format).length > 0 ? format : void 0;
+  }
+};
+function decodeXmlText(input) {
+  return input.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_m, code) => String.fromCodePoint(Number(code))).replace(/&amp;/g, "&");
+}
 
 // packages/xlsx-gateway/src/gateway/xlsx-gateway.ts
 var MAX_ENTRY_COUNT = 1e4;
@@ -22178,6 +22252,8 @@ async function readBasicWorkbook(buffer) {
   const zip = await createBufferEntrySource(buffer);
   const workbookXml = await zip.readText("xl/workbook.xml");
   const sharedStrings = await readSharedStrings(zip);
+  const stylesXml = await zip.has("xl/styles.xml") ? await zip.readText("xl/styles.xml") : null;
+  const styleReader = stylesXml !== null ? new StylesheetReader(stylesXml) : null;
   const sheets = [];
   const sheetNamesById = {};
   const sheetPattern = /<sheet\b([^>]*)\/?>/g;
@@ -22187,14 +22263,19 @@ async function readBasicWorkbook(buffer) {
     const name = readXmlAttribute(attributes2, "name");
     const sheetNumber = readXmlAttribute(attributes2, "sheetId");
     if (!name || !sheetNumber) continue;
-    const decodedName = decodeXmlText(name);
+    const decodedName = decodeXmlText2(name);
     const id = `sheet-${sheetNumber}`;
     const worksheetPath = await resolveWorksheetPath(zip, decodedName);
     const worksheetXml = await zip.readText(worksheetPath);
+    const presentation = parseWorksheetPresentation(worksheetXml, styleReader);
     sheets.push({
       id,
       name: decodedName,
-      cells: parseWorksheetCells(worksheetXml, sharedStrings)
+      cells: parseWorksheetCells(worksheetXml, sharedStrings),
+      ...presentation.styles && Object.keys(presentation.styles).length > 0 ? { styles: presentation.styles } : {},
+      ...presentation.merges.length > 0 ? { merges: presentation.merges } : {},
+      ...presentation.rowHeights && Object.keys(presentation.rowHeights).length > 0 ? { rowHeights: presentation.rowHeights } : {},
+      ...presentation.colWidths && Object.keys(presentation.colWidths).length > 0 ? { colWidths: presentation.colWidths } : {}
     });
     sheetNamesById[id] = decodedName;
   }
@@ -22203,6 +22284,66 @@ async function readBasicWorkbook(buffer) {
     snapshot: { revision: 0, sheets },
     sheetNamesById
   };
+}
+function parseWorksheetPresentation(worksheetXml, styleReader) {
+  const styles = {};
+  if (styleReader) {
+    const cellPattern = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+    let cellMatch;
+    while ((cellMatch = cellPattern.exec(worksheetXml)) !== null) {
+      const attrs = cellMatch[1] ?? "";
+      const address = readXmlAttribute(attrs, "r");
+      const styleIndex = readXmlAttribute(attrs, "s");
+      if (!address || styleIndex === void 0) continue;
+      const format = styleReader.formatAt(Number(styleIndex));
+      if (format) styles[address] = format;
+    }
+  }
+  const merges = [];
+  const mergePattern = /<mergeCell\b[^>]*\bref="([^"]+)"/g;
+  let mergeMatch;
+  while ((mergeMatch = mergePattern.exec(worksheetXml)) !== null) {
+    merges.push(mergeMatch[1] ?? "");
+  }
+  const rowHeights = {};
+  const rowPattern = /<row\b([^>]*)\/?>/g;
+  let rowMatch;
+  while ((rowMatch = rowPattern.exec(worksheetXml)) !== null) {
+    const attrs = rowMatch[1] ?? "";
+    if (readXmlAttribute(attrs, "customHeight") !== "1") continue;
+    const rowNumber = readXmlAttribute(attrs, "r");
+    const height = Number(readXmlAttribute(attrs, "ht"));
+    if (rowNumber && Number.isFinite(height) && height > 0) {
+      rowHeights[rowNumber] = height;
+    }
+  }
+  const colWidths = {};
+  const colPattern = /<col\b([^>]*)\/?>/g;
+  let colMatch;
+  while ((colMatch = colPattern.exec(worksheetXml)) !== null) {
+    const attrs = colMatch[1] ?? "";
+    if (readXmlAttribute(attrs, "customWidth") !== "1") continue;
+    const min = Number(readXmlAttribute(attrs, "min"));
+    const max = Number(readXmlAttribute(attrs, "max"));
+    const width = Number(readXmlAttribute(attrs, "width"));
+    if (!Number.isInteger(min) || !Number.isInteger(max) || !Number.isFinite(width)) continue;
+    if (min < 1 || max < min || max - min > 1024) continue;
+    const px = Math.round(width * 7 + 5);
+    for (let column = min; column <= max; column++) {
+      colWidths[columnLabel2(column)] = px;
+    }
+  }
+  return { styles, merges, rowHeights, colWidths };
+}
+function columnLabel2(column) {
+  let label = "";
+  let n = column;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    label = String.fromCharCode(65 + rem) + label;
+    n = Math.floor((n - 1) / 26);
+  }
+  return label || "A";
 }
 async function inventoryXlsx(buffer) {
   const zip = await loadSafeZip(buffer);
@@ -23167,12 +23308,12 @@ function parseWorksheetCells(worksheetXml, sharedStrings) {
     const body = match[2] ?? "";
     const formula = /<f(?:\s[^>]*[^/>])?>([\s\S]*?)<\/f>/.exec(body)?.[1];
     if (formula !== void 0) {
-      cells[address] = { value: null, formula: `=${decodeXmlText(formula)}` };
+      cells[address] = { value: null, formula: `=${decodeXmlText2(formula)}` };
       continue;
     }
     const type = readXmlAttribute(attributes2, "t");
     if (type === "inlineStr") {
-      const text = [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText(textMatch[1] ?? "")).join("");
+      const text = [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText2(textMatch[1] ?? "")).join("");
       cells[address] = { value: text };
       continue;
     }
@@ -23185,11 +23326,11 @@ function parseWorksheetCells(worksheetXml, sharedStrings) {
     } else if (type === "b") {
       cells[address] = { value: rawValue === "1" };
     } else if (type === "str") {
-      cells[address] = { value: decodeXmlText(rawValue) };
+      cells[address] = { value: decodeXmlText2(rawValue) };
     } else {
       const numericValue = Number(rawValue);
       cells[address] = {
-        value: Number.isFinite(numericValue) ? numericValue : decodeXmlText(rawValue)
+        value: Number.isFinite(numericValue) ? numericValue : decodeXmlText2(rawValue)
       };
     }
   }
@@ -23199,7 +23340,7 @@ async function readSharedStrings(source) {
   if (!await source.has("xl/sharedStrings.xml")) return [];
   const xml = await source.readText("xl/sharedStrings.xml");
   return [...xml.matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map(
-    (itemMatch) => [...(itemMatch[1] ?? "").matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText(textMatch[1] ?? "")).join("")
+    (itemMatch) => [...(itemMatch[1] ?? "").matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText2(textMatch[1] ?? "")).join("")
   );
 }
 function escapeXmlText8(input) {
@@ -23212,7 +23353,7 @@ var XML_NAMED_ENTITIES = {
   gt: ">",
   amp: "&"
 };
-function decodeXmlText(input) {
+function decodeXmlText2(input) {
   return input.replace(
     /&(?:#x([0-9A-Fa-f]+)|#([0-9]+)|(quot|apos|lt|gt|amp));/g,
     (match, hex, dec, named) => {
@@ -41441,6 +41582,132 @@ function expectCellState(value, field) {
     ...formula !== void 0 ? { formula } : {}
   };
 }
+function expectStyleHexColor(value, field) {
+  if (value === void 0) return void 0;
+  if (value === null) return null;
+  const s = expectString(value, field);
+  if (!/^#[0-9A-Fa-f]{6}$/.test(s)) {
+    throw new OfficeValidationError("validation", `${field} must be a '#RRGGBB' hex color or null`);
+  }
+  return s.toUpperCase();
+}
+var STYLE_ALIGNS_H = ["left", "center", "right", "justify", "distributed"];
+var STYLE_ALIGNS_V = ["top", "center", "bottom"];
+var STYLE_BORDER_STYLES = [
+  "thin",
+  "medium",
+  "thick",
+  "dashed",
+  "dotted",
+  "double",
+  "hair",
+  "dashDot",
+  "dashDotDot",
+  "mediumDashed",
+  "mediumDashDot",
+  "mediumDashDotDot",
+  "slantDashDot"
+];
+function expectStyleBorder(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const style = expectString(value.style, `${field}.style`);
+  if (!STYLE_BORDER_STYLES.includes(style)) {
+    throw new OfficeValidationError("validation", `${field}.style must be a border style keyword`);
+  }
+  const color = expectStyleHexColor(value.color, `${field}.color`);
+  return {
+    style,
+    ...color !== void 0 && color !== null ? { color } : {}
+  };
+}
+function expectStyleEdit(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const bold = expectOptionalBoolean(value.bold, `${field}.bold`);
+  const italic = expectOptionalBoolean(value.italic, `${field}.italic`);
+  const underline = expectOptionalBoolean(value.underline, `${field}.underline`);
+  const underlineStyleRaw = expectOptionalString(
+    value.underlineStyle,
+    `${field}.underlineStyle`,
+    10
+  );
+  if (underlineStyleRaw !== void 0 && underlineStyleRaw !== "single" && underlineStyleRaw !== "double") {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.underlineStyle must be 'single' or 'double'`
+    );
+  }
+  const strikethrough = expectOptionalBoolean(value.strikethrough, `${field}.strikethrough`);
+  const fontFamily = expectOptionalString(value.fontFamily, `${field}.fontFamily`, 128);
+  const fontSize = expectOptionalNumber(value.fontSize, `${field}.fontSize`);
+  if (fontSize !== void 0 && (fontSize < 1 || fontSize > 409)) {
+    throw new OfficeValidationError("validation", `${field}.fontSize must be within 1..409`);
+  }
+  const fontColor = expectStyleHexColor(value.fontColor, `${field}.fontColor`);
+  const fillColor = expectStyleHexColor(value.fillColor, `${field}.fillColor`);
+  const alignH = expectOptionalString(value.horizontalAlignment, `${field}.horizontalAlignment`, 20);
+  if (alignH !== void 0 && !STYLE_ALIGNS_H.includes(alignH)) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.horizontalAlignment must be one of: ${STYLE_ALIGNS_H.join(", ")}`
+    );
+  }
+  const alignV = expectOptionalString(value.verticalAlignment, `${field}.verticalAlignment`, 20);
+  if (alignV !== void 0 && !STYLE_ALIGNS_V.includes(alignV)) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.verticalAlignment must be one of: ${STYLE_ALIGNS_V.join(", ")}`
+    );
+  }
+  const wrapText = expectOptionalBoolean(value.wrapText, `${field}.wrapText`);
+  const textRotation = expectOptionalNumber(value.textRotation, `${field}.textRotation`);
+  if (textRotation !== void 0 && (textRotation < 0 || textRotation > 255)) {
+    throw new OfficeValidationError("validation", `${field}.textRotation must be within 0..255`);
+  }
+  const indent = expectOptionalNumber(value.indent, `${field}.indent`);
+  if (indent !== void 0 && (indent < 0 || indent > 15)) {
+    throw new OfficeValidationError("validation", `${field}.indent must be within 0..15`);
+  }
+  const numberFormat = expectOptionalString(value.numberFormat, `${field}.numberFormat`, 255);
+  const protectionLocked = expectOptionalBoolean(
+    value.protectionLocked,
+    `${field}.protectionLocked`
+  );
+  const protectionHidden = expectOptionalBoolean(
+    value.protectionHidden,
+    `${field}.protectionHidden`
+  );
+  const borderTop = value.borderTop !== void 0 && value.borderTop !== null ? expectStyleBorder(value.borderTop, `${field}.borderTop`) : void 0;
+  const borderBottom = value.borderBottom !== void 0 && value.borderBottom !== null ? expectStyleBorder(value.borderBottom, `${field}.borderBottom`) : void 0;
+  const borderLeft = value.borderLeft !== void 0 && value.borderLeft !== null ? expectStyleBorder(value.borderLeft, `${field}.borderLeft`) : void 0;
+  const borderRight = value.borderRight !== void 0 && value.borderRight !== null ? expectStyleBorder(value.borderRight, `${field}.borderRight`) : void 0;
+  return {
+    ...bold !== void 0 ? { bold } : {},
+    ...italic !== void 0 ? { italic } : {},
+    ...underline !== void 0 ? { underline } : {},
+    ...underlineStyleRaw !== void 0 ? { underlineStyle: underlineStyleRaw } : {},
+    ...strikethrough !== void 0 ? { strikethrough } : {},
+    ...fontFamily !== void 0 ? { fontFamily } : {},
+    ...fontSize !== void 0 ? { fontSize } : {},
+    ...fontColor !== void 0 ? { fontColor } : {},
+    ...fillColor !== void 0 ? { fillColor } : {},
+    ...alignH !== void 0 ? { horizontalAlignment: alignH } : {},
+    ...alignV !== void 0 ? { verticalAlignment: alignV } : {},
+    ...wrapText !== void 0 ? { wrapText } : {},
+    ...textRotation !== void 0 ? { textRotation } : {},
+    ...indent !== void 0 ? { indent } : {},
+    ...protectionLocked !== void 0 ? { protectionLocked } : {},
+    ...protectionHidden !== void 0 ? { protectionHidden } : {},
+    ...numberFormat !== void 0 ? { numberFormat } : {},
+    ...borderTop !== void 0 ? { borderTop } : {},
+    ...borderBottom !== void 0 ? { borderBottom } : {},
+    ...borderLeft !== void 0 ? { borderLeft } : {},
+    ...borderRight !== void 0 ? { borderRight } : {}
+  };
+}
 function expectCellEdit(value, index) {
   if (!isRecord(value)) {
     throw new OfficeValidationError("validation", `cellEdits[${index}] must be an object`);
@@ -41450,13 +41717,17 @@ function expectCellEdit(value, index) {
   const column = expectNumber(value.column, `cellEdits[${index}].column`);
   const writeValue = expectBoolean(value.writeValue, `cellEdits[${index}].writeValue`);
   const cell = expectCellState(value.cell, `cellEdits[${index}].cell`);
+  let style;
+  if (value.style !== void 0 && value.style !== null) {
+    style = expectStyleEdit(value.style, `cellEdits[${index}].style`);
+  }
   const edit = {
     sheetName,
     row,
     column,
     writeValue,
     cell,
-    ...typeof value.style === "object" && value.style !== null ? { style: value.style } : {},
+    ...style !== void 0 ? { style } : {},
     ...Array.isArray(value.rich) ? { rich: value.rich } : {},
     ...typeof value.styleReset === "boolean" ? { styleReset: value.styleReset } : {}
   };

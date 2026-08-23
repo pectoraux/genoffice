@@ -3,6 +3,7 @@ import JSZip from 'jszip'
 import { sha256Hex } from '../sha256.js'
 
 import type {
+  CellFormatState,
   CellState,
   ChangePlan,
   WorkbookSnapshot,
@@ -105,7 +106,7 @@ import {
   shiftTablePart,
   StructuralShiftError,
 } from './xlsx-structure'
-import { StylesheetEditor } from './xlsx-styles'
+import { StylesheetEditor, StylesheetReader } from './xlsx-styles'
 
 const MAX_ENTRY_COUNT = 10_000
 const MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
@@ -385,6 +386,11 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
   const zip = await createBufferEntrySource(buffer)
   const workbookXml = await zip.readText('xl/workbook.xml')
   const sharedStrings = await readSharedStrings(zip)
+  // Presentation reader: resolves cellXfs indexes to the editable format
+  // subset so the browser grid renders existing styling (bold, fills,
+  // alignment, …). Unmodeled properties stay in the file's own XML.
+  const stylesXml = (await zip.has('xl/styles.xml')) ? await zip.readText('xl/styles.xml') : null
+  const styleReader = stylesXml !== null ? new StylesheetReader(stylesXml) : null
   const sheets: WorksheetState[] = []
   const sheetNamesById: Record<string, string> = {}
   const sheetPattern = /<sheet\b([^>]*)\/?>/g
@@ -398,10 +404,21 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     const id = `sheet-${sheetNumber}`
     const worksheetPath = await resolveWorksheetPath(zip, decodedName)
     const worksheetXml = await zip.readText(worksheetPath)
+    const presentation = parseWorksheetPresentation(worksheetXml, styleReader)
     sheets.push({
       id,
       name: decodedName,
       cells: parseWorksheetCells(worksheetXml, sharedStrings),
+      ...(presentation.styles && Object.keys(presentation.styles).length > 0
+        ? { styles: presentation.styles }
+        : {}),
+      ...(presentation.merges.length > 0 ? { merges: presentation.merges } : {}),
+      ...(presentation.rowHeights && Object.keys(presentation.rowHeights).length > 0
+        ? { rowHeights: presentation.rowHeights }
+        : {}),
+      ...(presentation.colWidths && Object.keys(presentation.colWidths).length > 0
+        ? { colWidths: presentation.colWidths }
+        : {}),
     })
     sheetNamesById[id] = decodedName
   }
@@ -410,6 +427,84 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     snapshot: { revision: 0, sheets },
     sheetNamesById,
   }
+}
+
+/**
+ * Presentation pass over one worksheet: per-cell resolved formats (via the
+ * StylesheetReader), merged ranges, custom row heights (points, 1-based row
+ * keys) and custom column widths (px, column-label keys — the OOXML
+ * character width is converted with the Calibri-11 default-font metric the
+ * ecosystem uses, a display approximation; the file keeps the exact width).
+ */
+function parseWorksheetPresentation(
+  worksheetXml: string,
+  styleReader: StylesheetReader | null,
+): {
+  styles: Readonly<Record<string, CellFormatState>>
+  merges: readonly string[]
+  rowHeights: Readonly<Record<string, number>>
+  colWidths: Readonly<Record<string, number>>
+} {
+  const styles: Record<string, CellFormatState> = {}
+  if (styleReader) {
+    const cellPattern = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g
+    let cellMatch: RegExpExecArray | null
+    while ((cellMatch = cellPattern.exec(worksheetXml)) !== null) {
+      const attrs = cellMatch[1] ?? ''
+      const address = readXmlAttribute(attrs, 'r')
+      const styleIndex = readXmlAttribute(attrs, 's')
+      if (!address || styleIndex === undefined) continue
+      const format = styleReader.formatAt(Number(styleIndex))
+      if (format) styles[address] = format
+    }
+  }
+  const merges: string[] = []
+  const mergePattern = /<mergeCell\b[^>]*\bref="([^"]+)"/g
+  let mergeMatch: RegExpExecArray | null
+  while ((mergeMatch = mergePattern.exec(worksheetXml)) !== null) {
+    merges.push(mergeMatch[1] ?? '')
+  }
+  const rowHeights: Record<string, number> = {}
+  const rowPattern = /<row\b([^>]*)\/?>/g
+  let rowMatch: RegExpExecArray | null
+  while ((rowMatch = rowPattern.exec(worksheetXml)) !== null) {
+    const attrs = rowMatch[1] ?? ''
+    if (readXmlAttribute(attrs, 'customHeight') !== '1') continue
+    const rowNumber = readXmlAttribute(attrs, 'r')
+    const height = Number(readXmlAttribute(attrs, 'ht'))
+    if (rowNumber && Number.isFinite(height) && height > 0) {
+      rowHeights[rowNumber] = height
+    }
+  }
+  const colWidths: Record<string, number> = {}
+  const colPattern = /<col\b([^>]*)\/?>/g
+  let colMatch: RegExpExecArray | null
+  while ((colMatch = colPattern.exec(worksheetXml)) !== null) {
+    const attrs = colMatch[1] ?? ''
+    if (readXmlAttribute(attrs, 'customWidth') !== '1') continue
+    const min = Number(readXmlAttribute(attrs, 'min'))
+    const max = Number(readXmlAttribute(attrs, 'max'))
+    const width = Number(readXmlAttribute(attrs, 'width'))
+    if (!Number.isInteger(min) || !Number.isInteger(max) || !Number.isFinite(width)) continue
+    if (min < 1 || max < min || max - min > 1024) continue
+    const px = Math.round(width * 7 + 5)
+    for (let column = min; column <= max; column++) {
+      colWidths[columnLabel(column)] = px
+    }
+  }
+  return { styles, merges, rowHeights, colWidths }
+}
+
+/** 1-based column index → A1 column label (1 → "A", 27 → "AA"). */
+function columnLabel(column: number): string {
+  let label = ''
+  let n = column
+  while (n > 0) {
+    const rem = (n - 1) % 26
+    label = String.fromCharCode(65 + rem) + label
+    n = Math.floor((n - 1) / 26)
+  }
+  return label || 'A'
 }
 
 export async function inventoryXlsx(buffer: Buffer): Promise<readonly PackageEntry[]> {

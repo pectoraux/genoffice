@@ -85,13 +85,14 @@ function cellEditFromMutation(
     }
   }
   if (typeof cell !== 'object') return null
-  const data = cell as { v?: unknown; f?: unknown }
+  const data = cell as { v?: unknown; f?: unknown; s?: unknown }
   const formulaRaw = typeof data.f === 'string' ? data.f : undefined
   const formula = formulaRaw
     ? formulaRaw.startsWith('=')
       ? formulaRaw
       : `=${formulaRaw}`
     : undefined
+  const style = styleDeltaFromUniver(data.s)
   if (formula) {
     return {
       sheetName,
@@ -99,15 +100,106 @@ function cellEditFromMutation(
       column,
       writeValue: true,
       cell: { value: '', formula: formula.slice(1) },
+      ...(style ? { style } : {}),
     }
   }
   const v = data.v
-  if (v === undefined) return null // style-only mutation; not a value edit
+  if (v === undefined) {
+    // Style-only mutation (Univer's formatting commands rewrite cell styles
+    // through set-range-values with just an `s` payload).
+    if (!style) return null
+    return {
+      sheetName,
+      row,
+      column,
+      writeValue: false,
+      cell: { value: null },
+      style,
+    }
+  }
   if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
     const cellState: CellState = { value: v }
-    return { sheetName, row, column, writeValue: true, cell: cellState }
+    return {
+      sheetName,
+      row,
+      column,
+      writeValue: true,
+      cell: cellState,
+      ...(style ? { style } : {}),
+    }
   }
   return null
+}
+
+/**
+ * Map a Univer IStyleData (the `s` payload of a set-range-values mutation)
+ * to a canonical WorkbookStyleEdit delta. Only PRESENT keys map — Univer's
+ * formatting commands send partial deltas ({bl: 1} for bold-on, {bl: 0} for
+ * bold-off), and the engine applies deltas on top of each cell's current
+ * cellXfs entry, so absent keys leave the file's own properties alone.
+ *
+ * Colors convert to the '#RRGGBB' convention of WorkbookStyleEdit.
+ */
+function styleDeltaFromUniver(s: unknown): CellEdit['style'] | undefined {
+  if (typeof s !== 'object' || s === null) return undefined
+  const d = s as Record<string, unknown>
+  const out: {
+    bold?: boolean
+    italic?: boolean
+    underline?: boolean
+    underlineStyle?: 'single' | 'double'
+    strikethrough?: boolean
+    fontFamily?: string
+    fontSize?: number
+    fontColor?: string | null
+    fillColor?: string | null
+    horizontalAlignment?: 'left' | 'center' | 'right'
+    verticalAlignment?: 'top' | 'center' | 'bottom'
+    wrapText?: boolean
+  } = {}
+  if ('bl' in d) out.bold = d.bl === 1
+  if ('it' in d) out.italic = d.it === 1
+  if ('ul' in d) {
+    const ul = d.ul
+    const on = typeof ul === 'object' && ul !== null ? (ul as { s?: unknown }).s === 1 : ul === 1
+    out.underline = on
+    if (on) out.underlineStyle = 'single'
+  }
+  if ('st' in d) {
+    const st = d.st
+    out.strikethrough =
+      typeof st === 'object' && st !== null ? (st as { s?: unknown }).s === 1 : st === 1
+  }
+  if (typeof d.ff === 'string' && d.ff !== '') out.fontFamily = d.ff
+  if (typeof d.fs === 'number' && Number.isFinite(d.fs) && d.fs > 0) out.fontSize = d.fs
+  if ('cl' in d) {
+    const rgb = univerColorToHex((d.cl as { rgb?: unknown } | null)?.rgb)
+    out.fontColor = rgb === undefined && d.cl === null ? null : rgb
+  }
+  if ('bg' in d) {
+    const rgb = univerColorToHex((d.bg as { rgb?: unknown } | null)?.rgb)
+    out.fillColor = rgb === undefined && d.bg === null ? null : rgb
+  }
+  if (typeof d.ht === 'number') {
+    if (d.ht === 1) out.horizontalAlignment = 'left'
+    else if (d.ht === 2) out.horizontalAlignment = 'center'
+    else if (d.ht === 3) out.horizontalAlignment = 'right'
+  }
+  if (typeof d.vt === 'number') {
+    if (d.vt === 1) out.verticalAlignment = 'top'
+    else if (d.vt === 2) out.verticalAlignment = 'center'
+    else if (d.vt === 3) out.verticalAlignment = 'bottom'
+  }
+  if ('tb' in d) out.wrapText = d.tb === 1
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+/** Univer color ('#RRGGBB') → WorkbookStyleEdit '#RRGGBB'; non-hex → undefined. */
+function univerColorToHex(rgb: unknown): string | undefined {
+  if (typeof rgb !== 'string' || rgb === '') return undefined
+  if (/^#[0-9A-Fa-f]{6}$/.test(rgb)) return rgb.toUpperCase()
+  if (/^[0-9A-Fa-f]{6}$/.test(rgb)) return `#${rgb.toUpperCase()}`
+  return undefined
 }
 
 /**
@@ -530,7 +622,26 @@ function subscribeToCellMutations(
         if (!Number.isInteger(column) || column < 0) continue
         const edit = cellEditFromMutation(sheetName, row, column, cell)
         if (!edit) continue
-        dirtyRef.current.set(dirtyKey(sheetName, row, column), edit)
+        // Merge into the per-cell entry: a value edit and a style edit on the
+        // same cell compose into ONE CellEdit (writeValue + cell + style) so
+        // the engine applies both in a single patch. Later deltas win per
+        // field (bold-then-fill → {bold, fill}).
+        const key = dirtyKey(sheetName, row, column)
+        const existing = dirtyRef.current.get(key)
+        if (existing && existing !== edit) {
+          dirtyRef.current.set(key, {
+            sheetName,
+            row,
+            column,
+            writeValue: edit.writeValue || existing.writeValue,
+            cell: edit.writeValue ? edit.cell : existing.cell,
+            ...(edit.style || existing.style
+              ? { style: { ...(existing.style ?? {}), ...(edit.style ?? {}) } }
+              : {}),
+          })
+        } else {
+          dirtyRef.current.set(key, edit)
+        }
         touched = true
       }
     }

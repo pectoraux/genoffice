@@ -1,4 +1,5 @@
 import type { WorkbookStyleEdit } from '../types.js'
+import type { CellFormatState } from '../domain/workbook.types.js'
 
 /// Copy-on-write editor for xl/styles.xml. Existing entries are never
 /// modified — every changed cell gets a new cellXfs entry (deduped) derived
@@ -443,4 +444,120 @@ function escapeXmlAttribute(input: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&apos;')
+}
+
+// ── StylesheetReader (read path: cellXfs index → CellFormatState) ───────────
+
+/** OOXML ARGB ("AARRGGBB" / "RRGGBB") → 6-digit RGB without '#'. */
+function argbToRgb(argb: string): string | undefined {
+  const hex = argb.trim()
+  if (!/^[0-9A-Fa-f]{6}$/.test(hex) && !/^[0-9A-Fa-f]{8}$/.test(hex)) return undefined
+  return (hex.length === 8 ? hex.slice(2) : hex).toUpperCase()
+}
+
+/**
+ * Read-only resolver for the browser-facing presentation snapshot: maps a
+ * cell's cellXfs index to the editable subset of its resolved format
+ * (CellFormatState). Unmodeled properties (borders, number formats,
+ * textRotation, indent, theme colors) stay in the file's own XML — the
+ * byte-preserving save path keeps them for cells that are not re-emitted.
+ *
+ * Mirrors the delta vocabulary of StylesheetEditor: only properties the
+ * editor can round-trip are resolved, so a rendered style can always be
+ * edited back.
+ */
+export class StylesheetReader {
+  private readonly fonts: readonly string[]
+  private readonly fills: readonly string[]
+  private readonly cellXfs: readonly string[]
+  private readonly cache = new Map<number, CellFormatState | undefined>()
+
+  constructor(stylesXml: string) {
+    const fontsInner = sectionInner(stylesXml, 'fonts')
+    const fillsInner = sectionInner(stylesXml, 'fills')
+    const cellXfsInner = sectionInner(stylesXml, 'cellXfs')
+    this.fonts = fontsInner === null ? [] : extractElements(fontsInner, 'font')
+    this.fills = fillsInner === null ? [] : extractElements(fillsInner, 'fill')
+    this.cellXfs = cellXfsInner === null ? [] : extractElements(cellXfsInner, 'xf')
+  }
+
+  /**
+   * Resolved editable format of cellXfs[index]; undefined when the index is
+   * out of range, or the resolved format carries no property the editor
+   * models (absent = "no explicit format", per WorksheetState.styles).
+   */
+  formatAt(xfIndex: number): CellFormatState | undefined {
+    if (xfIndex < 0 || xfIndex >= this.cellXfs.length) return undefined
+    const cached = this.cache.get(xfIndex)
+    if (cached !== undefined || this.cache.has(xfIndex)) return cached
+    const resolved = this.resolve(xfIndex)
+    this.cache.set(xfIndex, resolved)
+    return resolved
+  }
+
+  private resolve(xfIndex: number): CellFormatState | undefined {
+    const xf = this.cellXfs[xfIndex] ?? ''
+    const format: {
+      bold?: boolean
+      italic?: boolean
+      underline?: boolean
+      strikethrough?: boolean
+      fontSize?: number
+      fontFamily?: string
+      fontColor?: string
+      fillColor?: string
+      horizontalAlign?: 'left' | 'center' | 'right'
+      verticalAlign?: 'top' | 'center' | 'bottom'
+      wrapText?: boolean
+    } = {}
+    // Font-derived marks
+    const fontId = Number(readAttribute(xf, 'fontId') ?? 0)
+    const font = this.fonts[fontId] ?? ''
+    if (/<b\b[^>]*\/?>/.test(font)) format.bold = true
+    if (/<i\b[^>]*\/?>/.test(font)) format.italic = true
+    const uVal = readAttribute(/<u\b[^>]*\/?>/.exec(font)?.[0] ?? '', 'val')
+    if (/<u\b[^>]*\/?>/.test(font) && uVal !== 'none') format.underline = true
+    if (/<strike\b[^>]*\/?>/.test(font)) format.strikethrough = true
+    const sz = Number(readAttribute(/<sz\b[^>]*\/?>/.exec(font)?.[0] ?? '', 'val'))
+    if (Number.isFinite(sz) && sz > 0) format.fontSize = sz
+    const name = readAttribute(/<name\b[^>]*\/?>/.exec(font)?.[0] ?? '', 'val')
+    if (name) format.fontFamily = decodeXmlText(name)
+    const fontColor = argbToRgb(
+      readAttribute(/<color\b[^>]*\/?>/.exec(font)?.[0] ?? '', 'rgb') ?? '',
+    )
+    if (fontColor) format.fontColor = fontColor
+    // Solid fill
+    const fillId = Number(readAttribute(xf, 'fillId') ?? 0)
+    const fill = this.fills[fillId] ?? ''
+    const pattern = /<patternFill\b([^>]*)>/.exec(fill)?.[1] ?? ''
+    if (readAttribute(pattern, 'patternType') === 'solid') {
+      const fg = argbToRgb(readAttribute(/<fgColor\b[^>]*\/?>/.exec(fill)?.[0] ?? '', 'rgb') ?? '')
+      if (fg) format.fillColor = fg
+    }
+    // Alignment (child of the xf)
+    const alignment = /<alignment\b[^>]*\/?>/.exec(xf)?.[0] ?? ''
+    if (alignment) {
+      const horizontal = readAttribute(alignment, 'horizontal')
+      if (horizontal === 'left' || horizontal === 'center' || horizontal === 'right') {
+        format.horizontalAlign = horizontal
+      }
+      const vertical = readAttribute(alignment, 'vertical')
+      if (vertical === 'top' || vertical === 'center' || vertical === 'bottom') {
+        format.verticalAlign = vertical
+      }
+      if (readAttribute(alignment, 'wrapText') === '1') format.wrapText = true
+    }
+    return Object.keys(format).length > 0 ? format : undefined
+  }
+}
+
+/** XML entity decoding shared with the gateway's text decoding. */
+function decodeXmlText(input: string): string {
+  return input
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&amp;/g, '&')
 }

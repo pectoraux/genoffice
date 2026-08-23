@@ -27,7 +27,9 @@ import {
   applyCellEditsToXlsx,
   readBasicWorkbook,
   type CellEdit,
+  type EditableBorderStyle,
   type WorkbookSnapshot,
+  type WorkbookStyleEdit,
 } from '@genoffice/xlsx-gateway'
 import {
   applyImageWrap,
@@ -519,6 +521,169 @@ function expectCellState(
  * fields are passed through verbatim to the engine, which re-validates
  * them against its own schema.
  */
+// ── WorkbookStyleEdit validation (Excel cell formatting) ────────────────────
+
+/** WorkbookStyleEdit HexColor on the wire: '#'-prefixed 6-digit hex, or null to clear. */
+function expectStyleHexColor(value: unknown, field: string): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  const s = expectString(value, field)
+  if (!/^#[0-9A-Fa-f]{6}$/.test(s)) {
+    throw new OfficeValidationError('validation', `${field} must be a '#RRGGBB' hex color or null`)
+  }
+  return s.toUpperCase()
+}
+
+const STYLE_ALIGNS_H = ['left', 'center', 'right', 'justify', 'distributed'] as const
+const STYLE_ALIGNS_V = ['top', 'center', 'bottom'] as const
+const STYLE_BORDER_STYLES = [
+  'thin',
+  'medium',
+  'thick',
+  'dashed',
+  'dotted',
+  'double',
+  'hair',
+  'dashDot',
+  'dashDotDot',
+  'mediumDashed',
+  'mediumDashDot',
+  'mediumDashDotDot',
+  'slantDashDot',
+] as const
+
+function expectStyleBorder(
+  value: unknown,
+  field: string,
+): { style: EditableBorderStyle; color?: string } {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const style = expectString(value.style, `${field}.style`)
+  if (!(STYLE_BORDER_STYLES as readonly string[]).includes(style)) {
+    throw new OfficeValidationError('validation', `${field}.style must be a border style keyword`)
+  }
+  const color = expectStyleHexColor(value.color, `${field}.color`)
+  return {
+    style: style as EditableBorderStyle,
+    ...(color !== undefined && color !== null ? { color } : {}),
+  }
+}
+
+/**
+ * Validate a `WorkbookStyleEdit` delta (Excel cell formatting). Malformed
+ * deltas throw OfficeValidationError → the existing 400 validation error
+ * shape. Only typed fields pass — the browser can never inject raw XML.
+ */
+function expectStyleEdit(value: unknown, field: string): WorkbookStyleEdit {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const bold = expectOptionalBoolean(value.bold, `${field}.bold`)
+  const italic = expectOptionalBoolean(value.italic, `${field}.italic`)
+  const underline = expectOptionalBoolean(value.underline, `${field}.underline`)
+  const underlineStyleRaw = expectOptionalString(
+    value.underlineStyle,
+    `${field}.underlineStyle`,
+    10,
+  )
+  if (
+    underlineStyleRaw !== undefined &&
+    underlineStyleRaw !== 'single' &&
+    underlineStyleRaw !== 'double'
+  ) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.underlineStyle must be 'single' or 'double'`,
+    )
+  }
+  const strikethrough = expectOptionalBoolean(value.strikethrough, `${field}.strikethrough`)
+  const fontFamily = expectOptionalString(value.fontFamily, `${field}.fontFamily`, 128)
+  const fontSize = expectOptionalNumber(value.fontSize, `${field}.fontSize`)
+  if (fontSize !== undefined && (fontSize < 1 || fontSize > 409)) {
+    throw new OfficeValidationError('validation', `${field}.fontSize must be within 1..409`)
+  }
+  const fontColor = expectStyleHexColor(value.fontColor, `${field}.fontColor`)
+  const fillColor = expectStyleHexColor(value.fillColor, `${field}.fillColor`)
+  const alignH = expectOptionalString(value.horizontalAlignment, `${field}.horizontalAlignment`, 20)
+  if (alignH !== undefined && !(STYLE_ALIGNS_H as readonly string[]).includes(alignH)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.horizontalAlignment must be one of: ${STYLE_ALIGNS_H.join(', ')}`,
+    )
+  }
+  const alignV = expectOptionalString(value.verticalAlignment, `${field}.verticalAlignment`, 20)
+  if (alignV !== undefined && !(STYLE_ALIGNS_V as readonly string[]).includes(alignV)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.verticalAlignment must be one of: ${STYLE_ALIGNS_V.join(', ')}`,
+    )
+  }
+  const wrapText = expectOptionalBoolean(value.wrapText, `${field}.wrapText`)
+  const textRotation = expectOptionalNumber(value.textRotation, `${field}.textRotation`)
+  if (textRotation !== undefined && (textRotation < 0 || textRotation > 255)) {
+    throw new OfficeValidationError('validation', `${field}.textRotation must be within 0..255`)
+  }
+  const indent = expectOptionalNumber(value.indent, `${field}.indent`)
+  if (indent !== undefined && (indent < 0 || indent > 15)) {
+    throw new OfficeValidationError('validation', `${field}.indent must be within 0..15`)
+  }
+  const numberFormat = expectOptionalString(value.numberFormat, `${field}.numberFormat`, 255)
+  const protectionLocked = expectOptionalBoolean(
+    value.protectionLocked,
+    `${field}.protectionLocked`,
+  )
+  const protectionHidden = expectOptionalBoolean(
+    value.protectionHidden,
+    `${field}.protectionHidden`,
+  )
+  const borderTop =
+    value.borderTop !== undefined && value.borderTop !== null
+      ? expectStyleBorder(value.borderTop, `${field}.borderTop`)
+      : undefined
+  const borderBottom =
+    value.borderBottom !== undefined && value.borderBottom !== null
+      ? expectStyleBorder(value.borderBottom, `${field}.borderBottom`)
+      : undefined
+  const borderLeft =
+    value.borderLeft !== undefined && value.borderLeft !== null
+      ? expectStyleBorder(value.borderLeft, `${field}.borderLeft`)
+      : undefined
+  const borderRight =
+    value.borderRight !== undefined && value.borderRight !== null
+      ? expectStyleBorder(value.borderRight, `${field}.borderRight`)
+      : undefined
+  return {
+    ...(bold !== undefined ? { bold } : {}),
+    ...(italic !== undefined ? { italic } : {}),
+    ...(underline !== undefined ? { underline } : {}),
+    ...(underlineStyleRaw !== undefined
+      ? { underlineStyle: underlineStyleRaw as 'single' | 'double' }
+      : {}),
+    ...(strikethrough !== undefined ? { strikethrough } : {}),
+    ...(fontFamily !== undefined ? { fontFamily } : {}),
+    ...(fontSize !== undefined ? { fontSize } : {}),
+    ...(fontColor !== undefined ? { fontColor } : {}),
+    ...(fillColor !== undefined ? { fillColor } : {}),
+    ...(alignH !== undefined
+      ? { horizontalAlignment: alignH as WorkbookStyleEdit['horizontalAlignment'] }
+      : {}),
+    ...(alignV !== undefined
+      ? { verticalAlignment: alignV as WorkbookStyleEdit['verticalAlignment'] }
+      : {}),
+    ...(wrapText !== undefined ? { wrapText } : {}),
+    ...(textRotation !== undefined ? { textRotation } : {}),
+    ...(indent !== undefined ? { indent } : {}),
+    ...(protectionLocked !== undefined ? { protectionLocked } : {}),
+    ...(protectionHidden !== undefined ? { protectionHidden } : {}),
+    ...(numberFormat !== undefined ? { numberFormat } : {}),
+    ...(borderTop !== undefined ? { borderTop } : {}),
+    ...(borderBottom !== undefined ? { borderBottom } : {}),
+    ...(borderLeft !== undefined ? { borderLeft } : {}),
+    ...(borderRight !== undefined ? { borderRight } : {}),
+  }
+}
+
 function expectCellEdit(value: unknown, index: number): CellEdit {
   if (!isRecord(value)) {
     throw new OfficeValidationError('validation', `cellEdits[${index}] must be an object`)
@@ -528,16 +693,19 @@ function expectCellEdit(value: unknown, index: number): CellEdit {
   const column = expectNumber(value.column, `cellEdits[${index}].column`)
   const writeValue = expectBoolean(value.writeValue, `cellEdits[${index}].writeValue`)
   const cell = expectCellState(value.cell, `cellEdits[${index}].cell`)
-  // Optional pass-through fields — keep them when the browser sends them.
+  // Style delta (Excel cell formatting): strictly validated typed fields —
+  // the browser can never inject raw XML through the style payload.
+  let style: WorkbookStyleEdit | undefined
+  if (value.style !== undefined && value.style !== null) {
+    style = expectStyleEdit(value.style, `cellEdits[${index}].style`)
+  }
   const edit: CellEdit = {
     sheetName,
     row,
     column,
     writeValue,
     cell,
-    ...(typeof value.style === 'object' && value.style !== null
-      ? { style: value.style as CellEdit['style'] }
-      : {}),
+    ...(style !== undefined ? { style } : {}),
     ...(Array.isArray(value.rich) ? { rich: value.rich as CellEdit['rich'] } : {}),
     ...(typeof value.styleReset === 'boolean' ? { styleReset: value.styleReset } : {}),
   }
