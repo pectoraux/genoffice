@@ -149,13 +149,13 @@ check(
   /readPivotDefinition[\s\S]*?:\s*Promise<WorkbookPivotDefinition>/.test(coordStripped),
 )
 check(
-  'coordinator: onWorkbookRenamed callback declared in deps',
-  /onWorkbookRenamed\??\s*:\s*\(wcId:\s*number,\s*oldPath:\s*string,\s*newPath:\s*string\)\s*=>\s*void/.test(coordSrc),
+  'coordinator: has renameWorkbookFromShell method (Increment 17)',
+  /renameWorkbookFromShell\s*\(/.test(coordStripped),
 )
 check(
-  'coordinator: renameWorkbook invokes onWorkbookRenamed',
-  /this\.deps\.onWorkbookRenamed/.test(coordStripped) &&
-    /onWorkbookRenamed\(wcId,\s*oldPath,\s*target\)/.test(coordStripped),
+  'coordinator: NO onWorkbookRenamed dep callback (Increment 17 — removed)',
+  !/onWorkbookRenamed\??\s*:/.test(coordStripped) && !/this\.deps\.onWorkbookRenamed/.test(coordStripped),
+  'coordinator still has onWorkbookRenamed',
 )
 
 // ── migrated handlers ─────────────────────────────────────────────────
