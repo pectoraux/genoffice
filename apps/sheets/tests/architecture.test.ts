@@ -713,4 +713,30 @@ describe('@genoffice/sheets architecture boundary (Increment 3I/5/5A — AST-bas
     expect(src).toMatch(/convertWorkbook\s*\(/)
     expect(src).toMatch(/Promise<\{\s*data:\s*Uint8Array;\s*fileName:\s*string\s*\}>/)
   })
+
+  // ═══ INCREMENT 18 — Zod version alignment guard ═══
+  //
+  // apps/sheets re-exports schemas from @genoffice/xlsx-gateway (e.g.
+  // workbookOperationSchema). xlsx-gateway uses zod ^3.23.8. If apps/sheets
+  // declares zod ^4.x, the z.array(workbookOperationSchema).parse() call
+  // in renderer/ai/tools.ts fails at runtime + compile time (zod 4's
+  // ZodArray expects a schema with `_zod`, which zod 3 schemas don't have).
+  //
+  // This guard verifies apps/sheets declares the SAME zod major version
+  // as xlsx-gateway — preventing a silent mismatch from reappearing.
+
+  test('apps/sheets declares zod ^3.x (matching xlsx-gateway) — Increment 18', () => {
+    const pkg = JSON.parse(readFileSync(PACKAGE_JSON, 'utf8'))
+    const sheetsZod = pkg.dependencies?.zod ?? ''
+    // Must start with ^3. or ~3. (zod 3.x).
+    expect(sheetsZod).toMatch(/^[~^]3\./)
+  })
+
+  test('xlsx-gateway declares zod ^3.x (canonical schema owner) — Increment 18', () => {
+    const gatewayPkg = JSON.parse(
+      readFileSync(join(__dirname, '..', '..', '..', 'packages', 'xlsx-gateway', 'package.json'), 'utf8'),
+    )
+    const gatewayZod = gatewayPkg.dependencies?.zod ?? ''
+    expect(gatewayZod).toMatch(/^[~^]3\./)
+  })
 })
