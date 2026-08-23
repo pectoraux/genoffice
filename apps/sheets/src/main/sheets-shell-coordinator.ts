@@ -993,26 +993,41 @@ export class SheetsShellCoordinator {
     if (extension !== 'csv' && extension !== 'xls') {
       const recovery = this.pendingRecoveryFor(path)
       if (recovery) {
-        // Localized recovery dialog — the coordinator itself is
-        // language-agnostic; the shell provides the localized text via
-        // the `recoveryDialogText` dep callback. English fallbacks when
-        // the callback is undefined (e.g. in unit tests).
-        const text = this.deps.recoveryDialogText?.() ?? {
-          restoreButton: 'Restore',
-          discardButton: 'Discard',
-          title: 'Crash recovery copy found',
-          body: 'Unsaved work from a previous session was found. Restore it?',
+        // Test-only env var: GENOFFICE_RECOVERY_TEST_RESPONSE.
+        // When set to 'restore' or 'discard', the coordinator skips the
+        // native dialog and returns the specified response — enabling
+        // deterministic CDP smoke testing of the recovery path under Xvfb
+        // (where a modal dialog would block forever). Production never
+        // sets this env var.
+        const testResponse = process.env['GENOFFICE_RECOVERY_TEST_RESPONSE']
+        let response: number
+        if (testResponse === 'restore') {
+          response = 0
+        } else if (testResponse === 'discard') {
+          response = 1
+        } else {
+          // Localized recovery dialog — the coordinator itself is
+          // language-agnostic; the shell provides the localized text via
+          // the `recoveryDialogText` dep callback. English fallbacks when
+          // the callback is undefined (e.g. in unit tests).
+          const text = this.deps.recoveryDialogText?.() ?? {
+            restoreButton: 'Restore',
+            discardButton: 'Discard',
+            title: 'Crash recovery copy found',
+            body: 'Unsaved work from a previous session was found. Restore it?',
+          }
+          const opts = {
+            type: 'question' as const,
+            buttons: [text.restoreButton, text.discardButton],
+            defaultId: 0,
+            cancelId: 1,
+            message: text.title,
+            detail: text.body,
+          }
+          const answer = parent ? await dialog.showMessageBox(parent, opts) : await dialog.showMessageBox(opts)
+          response = answer.response
         }
-        const opts = {
-          type: 'question' as const,
-          buttons: [text.restoreButton, text.discardButton],
-          defaultId: 0,
-          cancelId: 1,
-          message: text.title,
-          detail: text.body,
-        }
-        const answer = parent ? await dialog.showMessageBox(parent, opts) : await dialog.showMessageBox(opts)
-        if (answer.response === 0) return { openPath: recovery, restoreTarget: path }
+        if (response === 0) return { openPath: recovery, restoreTarget: path }
         this.clearWorkbookRecovery(path)
       }
       return { openPath: path }

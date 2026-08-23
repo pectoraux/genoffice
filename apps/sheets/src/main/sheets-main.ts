@@ -1352,6 +1352,21 @@ function startCaptureServer(): void {
       response.end('ok')
       return
     }
+    // Test-only: set the recovery dialog response for CDP smoke testing.
+    // When 'restore' or 'discard' is set, the coordinator's recovery dialog
+    // is bypassed and the specified response is used. When 'clear' or
+    // empty, the env var is deleted and the real dialog is shown.
+    if (url.pathname === '/recovery-response') {
+      const r = url.searchParams.get('response')
+      if (r === 'restore' || r === 'discard') {
+        process.env['GENOFFICE_RECOVERY_TEST_RESPONSE'] = r
+      } else {
+        delete process.env['GENOFFICE_RECOVERY_TEST_RESPONSE']
+      }
+      response.writeHead(200)
+      response.end('ok')
+      return
+    }
     // Drives the File menu from test scripts: CDP input can't reach native
     // menu accelerators, and osascript focus-stealing is flaky.
     if (url.pathname === '/menu') {
@@ -1779,7 +1794,6 @@ export function registerSheetsIpc(): void {
    * this once it is ready and triggers the open itself.
    */
   ipcMain.handle('sheets:has-queued-workbook', () => hasQueuedWorkbook())
-
 
   ipcMain.handle(IPC_CHANNELS.openExternal, async (event, url: unknown) => {
     sessionFor(event)

@@ -34,7 +34,7 @@
  * Run with: node scripts/sheets-cdp-smoke.mjs
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, copyFileSync, writeFileSync, readFileSync, mkdirSync, statSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -94,13 +94,20 @@ await new Promise((r) => setTimeout(r, 2000))
 // exportPdf skips the native save dialog and writes to this path directly.
 // This enables deterministic real Electron PDF E2E testing without native
 // dialog interaction. Production never sets this env var.
+//
+// INCREMENT 20: GENOFFICE_USER_DATA is set to a scratch dir so the
+// coordinator's recovery directory (userData/sheets-autosave/) is isolated
+// from any real user data. This enables deterministic recovery E2E testing.
 const testPdfPath = join(tmpDir, 'real-export.pdf')
+const testUserData = join(tmpDir, 'userData')
+mkdirSync(testUserData, { recursive: true })
 const env = {
   ...process.env,
   DISPLAY,
   XLSX_DEBUG_PORT: String(CDP_PORT),
   ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
   GENOFFICE_PDF_TEST_OUTPATH: testPdfPath,
+  GENOFFICE_USER_DATA: testUserData,
 }
 log('ELECTRON', `launching sheets app — CDP port ${CDP_PORT}, capture port ${CAPTURE_PORT}...`)
 const electron = spawn(ELECTRON_BIN, [SHEETS_APP, '--no-sandbox'], {
@@ -168,6 +175,13 @@ async function postCapture(path) {
   const url = `http://localhost:${CAPTURE_PORT}/open?path=${encodeURIComponent(path)}`
   const resp = await fetch(url)
   if (!resp.ok) fail(`Capture server /open failed: ${resp.status} ${await resp.text()}`)
+  return resp.text()
+}
+
+async function postRecoveryResponse(response) {
+  const url = `http://localhost:${CAPTURE_PORT}/recovery-response?response=${encodeURIComponent(response ?? '')}`
+  const resp = await fetch(url)
+  if (!resp.ok) fail(`Capture server /recovery-response failed: ${resp.status} ${await resp.text()}`)
   return resp.text()
 }
 
@@ -655,6 +669,257 @@ async function main() {
       fail(`Expected readWorkbookRange with stale sessionId to fail, but it succeeded: ${JSON.stringify(staleResult.result)}`)
     }
     log('INVALID-SESSION', `SUCCESS — error reached renderer: name=${staleResult.name || '(unknown)'}, message=${staleResult.error}`)
+
+    // ═══ INCREMENT 20: CSV through real CDP ═══
+    log('CSV-CDP', 'creating CSV fixture + opening through real renderer...')
+    const csvPath = join(tmpDir, 'data.csv')
+    writeFileSync(csvPath, 'Name,Value\nAlpha,10\nBeta,20\nGamma,30\n', 'utf8')
+    await postCapture(csvPath)
+    const csvOpenResult = await evaluate(ws, `(async () => {
+      try {
+        const result = await window.desktopApi.selectWorkbook()
+        return { ok: true, result }
+      } catch (e) {
+        return { ok: false, error: e.message }
+      }
+    })()`)
+    if (!csvOpenResult.ok || !csvOpenResult.result) fail(`CSV selectWorkbook failed: ${csvOpenResult.error}`)
+    const csvSessionId = csvOpenResult.result.sessionId
+    const csvSheet1Id = csvOpenResult.result.sheets[0].id
+    log('CSV-CDP', `opened CSV: sessionId=${csvSessionId.slice(0,8)}, sheet1=${csvSheet1Id}`)
+    // Verify CSV import semantics
+    if (!csvOpenResult.result.needsSaveAs) fail('CSV open should set needsSaveAs=true')
+    log('CSV-CDP', `needsSaveAs=${csvOpenResult.result.needsSaveAs} (expected true)`)
+
+    // Read cells — verify CSV content became workbook cells
+    const csvReadResult = await evaluate(ws, `(async () => {
+      try {
+        const result = await window.desktopApi.readWorkbookRange({
+          sessionId: ${JSON.stringify(csvSessionId)},
+          sheetId: ${JSON.stringify(csvSheet1Id)},
+          range: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+        })
+        return { ok: true, result }
+      } catch (e) {
+        return { ok: false, error: e.message }
+      }
+    })()`)
+    if (!csvReadResult.ok) fail(`CSV readWorkbookRange failed: ${csvReadResult.error}`)
+    const csvFirstCell = csvReadResult.result.cells.find(c => c.row === 0 && c.column === 0)
+    if (!csvFirstCell || csvFirstCell.value !== 'Name') fail(`CSV first cell should be 'Name', got: ${JSON.stringify(csvFirstCell)}`)
+    log('CSV-CDP', `SUCCESS — read CSV cells, first cell: ${csvFirstCell.value}`)
+
+    // Close CSV session
+    await evaluate(ws, `(async () => { await window.desktopApi.closeWorkbook(${JSON.stringify(csvSessionId)}) })()`).catch(() => {})
+    log('CSV-CDP', 'SUCCESS — CSV opened, read, closed through real renderer path')
+
+    // ═══ INCREMENT 20: XLS through real CDP ═══
+    log('XLS-CDP', 'creating XLS fixture + opening through real renderer...')
+    const xlsFixtureSrc = join(repoRoot, 'apps/sheets/tests/fixtures/minimal.xls')
+    if (!existsSync(xlsFixtureSrc)) fail(`XLS fixture not found: ${xlsFixtureSrc}`)
+    const xlsPath = join(tmpDir, 'legacy.xls')
+    copyFileSync(xlsFixtureSrc, xlsPath)
+    await postCapture(xlsPath)
+    const xlsOpenResult = await evaluate(ws, `(async () => {
+      try {
+        const result = await window.desktopApi.selectWorkbook()
+        return { ok: true, result }
+      } catch (e) {
+        return { ok: false, error: e.message }
+      }
+    })()`)
+    if (!xlsOpenResult.ok || !xlsOpenResult.result) fail(`XLS selectWorkbook failed: ${xlsOpenResult.error}`)
+    const xlsSessionId = xlsOpenResult.result.sessionId
+    const xlsSheet1Id = xlsOpenResult.result.sheets[0].id
+    log('XLS-CDP', `opened XLS: sessionId=${xlsSessionId.slice(0,8)}, sheet1=${xlsSheet1Id}`)
+    if (!xlsOpenResult.result.needsSaveAs) fail('XLS open should set needsSaveAs=true')
+    log('XLS-CDP', `needsSaveAs=${xlsOpenResult.result.needsSaveAs} (expected true)`)
+
+    // Read cells from converted XLS
+    const xlsReadResult = await evaluate(ws, `(async () => {
+      try {
+        const result = await window.desktopApi.readWorkbookRange({
+          sessionId: ${JSON.stringify(xlsSessionId)},
+          sheetId: ${JSON.stringify(xlsSheet1Id)},
+          range: { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+        })
+        return { ok: true, result }
+      } catch (e) {
+        return { ok: false, error: e.message }
+      }
+    })()`)
+    if (!xlsReadResult.ok) fail(`XLS readWorkbookRange failed: ${xlsReadResult.error}`)
+    if (xlsReadResult.result.cells.length === 0) fail('XLS read returned no cells')
+    log('XLS-CDP', `SUCCESS — read ${xlsReadResult.result.cells.length} cell(s) from converted XLS`)
+
+    // Close XLS session
+    await evaluate(ws, `(async () => { await window.desktopApi.closeWorkbook(${JSON.stringify(xlsSessionId)}) })()`).catch(() => {})
+    log('XLS-CDP', 'SUCCESS — XLS opened, read, closed through real renderer path')
+
+    // ═══ INCREMENT 20: Invalid XLS failure through real CDP ═══
+    log('XLS-FAIL', 'creating invalid XLS + verifying typed failure...')
+    const invalidXlsPath = join(tmpDir, 'invalid.xls')
+    writeFileSync(invalidXlsPath, 'This is not a valid XLS file\n')
+    await postCapture(invalidXlsPath)
+    const xlsFailResult = await evaluate(ws, `(async () => {
+      try {
+        const result = await window.desktopApi.selectWorkbook()
+        return { ok: true, result }
+      } catch (e) {
+        return { ok: false, error: e.message, name: e.name }
+      }
+    })()`)
+    if (xlsFailResult.ok) {
+      fail(`Invalid XLS should have failed, but got: ${JSON.stringify(xlsFailResult.result).slice(0, 200)}`)
+    }
+    log('XLS-FAIL', `SUCCESS — invalid XLS produced typed error: ${xlsFailResult.error?.slice(0, 100)}`)
+
+    // ═══ INCREMENT 20: Recovery restore through real CDP ═══
+    log('RECOVERY-RESTORE', 'creating original + newer recovery copy...')
+    const recoveryOriginalPath = join(tmpDir, 'recovery-test.xlsx')
+    // Use the existing fixture as the "original" content
+    copyFileSync(fixturePath, recoveryOriginalPath)
+    // Wait 100ms so the recovery copy is newer
+    await new Promise(r => setTimeout(r, 200))
+    // Create a recovery copy at the production recovery location.
+    // The coordinator's recoveryPathFor uses sha1(filePath).slice(0,16)
+    // and stores in userData/sheets-autosave/.
+    const recoveryDir = join(testUserData, 'sheets-autosave')
+    mkdirSync(recoveryDir, { recursive: true })
+    const crypto = await import('node:crypto')
+    const recoveryHash = crypto.createHash('sha1').update(recoveryOriginalPath).digest('hex').slice(0, 16)
+    const recoveryCopyPath = join(recoveryDir, `${recoveryHash}.xlsx`)
+    // Use the pivot fixture as "recovered" content (different from original)
+    copyFileSync(pivotFixturePath, recoveryCopyPath)
+
+    // Set the test-only recovery response via IPC (dev-mode only).
+    // The coordinator checks process.env['GENOFFICE_RECOVERY_TEST_RESPONSE']
+    // — this IPC handler sets it inside the Electron process.
+    await postRecoveryResponse('restore')
+
+    await postCapture(recoveryOriginalPath)
+    const restoreOpenResult = await evaluate(ws, `(async () => {
+      try {
+        const result = await window.desktopApi.selectWorkbook()
+        return { ok: true, result }
+      } catch (e) {
+        return { ok: false, error: e.message }
+      }
+    })()`)
+    // Clear the test response via IPC
+    await postRecoveryResponse(null)
+
+    if (!restoreOpenResult.ok || !restoreOpenResult.result) fail(`Recovery restore selectWorkbook failed: ${restoreOpenResult.error}`)
+    const restoreSessionId = restoreOpenResult.result.sessionId
+    const restoreSheet1Id = restoreOpenResult.result.sheets[0].id
+    log('RECOVERY-RESTORE', `opened recovery: sessionId=${restoreSessionId.slice(0,8)}`)
+    // Verify restore metadata
+    if (!restoreOpenResult.result.restoredFromRecovery) fail('Recovery restore should set restoredFromRecovery=true')
+    log('RECOVERY-RESTORE', `restoredFromRecovery=${restoreOpenResult.result.restoredFromRecovery} (expected true)`)
+
+    // Read cells — verify recovered content (pivot fixture has different content)
+    const restoreReadResult = await evaluate(ws, `(async () => {
+      try {
+        const result = await window.desktopApi.readWorkbookRange({
+          sessionId: ${JSON.stringify(restoreSessionId)},
+          sheetId: ${JSON.stringify(restoreSheet1Id)},
+          range: { startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+        })
+        return { ok: true, result }
+      } catch (e) {
+        return { ok: false, error: e.message }
+      }
+    })()`)
+    if (!restoreReadResult.ok) fail(`Recovery restore readWorkbookRange failed: ${restoreReadResult.error}`)
+    log('RECOVERY-RESTORE', `SUCCESS — read ${restoreReadResult.result.cells.length} cell(s) from restored workbook`)
+
+    // Close restored session
+    await evaluate(ws, `(async () => { await window.desktopApi.closeWorkbook(${JSON.stringify(restoreSessionId)}) })()`).catch(() => {})
+    log('RECOVERY-RESTORE', 'SUCCESS — recovery restore through real renderer path')
+
+    // ═══ INCREMENT 20: Recovery discard through real CDP ═══
+    log('RECOVERY-DISCARD', 'creating original + newer recovery copy for discard...')
+    const discardOriginalPath = join(tmpDir, 'recovery-discard.xlsx')
+    copyFileSync(fixturePath, discardOriginalPath)
+    await new Promise(r => setTimeout(r, 200))
+    const discardRecoveryHash = crypto.createHash('sha1').update(discardOriginalPath).digest('hex').slice(0, 16)
+    const discardRecoveryCopyPath = join(recoveryDir, `${discardRecoveryHash}.xlsx`)
+    copyFileSync(pivotFixturePath, discardRecoveryCopyPath)
+
+    // Set the test-only recovery response to "discard" via IPC
+    await postRecoveryResponse('discard')
+
+    await postCapture(discardOriginalPath)
+    const discardOpenResult = await evaluate(ws, `(async () => {
+      try {
+        const result = await window.desktopApi.selectWorkbook()
+        return { ok: true, result }
+      } catch (e) {
+        return { ok: false, error: e.message }
+      }
+    })()`)
+    // Clear the test response via IPC
+    await postRecoveryResponse(null)
+
+    if (!discardOpenResult.ok || !discardOpenResult.result) fail(`Recovery discard selectWorkbook failed: ${discardOpenResult.error}`)
+    const discardSessionId = discardOpenResult.result.sessionId
+    const discardSheet1Id = discardOpenResult.result.sheets[0].id
+    log('RECOVERY-DISCARD', `opened original (discard): sessionId=${discardSessionId.slice(0,8)}`)
+    // Verify NO restore metadata
+    if (discardOpenResult.result.restoredFromRecovery) fail('Recovery discard should NOT set restoredFromRecovery')
+    log('RECOVERY-DISCARD', `restoredFromRecovery=${discardOpenResult.result.restoredFromRecovery ?? false} (expected false)`)
+
+    // Verify recovery copy was removed (clearWorkbookRecovery was called)
+    if (existsSync(discardRecoveryCopyPath)) fail('Recovery copy should have been removed after discard')
+    log('RECOVERY-DISCARD', 'SUCCESS — recovery copy removed after discard')
+
+    // Read cells — verify ORIGINAL content (not the pivot fixture)
+    const discardReadResult = await evaluate(ws, `(async () => {
+      try {
+        const result = await window.desktopApi.readWorkbookRange({
+          sessionId: ${JSON.stringify(discardSessionId)},
+          sheetId: ${JSON.stringify(discardSheet1Id)},
+          range: { startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+        })
+        return { ok: true, result }
+      } catch (e) {
+        return { ok: false, error: e.message }
+      }
+    })()`)
+    if (!discardReadResult.ok) fail(`Recovery discard readWorkbookRange failed: ${discardReadResult.error}`)
+    log('RECOVERY-DISCARD', `SUCCESS — read ${discardReadResult.result.cells.length} cell(s) from original workbook`)
+
+    // Close discarded session
+    await evaluate(ws, `(async () => { await window.desktopApi.closeWorkbook(${JSON.stringify(discardSessionId)}) })()`).catch(() => {})
+    log('RECOVERY-DISCARD', 'SUCCESS — recovery discard through real renderer path')
+
+    // ═══ INCREMENT 20: No-recovery through real CDP ═══
+    log('NO-RECOVERY', 'opening normal workbook (no recovery copy)...')
+    // Ensure no recovery response is set — the dialog should NOT appear (no recovery copy)
+    await postRecoveryResponse(null)
+    const normalPath = join(tmpDir, 'normal.xlsx')
+    copyFileSync(fixturePath, normalPath)
+    await postCapture(normalPath)
+    const normalOpenResult = await evaluate(ws, `(async () => {
+      try {
+        const result = await window.desktopApi.selectWorkbook()
+        return { ok: true, result }
+      } catch (e) {
+        return { ok: false, error: e.message }
+      }
+    })()`)
+    if (!normalOpenResult.ok || !normalOpenResult.result) fail(`No-recovery selectWorkbook failed: ${normalOpenResult.error}`)
+    if (normalOpenResult.result.restoredFromRecovery) fail('Normal open should NOT set restoredFromRecovery')
+    log('NO-RECOVERY', `SUCCESS — normal open, restoredFromRecovery=${normalOpenResult.result.restoredFromRecovery ?? false}`)
+    // Close normal session
+    await evaluate(ws, `(async () => { await window.desktopApi.closeWorkbook(${JSON.stringify(normalOpenResult.result.sessionId)}) })()`).catch(() => {})
+
+    // ═══ INCREMENT 20: Verify exactly one sidecar process across all scenarios ═══
+    const finalSidecarPids = spawnSync('pgrep', ['-f', 'xlsx-sidecar'], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean)
+    if (finalSidecarPids.length !== 1) {
+      fail(`Expected exactly 1 sidecar process after all format tests, found ${finalSidecarPids.length}: ${finalSidecarPids.join(', ')}`)
+    }
+    log('SIDECAR-FINAL', `SUCCESS — exactly ONE sidecar process survived all format tests (PID ${finalSidecarPids[0]})`)
 
     log('RESULT', 'ALL CHECKS PASSED')
     ws.close()
