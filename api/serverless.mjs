@@ -281,9 +281,9 @@ var init_tenant_context = __esm({
   }
 });
 
-// node_modules/.bun/process-nextick-args@2.0.1/node_modules/process-nextick-args/index.js
+// node_modules/process-nextick-args/index.js
 var require_process_nextick_args = __commonJS({
-  "node_modules/.bun/process-nextick-args@2.0.1/node_modules/process-nextick-args/index.js"(exports2, module) {
+  "node_modules/process-nextick-args/index.js"(exports2, module) {
     "use strict";
     if (typeof process === "undefined" || !process.version || process.version.indexOf("v0.") === 0 || process.version.indexOf("v1.") === 0 && process.version.indexOf("v1.8.") !== 0) {
       module.exports = { nextTick };
@@ -326,9 +326,9 @@ var require_process_nextick_args = __commonJS({
   }
 });
 
-// node_modules/.bun/isarray@1.0.0/node_modules/isarray/index.js
+// node_modules/isarray/index.js
 var require_isarray = __commonJS({
-  "node_modules/.bun/isarray@1.0.0/node_modules/isarray/index.js"(exports2, module) {
+  "node_modules/isarray/index.js"(exports2, module) {
     var toString = {}.toString;
     module.exports = Array.isArray || function(arr) {
       return toString.call(arr) == "[object Array]";
@@ -336,16 +336,16 @@ var require_isarray = __commonJS({
   }
 });
 
-// node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/internal/streams/stream.js
+// node_modules/readable-stream/lib/internal/streams/stream.js
 var require_stream = __commonJS({
-  "node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/internal/streams/stream.js"(exports2, module) {
+  "node_modules/readable-stream/lib/internal/streams/stream.js"(exports2, module) {
     module.exports = __require("stream");
   }
 });
 
-// node_modules/.bun/safe-buffer@5.1.2/node_modules/safe-buffer/index.js
+// node_modules/safe-buffer/index.js
 var require_safe_buffer = __commonJS({
-  "node_modules/.bun/safe-buffer@5.1.2/node_modules/safe-buffer/index.js"(exports2, module) {
+  "node_modules/safe-buffer/index.js"(exports2, module) {
     var buffer = __require("buffer");
     var Buffer2 = buffer.Buffer;
     function copyProps(src, dst) {
@@ -400,9 +400,9 @@ var require_safe_buffer = __commonJS({
   }
 });
 
-// node_modules/.bun/core-util-is@1.0.3/node_modules/core-util-is/lib/util.js
+// node_modules/core-util-is/lib/util.js
 var require_util = __commonJS({
-  "node_modules/.bun/core-util-is@1.0.3/node_modules/core-util-is/lib/util.js"(exports2) {
+  "node_modules/core-util-is/lib/util.js"(exports2) {
     function isArray(arg) {
       if (Array.isArray) {
         return Array.isArray(arg);
@@ -470,9 +470,9 @@ var require_util = __commonJS({
   }
 });
 
-// node_modules/.bun/inherits@2.0.4/node_modules/inherits/inherits_browser.js
+// node_modules/inherits/inherits_browser.js
 var require_inherits_browser = __commonJS({
-  "node_modules/.bun/inherits@2.0.4/node_modules/inherits/inherits_browser.js"(exports2, module) {
+  "node_modules/inherits/inherits_browser.js"(exports2, module) {
     if (typeof Object.create === "function") {
       module.exports = function inherits(ctor, superCtor) {
         if (superCtor) {
@@ -502,9 +502,9 @@ var require_inherits_browser = __commonJS({
   }
 });
 
-// node_modules/.bun/inherits@2.0.4/node_modules/inherits/inherits.js
+// node_modules/inherits/inherits.js
 var require_inherits = __commonJS({
-  "node_modules/.bun/inherits@2.0.4/node_modules/inherits/inherits.js"(exports2, module) {
+  "node_modules/inherits/inherits.js"(exports2, module) {
     try {
       util = __require("util");
       if (typeof util.inherits !== "function") throw "";
@@ -516,9 +516,9 @@ var require_inherits = __commonJS({
   }
 });
 
-// node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/internal/streams/BufferList.js
+// node_modules/readable-stream/lib/internal/streams/BufferList.js
 var require_BufferList = __commonJS({
-  "node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/internal/streams/BufferList.js"(exports2, module) {
+  "node_modules/readable-stream/lib/internal/streams/BufferList.js"(exports2, module) {
     "use strict";
     function _classCallCheck(instance, Constructor) {
       if (!(instance instanceof Constructor)) {
@@ -594,9 +594,9 @@ var require_BufferList = __commonJS({
   }
 });
 
-// node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/internal/streams/destroy.js
+// node_modules/readable-stream/lib/internal/streams/destroy.js
 var require_destroy = __commonJS({
-  "node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/internal/streams/destroy.js"(exports2, module) {
+  "node_modules/readable-stream/lib/internal/streams/destroy.js"(exports2, module) {
     "use strict";
     var pna = require_process_nextick_args();
     function destroy(err, cb) {
@@ -663,16 +663,16 @@ var require_destroy = __commonJS({
   }
 });
 
-// node_modules/.bun/util-deprecate@1.0.2/node_modules/util-deprecate/node.js
+// node_modules/util-deprecate/node.js
 var require_node = __commonJS({
-  "node_modules/.bun/util-deprecate@1.0.2/node_modules/util-deprecate/node.js"(exports2, module) {
+  "node_modules/util-deprecate/node.js"(exports2, module) {
     module.exports = __require("util").deprecate;
   }
 });
 
-// node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/_stream_writable.js
+// node_modules/readable-stream/lib/_stream_writable.js
 var require_stream_writable = __commonJS({
-  "node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/_stream_writable.js"(exports2, module) {
+  "node_modules/readable-stream/lib/_stream_writable.js"(exports2, module) {
     "use strict";
     var pna = require_process_nextick_args();
     module.exports = Writable;
@@ -1110,9 +1110,9 @@ var require_stream_writable = __commonJS({
   }
 });
 
-// node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/_stream_duplex.js
+// node_modules/readable-stream/lib/_stream_duplex.js
 var require_stream_duplex = __commonJS({
-  "node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/_stream_duplex.js"(exports2, module) {
+  "node_modules/readable-stream/lib/_stream_duplex.js"(exports2, module) {
     "use strict";
     var pna = require_process_nextick_args();
     var objectKeys = Object.keys || function(obj) {
@@ -1187,9 +1187,9 @@ var require_stream_duplex = __commonJS({
   }
 });
 
-// node_modules/.bun/string_decoder@1.1.1/node_modules/string_decoder/lib/string_decoder.js
+// node_modules/string_decoder/lib/string_decoder.js
 var require_string_decoder = __commonJS({
-  "node_modules/.bun/string_decoder@1.1.1/node_modules/string_decoder/lib/string_decoder.js"(exports2) {
+  "node_modules/string_decoder/lib/string_decoder.js"(exports2) {
     "use strict";
     var Buffer2 = require_safe_buffer().Buffer;
     var isEncoding = Buffer2.isEncoding || function(encoding) {
@@ -1425,9 +1425,9 @@ var require_string_decoder = __commonJS({
   }
 });
 
-// node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/_stream_readable.js
+// node_modules/readable-stream/lib/_stream_readable.js
 var require_stream_readable = __commonJS({
-  "node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/_stream_readable.js"(exports2, module) {
+  "node_modules/readable-stream/lib/_stream_readable.js"(exports2, module) {
     "use strict";
     var pna = require_process_nextick_args();
     module.exports = Readable;
@@ -2111,9 +2111,9 @@ var require_stream_readable = __commonJS({
   }
 });
 
-// node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/_stream_transform.js
+// node_modules/readable-stream/lib/_stream_transform.js
 var require_stream_transform = __commonJS({
-  "node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/_stream_transform.js"(exports2, module) {
+  "node_modules/readable-stream/lib/_stream_transform.js"(exports2, module) {
     "use strict";
     module.exports = Transform;
     var Duplex = require_stream_duplex();
@@ -2211,9 +2211,9 @@ var require_stream_transform = __commonJS({
   }
 });
 
-// node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/_stream_passthrough.js
+// node_modules/readable-stream/lib/_stream_passthrough.js
 var require_stream_passthrough = __commonJS({
-  "node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/lib/_stream_passthrough.js"(exports2, module) {
+  "node_modules/readable-stream/lib/_stream_passthrough.js"(exports2, module) {
     "use strict";
     module.exports = PassThrough;
     var Transform = require_stream_transform();
@@ -2230,9 +2230,9 @@ var require_stream_passthrough = __commonJS({
   }
 });
 
-// node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/readable.js
+// node_modules/readable-stream/readable.js
 var require_readable = __commonJS({
-  "node_modules/.bun/readable-stream@2.3.8/node_modules/readable-stream/readable.js"(exports2, module) {
+  "node_modules/readable-stream/readable.js"(exports2, module) {
     var Stream = __require("stream");
     if (process.env.READABLE_STREAM === "disable" && Stream) {
       module.exports = Stream;
@@ -2255,9 +2255,9 @@ var require_readable = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/support.js
+// node_modules/jszip/lib/support.js
 var require_support = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/support.js"(exports2) {
+  "node_modules/jszip/lib/support.js"(exports2) {
     "use strict";
     exports2.base64 = true;
     exports2.array = true;
@@ -2295,9 +2295,9 @@ var require_support = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/base64.js
+// node_modules/jszip/lib/base64.js
 var require_base64 = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/base64.js"(exports2) {
+  "node_modules/jszip/lib/base64.js"(exports2) {
     "use strict";
     var utils = require_utils();
     var support = require_support();
@@ -2372,9 +2372,9 @@ var require_base64 = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/nodejsUtils.js
+// node_modules/jszip/lib/nodejsUtils.js
 var require_nodejsUtils = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/nodejsUtils.js"(exports2, module) {
+  "node_modules/jszip/lib/nodejsUtils.js"(exports2, module) {
     "use strict";
     module.exports = {
       /**
@@ -2428,9 +2428,9 @@ var require_nodejsUtils = __commonJS({
   }
 });
 
-// node_modules/.bun/immediate@3.0.6/node_modules/immediate/lib/index.js
+// node_modules/immediate/lib/index.js
 var require_lib = __commonJS({
-  "node_modules/.bun/immediate@3.0.6/node_modules/immediate/lib/index.js"(exports2, module) {
+  "node_modules/immediate/lib/index.js"(exports2, module) {
     "use strict";
     var Mutation = global.MutationObserver || global.WebKitMutationObserver;
     var scheduleDrain;
@@ -2502,9 +2502,9 @@ var require_lib = __commonJS({
   }
 });
 
-// node_modules/.bun/lie@3.3.0/node_modules/lie/lib/index.js
+// node_modules/lie/lib/index.js
 var require_lib2 = __commonJS({
-  "node_modules/.bun/lie@3.3.0/node_modules/lie/lib/index.js"(exports2, module) {
+  "node_modules/lie/lib/index.js"(exports2, module) {
     "use strict";
     var immediate = require_lib();
     function INTERNAL() {
@@ -2772,9 +2772,9 @@ var require_lib2 = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/external.js
+// node_modules/jszip/lib/external.js
 var require_external = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/external.js"(exports2, module) {
+  "node_modules/jszip/lib/external.js"(exports2, module) {
     "use strict";
     var ES6Promise = null;
     if (typeof Promise !== "undefined") {
@@ -2788,9 +2788,9 @@ var require_external = __commonJS({
   }
 });
 
-// node_modules/.bun/setimmediate@1.0.5/node_modules/setimmediate/setImmediate.js
+// node_modules/setimmediate/setImmediate.js
 var require_setImmediate = __commonJS({
-  "node_modules/.bun/setimmediate@1.0.5/node_modules/setimmediate/setImmediate.js"(exports2) {
+  "node_modules/setimmediate/setImmediate.js"(exports2) {
     (function(global2, undefined2) {
       "use strict";
       if (global2.setImmediate) {
@@ -2936,9 +2936,9 @@ var require_setImmediate = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/utils.js
+// node_modules/jszip/lib/utils.js
 var require_utils = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/utils.js"(exports2) {
+  "node_modules/jszip/lib/utils.js"(exports2) {
     "use strict";
     var support = require_support();
     var base64 = require_base64();
@@ -3261,9 +3261,9 @@ var require_utils = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/GenericWorker.js
+// node_modules/jszip/lib/stream/GenericWorker.js
 var require_GenericWorker = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/GenericWorker.js"(exports2, module) {
+  "node_modules/jszip/lib/stream/GenericWorker.js"(exports2, module) {
     "use strict";
     function GenericWorker(name) {
       this.name = name || "default";
@@ -3488,9 +3488,9 @@ var require_GenericWorker = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/utf8.js
+// node_modules/jszip/lib/utf8.js
 var require_utf8 = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/utf8.js"(exports2) {
+  "node_modules/jszip/lib/utf8.js"(exports2) {
     "use strict";
     var utils = require_utils();
     var support = require_support();
@@ -3678,9 +3678,9 @@ var require_utf8 = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/ConvertWorker.js
+// node_modules/jszip/lib/stream/ConvertWorker.js
 var require_ConvertWorker = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/ConvertWorker.js"(exports2, module) {
+  "node_modules/jszip/lib/stream/ConvertWorker.js"(exports2, module) {
     "use strict";
     var GenericWorker = require_GenericWorker();
     var utils = require_utils();
@@ -3699,9 +3699,9 @@ var require_ConvertWorker = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/nodejs/NodejsStreamOutputAdapter.js
+// node_modules/jszip/lib/nodejs/NodejsStreamOutputAdapter.js
 var require_NodejsStreamOutputAdapter = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/nodejs/NodejsStreamOutputAdapter.js"(exports2, module) {
+  "node_modules/jszip/lib/nodejs/NodejsStreamOutputAdapter.js"(exports2, module) {
     "use strict";
     var Readable = require_readable().Readable;
     var utils = require_utils();
@@ -3730,9 +3730,9 @@ var require_NodejsStreamOutputAdapter = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/StreamHelper.js
+// node_modules/jszip/lib/stream/StreamHelper.js
 var require_StreamHelper = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/StreamHelper.js"(exports2, module) {
+  "node_modules/jszip/lib/stream/StreamHelper.js"(exports2, module) {
     "use strict";
     var utils = require_utils();
     var ConvertWorker = require_ConvertWorker();
@@ -3890,9 +3890,9 @@ var require_StreamHelper = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/defaults.js
+// node_modules/jszip/lib/defaults.js
 var require_defaults = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/defaults.js"(exports2) {
+  "node_modules/jszip/lib/defaults.js"(exports2) {
     "use strict";
     exports2.base64 = false;
     exports2.binary = false;
@@ -3907,9 +3907,9 @@ var require_defaults = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/DataWorker.js
+// node_modules/jszip/lib/stream/DataWorker.js
 var require_DataWorker = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/DataWorker.js"(exports2, module) {
+  "node_modules/jszip/lib/stream/DataWorker.js"(exports2, module) {
     "use strict";
     var utils = require_utils();
     var GenericWorker = require_GenericWorker();
@@ -3995,9 +3995,9 @@ var require_DataWorker = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/crc32.js
+// node_modules/jszip/lib/crc32.js
 var require_crc32 = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/crc32.js"(exports2, module) {
+  "node_modules/jszip/lib/crc32.js"(exports2, module) {
     "use strict";
     var utils = require_utils();
     function makeTable() {
@@ -4042,9 +4042,9 @@ var require_crc32 = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/Crc32Probe.js
+// node_modules/jszip/lib/stream/Crc32Probe.js
 var require_Crc32Probe = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/Crc32Probe.js"(exports2, module) {
+  "node_modules/jszip/lib/stream/Crc32Probe.js"(exports2, module) {
     "use strict";
     var GenericWorker = require_GenericWorker();
     var crc32 = require_crc32();
@@ -4062,9 +4062,9 @@ var require_Crc32Probe = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/DataLengthProbe.js
+// node_modules/jszip/lib/stream/DataLengthProbe.js
 var require_DataLengthProbe = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/stream/DataLengthProbe.js"(exports2, module) {
+  "node_modules/jszip/lib/stream/DataLengthProbe.js"(exports2, module) {
     "use strict";
     var utils = require_utils();
     var GenericWorker = require_GenericWorker();
@@ -4085,9 +4085,9 @@ var require_DataLengthProbe = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/compressedObject.js
+// node_modules/jszip/lib/compressedObject.js
 var require_compressedObject = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/compressedObject.js"(exports2, module) {
+  "node_modules/jszip/lib/compressedObject.js"(exports2, module) {
     "use strict";
     var external = require_external();
     var DataWorker = require_DataWorker();
@@ -4130,9 +4130,9 @@ var require_compressedObject = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/zipObject.js
+// node_modules/jszip/lib/zipObject.js
 var require_zipObject = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/zipObject.js"(exports2, module) {
+  "node_modules/jszip/lib/zipObject.js"(exports2, module) {
     "use strict";
     var StreamHelper = require_StreamHelper();
     var DataWorker = require_DataWorker();
@@ -4247,9 +4247,9 @@ var require_zipObject = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/utils/common.js
+// node_modules/pako/lib/utils/common.js
 var require_common = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/utils/common.js"(exports2) {
+  "node_modules/pako/lib/utils/common.js"(exports2) {
     "use strict";
     var TYPED_OK = typeof Uint8Array !== "undefined" && typeof Uint16Array !== "undefined" && typeof Int32Array !== "undefined";
     function _has(obj, key) {
@@ -4338,9 +4338,9 @@ var require_common = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/trees.js
+// node_modules/pako/lib/zlib/trees.js
 var require_trees = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/trees.js"(exports2) {
+  "node_modules/pako/lib/zlib/trees.js"(exports2) {
     "use strict";
     var utils = require_common();
     var Z_FIXED = 4;
@@ -4980,9 +4980,9 @@ var require_trees = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/adler32.js
+// node_modules/pako/lib/zlib/adler32.js
 var require_adler32 = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/adler32.js"(exports2, module) {
+  "node_modules/pako/lib/zlib/adler32.js"(exports2, module) {
     "use strict";
     function adler32(adler, buf, len, pos) {
       var s1 = adler & 65535 | 0, s2 = adler >>> 16 & 65535 | 0, n = 0;
@@ -5002,9 +5002,9 @@ var require_adler32 = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/crc32.js
+// node_modules/pako/lib/zlib/crc32.js
 var require_crc322 = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/crc32.js"(exports2, module) {
+  "node_modules/pako/lib/zlib/crc32.js"(exports2, module) {
     "use strict";
     function makeTable() {
       var c, table = [];
@@ -5030,9 +5030,9 @@ var require_crc322 = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/messages.js
+// node_modules/pako/lib/zlib/messages.js
 var require_messages = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/messages.js"(exports2, module) {
+  "node_modules/pako/lib/zlib/messages.js"(exports2, module) {
     "use strict";
     module.exports = {
       2: "need dictionary",
@@ -5057,9 +5057,9 @@ var require_messages = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/deflate.js
+// node_modules/pako/lib/zlib/deflate.js
 var require_deflate = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/deflate.js"(exports2) {
+  "node_modules/pako/lib/zlib/deflate.js"(exports2) {
     "use strict";
     var utils = require_common();
     var trees = require_trees();
@@ -6106,9 +6106,9 @@ var require_deflate = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/utils/strings.js
+// node_modules/pako/lib/utils/strings.js
 var require_strings = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/utils/strings.js"(exports2) {
+  "node_modules/pako/lib/utils/strings.js"(exports2) {
     "use strict";
     var utils = require_common();
     var STR_APPLY_OK = true;
@@ -6248,9 +6248,9 @@ var require_strings = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/zstream.js
+// node_modules/pako/lib/zlib/zstream.js
 var require_zstream = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/zstream.js"(exports2, module) {
+  "node_modules/pako/lib/zlib/zstream.js"(exports2, module) {
     "use strict";
     function ZStream() {
       this.input = null;
@@ -6270,9 +6270,9 @@ var require_zstream = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/deflate.js
+// node_modules/pako/lib/deflate.js
 var require_deflate2 = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/deflate.js"(exports2) {
+  "node_modules/pako/lib/deflate.js"(exports2) {
     "use strict";
     var zlib_deflate = require_deflate();
     var utils = require_common();
@@ -6431,9 +6431,9 @@ var require_deflate2 = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/inffast.js
+// node_modules/pako/lib/zlib/inffast.js
 var require_inffast = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/inffast.js"(exports2, module) {
+  "node_modules/pako/lib/zlib/inffast.js"(exports2, module) {
     "use strict";
     var BAD = 30;
     var TYPE = 12;
@@ -6660,9 +6660,9 @@ var require_inffast = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/inftrees.js
+// node_modules/pako/lib/zlib/inftrees.js
 var require_inftrees = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/inftrees.js"(exports2, module) {
+  "node_modules/pako/lib/zlib/inftrees.js"(exports2, module) {
     "use strict";
     var utils = require_common();
     var MAXBITS = 15;
@@ -6976,9 +6976,9 @@ var require_inftrees = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/inflate.js
+// node_modules/pako/lib/zlib/inflate.js
 var require_inflate = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/inflate.js"(exports2) {
+  "node_modules/pako/lib/zlib/inflate.js"(exports2) {
     "use strict";
     var utils = require_common();
     var adler32 = require_adler32();
@@ -8215,9 +8215,9 @@ var require_inflate = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/constants.js
+// node_modules/pako/lib/zlib/constants.js
 var require_constants = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/constants.js"(exports2, module) {
+  "node_modules/pako/lib/zlib/constants.js"(exports2, module) {
     "use strict";
     module.exports = {
       /* Allowed flush values; see deflate() and inflate() below for details */
@@ -8262,9 +8262,9 @@ var require_constants = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/gzheader.js
+// node_modules/pako/lib/zlib/gzheader.js
 var require_gzheader = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/zlib/gzheader.js"(exports2, module) {
+  "node_modules/pako/lib/zlib/gzheader.js"(exports2, module) {
     "use strict";
     function GZheader() {
       this.text = 0;
@@ -8282,9 +8282,9 @@ var require_gzheader = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/lib/inflate.js
+// node_modules/pako/lib/inflate.js
 var require_inflate2 = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/lib/inflate.js"(exports2) {
+  "node_modules/pako/lib/inflate.js"(exports2) {
     "use strict";
     var zlib_inflate = require_inflate();
     var utils = require_common();
@@ -8456,9 +8456,9 @@ var require_inflate2 = __commonJS({
   }
 });
 
-// node_modules/.bun/pako@1.0.11/node_modules/pako/index.js
+// node_modules/pako/index.js
 var require_pako = __commonJS({
-  "node_modules/.bun/pako@1.0.11/node_modules/pako/index.js"(exports2, module) {
+  "node_modules/pako/index.js"(exports2, module) {
     "use strict";
     var assign = require_common().assign;
     var deflate = require_deflate2();
@@ -8470,9 +8470,9 @@ var require_pako = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/flate.js
+// node_modules/jszip/lib/flate.js
 var require_flate = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/flate.js"(exports2) {
+  "node_modules/jszip/lib/flate.js"(exports2) {
     "use strict";
     var USE_TYPEDARRAY = typeof Uint8Array !== "undefined" && typeof Uint16Array !== "undefined" && typeof Uint32Array !== "undefined";
     var pako = require_pako();
@@ -8529,9 +8529,9 @@ var require_flate = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/compressions.js
+// node_modules/jszip/lib/compressions.js
 var require_compressions = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/compressions.js"(exports2) {
+  "node_modules/jszip/lib/compressions.js"(exports2) {
     "use strict";
     var GenericWorker = require_GenericWorker();
     exports2.STORE = {
@@ -8547,9 +8547,9 @@ var require_compressions = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/signature.js
+// node_modules/jszip/lib/signature.js
 var require_signature = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/signature.js"(exports2) {
+  "node_modules/jszip/lib/signature.js"(exports2) {
     "use strict";
     exports2.LOCAL_FILE_HEADER = "PK";
     exports2.CENTRAL_FILE_HEADER = "PK";
@@ -8560,9 +8560,9 @@ var require_signature = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/generate/ZipFileWorker.js
+// node_modules/jszip/lib/generate/ZipFileWorker.js
 var require_ZipFileWorker = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/generate/ZipFileWorker.js"(exports2, module) {
+  "node_modules/jszip/lib/generate/ZipFileWorker.js"(exports2, module) {
     "use strict";
     var utils = require_utils();
     var GenericWorker = require_GenericWorker();
@@ -8844,9 +8844,9 @@ var require_ZipFileWorker = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/generate/index.js
+// node_modules/jszip/lib/generate/index.js
 var require_generate = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/generate/index.js"(exports2) {
+  "node_modules/jszip/lib/generate/index.js"(exports2) {
     "use strict";
     var compressions = require_compressions();
     var ZipFileWorker = require_ZipFileWorker();
@@ -8885,9 +8885,9 @@ var require_generate = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/nodejs/NodejsStreamInputAdapter.js
+// node_modules/jszip/lib/nodejs/NodejsStreamInputAdapter.js
 var require_NodejsStreamInputAdapter = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/nodejs/NodejsStreamInputAdapter.js"(exports2, module) {
+  "node_modules/jszip/lib/nodejs/NodejsStreamInputAdapter.js"(exports2, module) {
     "use strict";
     var utils = require_utils();
     var GenericWorker = require_GenericWorker();
@@ -8944,9 +8944,9 @@ var require_NodejsStreamInputAdapter = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/object.js
+// node_modules/jszip/lib/object.js
 var require_object = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/object.js"(exports2, module) {
+  "node_modules/jszip/lib/object.js"(exports2, module) {
     "use strict";
     var utf8 = require_utf8();
     var utils = require_utils();
@@ -9217,9 +9217,9 @@ var require_object = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/DataReader.js
+// node_modules/jszip/lib/reader/DataReader.js
 var require_DataReader = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/DataReader.js"(exports2, module) {
+  "node_modules/jszip/lib/reader/DataReader.js"(exports2, module) {
     "use strict";
     var utils = require_utils();
     function DataReader(data) {
@@ -9339,9 +9339,9 @@ var require_DataReader = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/ArrayReader.js
+// node_modules/jszip/lib/reader/ArrayReader.js
 var require_ArrayReader = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/ArrayReader.js"(exports2, module) {
+  "node_modules/jszip/lib/reader/ArrayReader.js"(exports2, module) {
     "use strict";
     var DataReader = require_DataReader();
     var utils = require_utils();
@@ -9381,9 +9381,9 @@ var require_ArrayReader = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/StringReader.js
+// node_modules/jszip/lib/reader/StringReader.js
 var require_StringReader = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/StringReader.js"(exports2, module) {
+  "node_modules/jszip/lib/reader/StringReader.js"(exports2, module) {
     "use strict";
     var DataReader = require_DataReader();
     var utils = require_utils();
@@ -9411,9 +9411,9 @@ var require_StringReader = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/Uint8ArrayReader.js
+// node_modules/jszip/lib/reader/Uint8ArrayReader.js
 var require_Uint8ArrayReader = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/Uint8ArrayReader.js"(exports2, module) {
+  "node_modules/jszip/lib/reader/Uint8ArrayReader.js"(exports2, module) {
     "use strict";
     var ArrayReader = require_ArrayReader();
     var utils = require_utils();
@@ -9434,9 +9434,9 @@ var require_Uint8ArrayReader = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/NodeBufferReader.js
+// node_modules/jszip/lib/reader/NodeBufferReader.js
 var require_NodeBufferReader = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/NodeBufferReader.js"(exports2, module) {
+  "node_modules/jszip/lib/reader/NodeBufferReader.js"(exports2, module) {
     "use strict";
     var Uint8ArrayReader = require_Uint8ArrayReader();
     var utils = require_utils();
@@ -9454,9 +9454,9 @@ var require_NodeBufferReader = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/readerFor.js
+// node_modules/jszip/lib/reader/readerFor.js
 var require_readerFor = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/reader/readerFor.js"(exports2, module) {
+  "node_modules/jszip/lib/reader/readerFor.js"(exports2, module) {
     "use strict";
     var utils = require_utils();
     var support = require_support();
@@ -9481,9 +9481,9 @@ var require_readerFor = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/zipEntry.js
+// node_modules/jszip/lib/zipEntry.js
 var require_zipEntry = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/zipEntry.js"(exports2, module) {
+  "node_modules/jszip/lib/zipEntry.js"(exports2, module) {
     "use strict";
     var readerFor = require_readerFor();
     var utils = require_utils();
@@ -9699,9 +9699,9 @@ var require_zipEntry = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/zipEntries.js
+// node_modules/jszip/lib/zipEntries.js
 var require_zipEntries = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/zipEntries.js"(exports2, module) {
+  "node_modules/jszip/lib/zipEntries.js"(exports2, module) {
     "use strict";
     var readerFor = require_readerFor();
     var utils = require_utils();
@@ -9897,9 +9897,9 @@ var require_zipEntries = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/load.js
+// node_modules/jszip/lib/load.js
 var require_load = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/load.js"(exports2, module) {
+  "node_modules/jszip/lib/load.js"(exports2, module) {
     "use strict";
     var utils = require_utils();
     var external = require_external();
@@ -9976,9 +9976,9 @@ var require_load = __commonJS({
   }
 });
 
-// node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/index.js
+// node_modules/jszip/lib/index.js
 var require_lib3 = __commonJS({
-  "node_modules/.bun/jszip@3.10.1/node_modules/jszip/lib/index.js"(exports2, module) {
+  "node_modules/jszip/lib/index.js"(exports2, module) {
     "use strict";
     function JSZip6() {
       if (!(this instanceof JSZip6)) {
@@ -10013,9 +10013,9 @@ var require_lib3 = __commonJS({
   }
 });
 
-// node_modules/.bun/utif2@4.1.0/node_modules/utif2/UTIF.js
+// node_modules/utif2/UTIF.js
 var require_UTIF = __commonJS({
-  "node_modules/.bun/utif2@4.1.0/node_modules/utif2/UTIF.js"(exports2, module) {
+  "node_modules/utif2/UTIF.js"(exports2, module) {
     (function() {
       var UTIF2 = {};
       if (typeof module == "object") {
@@ -23239,7 +23239,7 @@ var PAGE_MARK = "\uE001";
 // packages/docx-engine/src/chart.ts
 var import_jszip2 = __toESM(require_lib3(), 1);
 
-// node_modules/.bun/fast-xml-parser@5.11.0/node_modules/fast-xml-parser/src/util.js
+// node_modules/fast-xml-parser/src/util.js
 var nameStartChar = ":A-Za-z_\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u02FF\\u0370-\\u037D\\u037F-\\u1FFF\\u200C-\\u200D\\u2070-\\u218F\\u2C00-\\u2FEF\\u3001-\\uD7FF\\uF900-\\uFDCF\\uFDF0-\\uFFFD";
 var nameChar = nameStartChar + "\\-.\\d\\u00B7\\u0300-\\u036F\\u203F-\\u2040";
 var nameRegexp = "[" + nameStartChar + "][" + nameChar + "]*";
@@ -23280,7 +23280,7 @@ var DANGEROUS_PROPERTY_NAMES = [
 ];
 var criticalProperties = ["__proto__", "constructor", "prototype"];
 
-// node_modules/.bun/fast-xml-parser@5.11.0/node_modules/fast-xml-parser/src/validator.js
+// node_modules/fast-xml-parser/src/validator.js
 var defaultOptions = {
   allowBooleanAttributes: false,
   //A tag can have attributes without any value
@@ -23586,7 +23586,7 @@ function getPositionFromMatch(match) {
   return match.startIndex + match[1].length;
 }
 
-// node_modules/.bun/@nodable+entities@3.0.0/node_modules/@nodable/entities/src/entities.js
+// node_modules/@nodable/entities/src/entities.js
 var CURRENCY = {
   cent: "\xA2",
   pound: "\xA3",
@@ -23634,7 +23634,7 @@ var COMMON_HTML = {
   frac34: "\xBE"
 };
 
-// node_modules/.bun/@nodable+entities@3.0.0/node_modules/@nodable/entities/src/EntityDecoder.js
+// node_modules/@nodable/entities/src/EntityDecoder.js
 var ENTITY_ACTION = Object.freeze({
   /** Resolve and expand the entity normally. */
   ALLOW: "allow",
@@ -24078,7 +24078,7 @@ var EntityDecoder = class {
   }
 };
 
-// node_modules/.bun/fast-xml-parser@5.11.0/node_modules/fast-xml-parser/src/xmlparser/OptionsBuilder.js
+// node_modules/fast-xml-parser/src/xmlparser/OptionsBuilder.js
 var defaultOnDangerousProperty = (name) => {
   if (DANGEROUS_PROPERTY_NAMES.includes(name)) {
     return "__" + name;
@@ -24213,7 +24213,7 @@ var buildOptions = function(options) {
   return built;
 };
 
-// node_modules/.bun/fast-xml-parser@5.11.0/node_modules/fast-xml-parser/src/xmlparser/xmlNode.js
+// node_modules/fast-xml-parser/src/xmlparser/xmlNode.js
 var METADATA_SYMBOL;
 if (typeof Symbol !== "function") {
   METADATA_SYMBOL = "@@xmlMetadata";
@@ -24237,17 +24237,8 @@ var XmlNode = class {
     } else {
       this.child.push({ [node.tagname]: node.child });
     }
-    this.addStartIndex(startIndex);
-  }
-  addStartIndex(startIndex) {
     if (startIndex !== void 0) {
       this.child[this.child.length - 1][METADATA_SYMBOL] = { startIndex };
-    }
-  }
-  addEndIndex(endIndex) {
-    const lastChild = this.child[this.child.length - 1];
-    if (lastChild !== void 0 && lastChild[METADATA_SYMBOL] !== void 0 && lastChild[METADATA_SYMBOL].endIndex === void 0) {
-      lastChild[METADATA_SYMBOL].endIndex = endIndex;
     }
   }
   /** symbol used for metadata */
@@ -24256,7 +24247,7 @@ var XmlNode = class {
   }
 };
 
-// node_modules/.bun/xml-naming@0.3.0/node_modules/xml-naming/src/index.js
+// node_modules/xml-naming/src/index.js
 var nameStartChar10 = ":A-Za-z_\xC0-\xD6\xD8-\xF6\xF8-\u02FF\u0370-\u037D\u037F-\u0486\u0488-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD";
 var nameChar10 = nameStartChar10 + "\\-\\.\\d\xB7\u0300-\u036F\u203F-\u2040";
 var nameStartChar11 = ":A-Za-z_\xC0-\u02FF\u0370-\u037D\u037F-\u0486\u0488-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u{10000}-\u{EFFFF}";
@@ -24284,7 +24275,7 @@ var getRegexes = (xmlVersion = "1.0", asciiOnly = false) => {
 };
 var qName = (str, { xmlVersion = "1.0", asciiOnly = false } = {}) => getRegexes(xmlVersion, asciiOnly).qName.test(str);
 
-// node_modules/.bun/fast-xml-parser@5.11.0/node_modules/fast-xml-parser/src/xmlparser/DocTypeReader.js
+// node_modules/fast-xml-parser/src/xmlparser/DocTypeReader.js
 var DocTypeReader = class {
   constructor(options, xmlVersion) {
     this.suppressValidationErr = !options;
@@ -24301,19 +24292,8 @@ var DocTypeReader = class {
       i = i + 9;
       let angleBracketsCount = 1;
       let hasBody = false, comment = false;
-      let quoteChar = null;
       let exp = "";
       for (; i < xmlData.length; i++) {
-        if (quoteChar !== null) {
-          if (xmlData[i] === quoteChar) quoteChar = null;
-          exp += xmlData[i];
-          continue;
-        }
-        if (!hasBody && !comment && (xmlData[i] === '"' || xmlData[i] === "'")) {
-          quoteChar = xmlData[i];
-          exp += xmlData[i];
-          continue;
-        }
         if (xmlData[i] === "<" && !comment) {
           if (hasBody && hasSeq(xmlData, "!ENTITY", i)) {
             i += 7;
@@ -24360,7 +24340,7 @@ var DocTypeReader = class {
           exp += xmlData[i];
         }
       }
-      if (quoteChar !== null || angleBracketsCount !== 0) {
+      if (angleBracketsCount !== 0) {
         throw new Error(`Unclosed DOCTYPE`);
       }
     } else {
@@ -24575,7 +24555,7 @@ function validateEntityName2(name, xmlVersion) {
     throw new Error(`Invalid entity name ${name}`);
 }
 
-// node_modules/.bun/anynum@1.0.1/node_modules/anynum/digitTable.js
+// node_modules/anynum/digitTable.js
 var SCRIPT_ZEROS = [
   // Basic Latin (ASCII) — included for completeness / pass-through
   48,
@@ -24725,7 +24705,7 @@ for (const zero of SCRIPT_ZEROS) {
   }
 }
 
-// node_modules/.bun/anynum@1.0.1/node_modules/anynum/anynum.js
+// node_modules/anynum/anynum.js
 var CHAR_0 = 48;
 var CHAR_9 = 57;
 var CHAR_MINUS = 45;
@@ -24803,7 +24783,7 @@ function anynum(str) {
 }
 var anynum_default = anynum;
 
-// node_modules/.bun/strnum@2.4.2/node_modules/strnum/strnum.js
+// node_modules/strnum/strnum.js
 var hexRegex = /^[-+]?0x[a-fA-F0-9]+$/;
 var binRegex = /^0b[01]+$/;
 var octRegex = /^0o[0-7]+$/;
@@ -24907,9 +24887,7 @@ function resolveEnotation(str, trimmedStr, options) {
 }
 function trimZeros(numStr) {
   if (numStr && numStr.indexOf(".") !== -1) {
-    let end = numStr.length;
-    while (end > 0 && numStr.charCodeAt(end - 1) === 48) end--;
-    numStr = numStr.slice(0, end);
+    numStr = numStr.replace(/0+$/, "");
     if (numStr === ".") numStr = "0";
     else if (numStr[0] === ".") numStr = "0" + numStr;
     else if (numStr[numStr.length - 1] === ".") numStr = numStr.substring(0, numStr.length - 1);
@@ -24941,7 +24919,7 @@ function handleInfinity(str, num, options) {
   }
 }
 
-// node_modules/.bun/fast-xml-parser@5.11.0/node_modules/fast-xml-parser/src/ignoreAttributes.js
+// node_modules/fast-xml-parser/src/ignoreAttributes.js
 function getIgnoreAttributesFn(ignoreAttributes) {
   if (typeof ignoreAttributes === "function") {
     return ignoreAttributes;
@@ -24961,7 +24939,7 @@ function getIgnoreAttributesFn(ignoreAttributes) {
   return () => false;
 }
 
-// node_modules/.bun/path-expression-matcher@1.6.2/node_modules/path-expression-matcher/src/Expression.js
+// node_modules/path-expression-matcher/src/Expression.js
 var Expression = class {
   /**
    * Create a new Expression
@@ -25124,7 +25102,7 @@ var Expression = class {
   }
 };
 
-// node_modules/.bun/path-expression-matcher@1.6.2/node_modules/path-expression-matcher/src/ExpressionSet.js
+// node_modules/path-expression-matcher/src/ExpressionSet.js
 var ExpressionSet = class {
   constructor() {
     this._byDepthAndTag = /* @__PURE__ */ new Map();
@@ -25293,7 +25271,7 @@ var ExpressionSet = class {
   }
 };
 
-// node_modules/.bun/path-expression-matcher@1.6.2/node_modules/path-expression-matcher/src/Matcher.js
+// node_modules/path-expression-matcher/src/Matcher.js
 var MatcherView = class {
   /**
    * @param {Matcher} matcher - The parent Matcher instance to read from.
@@ -25810,7 +25788,7 @@ var Matcher = class {
   }
 };
 
-// node_modules/.bun/is-unsafe@2.0.2/node_modules/is-unsafe/src/contexts/html.js
+// node_modules/is-unsafe/src/contexts/html.js
 var HTML_PATTERNS = [
   {
     id: "html-script-open",
@@ -25903,7 +25881,7 @@ var HTML_PATTERNS = [
 ];
 var html_default = HTML_PATTERNS;
 
-// node_modules/.bun/is-unsafe@2.0.2/node_modules/is-unsafe/src/contexts/xml.js
+// node_modules/is-unsafe/src/contexts/xml.js
 var XML_PATTERNS = [
   {
     id: "xml-cdata-injection",
@@ -25950,8 +25928,7 @@ var XML_PATTERNS = [
   {
     id: "xml-namespace-confusion",
     description: "xmlns: attribute injection \u2014 can redefine namespaces to confuse parsers",
-    // pattern: /\bxmlns\s*(?::\w{1,40})?\s*=/i,
-    pattern: /\bxmlns(?::\w{1,40})?\s*=/i
+    pattern: /\bxmlns\s*(?::\w{1,40})?\s*=/i
   },
   {
     id: "xml-comment-injection",
@@ -25971,7 +25948,7 @@ var XML_PATTERNS = [
 ];
 var xml_default = XML_PATTERNS;
 
-// node_modules/.bun/is-unsafe@2.0.2/node_modules/is-unsafe/src/contexts/svg.js
+// node_modules/is-unsafe/src/contexts/svg.js
 var SVG_PATTERNS = [
   {
     id: "svg-script-element",
@@ -26043,7 +26020,7 @@ var SVG_PATTERNS = [
 ];
 var svg_default = SVG_PATTERNS;
 
-// node_modules/.bun/is-unsafe@2.0.2/node_modules/is-unsafe/src/contexts/sql.js
+// node_modules/is-unsafe/src/contexts/sql.js
 var SQL_PATTERNS = [
   {
     id: "sql-block-comment-open",
@@ -26125,7 +26102,7 @@ var SQL_PATTERNS = [
 ];
 var sql_default = SQL_PATTERNS;
 
-// node_modules/.bun/is-unsafe@2.0.2/node_modules/is-unsafe/src/contexts/shell.js
+// node_modules/is-unsafe/src/contexts/shell.js
 var SHELL_PATTERNS = [
   {
     id: "shell-path-traversal-unix",
@@ -26223,7 +26200,7 @@ var SHELL_PATTERNS = [
 ];
 var shell_default = SHELL_PATTERNS;
 
-// node_modules/.bun/is-unsafe@2.0.2/node_modules/is-unsafe/src/contexts/redos.js
+// node_modules/is-unsafe/src/contexts/redos.js
 var REDOS_PATTERNS = [
   {
     id: "redos-nested-quantifier-plus",
@@ -26272,7 +26249,7 @@ var REDOS_PATTERNS = [
 ];
 var redos_default = REDOS_PATTERNS;
 
-// node_modules/.bun/is-unsafe@2.0.2/node_modules/is-unsafe/src/contexts/nosql.js
+// node_modules/is-unsafe/src/contexts/nosql.js
 var sep = `["'\\s]*:`;
 var NOSQL_PATTERNS = [
   // ─── MongoDB $ operator injection ────────────────────────────────────────
@@ -26362,7 +26339,7 @@ var NOSQL_PATTERNS = [
 ];
 var nosql_default = NOSQL_PATTERNS;
 
-// node_modules/.bun/is-unsafe@2.0.2/node_modules/is-unsafe/src/contexts/log.js
+// node_modules/is-unsafe/src/contexts/log.js
 var LOG_PATTERNS = [
   // ─── CRLF / newline injection ─────────────────────────────────────────────
   {
@@ -26436,7 +26413,7 @@ var LOG_PATTERNS = [
 ];
 var log_default = LOG_PATTERNS;
 
-// node_modules/.bun/is-unsafe@2.0.2/node_modules/is-unsafe/src/contexts/sql-strict.js
+// node_modules/is-unsafe/src/contexts/sql-strict.js
 var SQL_STRICT_EXTRA = [
   {
     id: "sql-line-comment",
@@ -26457,7 +26434,7 @@ var SQL_STRICT_EXTRA = [
 var SQL_STRICT_PATTERNS = [...sql_default, ...SQL_STRICT_EXTRA];
 var sql_strict_default = SQL_STRICT_PATTERNS;
 
-// node_modules/.bun/is-unsafe@2.0.2/node_modules/is-unsafe/src/index.js
+// node_modules/is-unsafe/src/index.js
 html_default.label = "HTML";
 xml_default.label = "XML";
 svg_default.label = "SVG";
@@ -26531,7 +26508,7 @@ function isUnsafe(value, context) {
   return false;
 }
 
-// node_modules/.bun/fast-xml-parser@5.11.0/node_modules/fast-xml-parser/src/xmlparser/OrderedObjParser.js
+// node_modules/fast-xml-parser/src/xmlparser/OrderedObjParser.js
 function extractRawAttributes(prefixedAttrs, options) {
   if (!prefixedAttrs) return {};
   const attrs = options.attributesGroupName ? prefixedAttrs[options.attributesGroupName] : prefixedAttrs;
@@ -26758,10 +26735,7 @@ var parseXml = function(xmlData) {
         }
         this.matcher.pop();
         this.isCurrentNodeStopNode = false;
-        currentNode = this.tagsNodeStack.pop() || xmlObj;
-        if (options.captureMetaData && currentNode) {
-          currentNode.addEndIndex(closeIndex + 1);
-        }
+        currentNode = this.tagsNodeStack.pop();
         textData = "";
         i = closeIndex;
       } else if (c1 === 63) {
@@ -26782,9 +26756,6 @@ var parseXml = function(xmlData) {
             childNode[":@"] = attsMap;
           }
           this.addChild(currentNode, childNode, this.readonlyMatcher, i);
-          if (options.captureMetaData) {
-            currentNode.addEndIndex(tagData.closeIndex + 2);
-          }
         }
         i = tagData.closeIndex + 1;
       } else if (c1 === 33 && xmlData.charCodeAt(i + 2) === 45 && xmlData.charCodeAt(i + 3) === 45) {
@@ -26886,9 +26857,6 @@ var parseXml = function(xmlData) {
           this.matcher.pop();
           this.isCurrentNodeStopNode = false;
           this.addChild(currentNode, childNode, this.readonlyMatcher, startIndex);
-          if (options.captureMetaData) {
-            currentNode.addEndIndex(i + 1);
-          }
         } else {
           if (isSelfClosing) {
             ({ tagName, tagExp } = transformTagName(options.transformTagName, tagName, tagExp, options));
@@ -26897,9 +26865,6 @@ var parseXml = function(xmlData) {
               childNode[":@"] = prefixedAttrs;
             }
             this.addChild(currentNode, childNode, this.readonlyMatcher, startIndex);
-            if (options.captureMetaData) {
-              currentNode.addEndIndex(closeIndex + 1);
-            }
             this.matcher.pop();
             this.isCurrentNodeStopNode = false;
           } else if (options.unpairedTagsSet.has(tagName)) {
@@ -26908,9 +26873,6 @@ var parseXml = function(xmlData) {
               childNode[":@"] = prefixedAttrs;
             }
             this.addChild(currentNode, childNode, this.readonlyMatcher, startIndex);
-            if (options.captureMetaData) {
-              currentNode.addEndIndex(result.closeIndex + 1);
-            }
             this.matcher.pop();
             this.isCurrentNodeStopNode = false;
             i = result.closeIndex;
@@ -27136,7 +27098,7 @@ function sanitizeName(name, options) {
   return name;
 }
 
-// node_modules/.bun/fast-xml-parser@5.11.0/node_modules/fast-xml-parser/src/xmlparser/node2json.js
+// node_modules/fast-xml-parser/src/xmlparser/node2json.js
 var METADATA_SYMBOL2 = XmlNode.getMetaDataSymbol();
 function stripAttributePrefix(attrs, prefix) {
   if (!attrs || typeof attrs !== "object") return {};
@@ -27248,7 +27210,7 @@ function isLeafTag(obj, options) {
   return false;
 }
 
-// node_modules/.bun/fast-xml-parser@5.11.0/node_modules/fast-xml-parser/src/xmlparser/XMLParser.js
+// node_modules/fast-xml-parser/src/xmlparser/XMLParser.js
 var XMLParser = class {
   constructor(options) {
     this.externalEntities = {};
@@ -41154,6 +41116,16 @@ function retargetImageBlip(xml, rId) {
 }
 
 // packages/contractor-core/src/api/office-routes.ts
+var Base64Codec = class {
+  encode(bytes) {
+    const buf = bytes instanceof Buffer ? bytes : Buffer.from(bytes);
+    return buf.toString("base64");
+  }
+  decode(encoded) {
+    return Buffer.from(encoded, "base64");
+  }
+};
+var DEFAULT_CODEC = new Base64Codec();
 var MAX_FILE_BYTES = 10 * 1024 * 1024;
 var ALLOWED_EXTENSIONS = /* @__PURE__ */ new Set([".xlsx", ".csv", ".xls", ".docx"]);
 var SAFE_NAME_RE = /^[A-Za-z0-9.\-_]+$/;
@@ -41165,18 +41137,178 @@ var OfficeValidationError = class extends Error {
   }
   code;
 };
-function validateFileName(name) {
-  if (typeof name !== "string" || name.length === 0) {
-    throw new OfficeValidationError("validation", "fileName is required");
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function expectString(value, field, requireNonEmpty = true) {
+  if (typeof value !== "string") {
+    throw new OfficeValidationError("validation", `${field} must be a string`);
   }
+  if (requireNonEmpty && value.length === 0) {
+    throw new OfficeValidationError("validation", `${field} is required`);
+  }
+  return value;
+}
+function expectNumber(value, field) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new OfficeValidationError("validation", `${field} must be a finite number`);
+  }
+  return value;
+}
+function expectBoolean(value, field) {
+  if (typeof value !== "boolean") {
+    throw new OfficeValidationError("validation", `${field} must be a boolean`);
+  }
+  return value;
+}
+function expectArray(value, field, predicate) {
+  if (!Array.isArray(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an array`);
+  }
+  return value.map((entry, index) => predicate(entry, index));
+}
+function expectCellState(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const v = value.value;
+  if (v !== null && typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.value must be a string, number, boolean, or null`
+    );
+  }
+  const formula = value.formula;
+  if (formula !== void 0 && typeof formula !== "string") {
+    throw new OfficeValidationError("validation", `${field}.formula must be a string when present`);
+  }
+  return {
+    value: v,
+    ...formula !== void 0 ? { formula } : {}
+  };
+}
+function expectCellEdit(value, index) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `cellEdits[${index}] must be an object`);
+  }
+  const sheetName = expectString(value.sheetName, `cellEdits[${index}].sheetName`);
+  const row = expectNumber(value.row, `cellEdits[${index}].row`);
+  const column = expectNumber(value.column, `cellEdits[${index}].column`);
+  const writeValue = expectBoolean(value.writeValue, `cellEdits[${index}].writeValue`);
+  const cell = expectCellState(value.cell, `cellEdits[${index}].cell`);
+  const edit = {
+    sheetName,
+    row,
+    column,
+    writeValue,
+    cell,
+    ...typeof value.style === "object" && value.style !== null ? { style: value.style } : {},
+    ...Array.isArray(value.rich) ? { rich: value.rich } : {},
+    ...typeof value.styleReset === "boolean" ? { styleReset: value.styleReset } : {}
+  };
+  return edit;
+}
+function expectSerializedRun(value, index) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `runs[${index}] must be an object`);
+  }
+  const text = expectString(value.text, `runs[${index}].text`, false);
+  const bold = value.bold;
+  if (bold !== void 0 && typeof bold !== "boolean") {
+    throw new OfficeValidationError("validation", `runs[${index}].bold must be a boolean`);
+  }
+  const italic = value.italic;
+  if (italic !== void 0 && typeof italic !== "boolean") {
+    throw new OfficeValidationError("validation", `runs[${index}].italic must be a boolean`);
+  }
+  const underline = value.underline;
+  if (underline !== void 0 && typeof underline !== "boolean") {
+    throw new OfficeValidationError("validation", `runs[${index}].underline must be a boolean`);
+  }
+  const strike = value.strike;
+  if (strike !== void 0 && typeof strike !== "boolean") {
+    throw new OfficeValidationError("validation", `runs[${index}].strike must be a boolean`);
+  }
+  let link;
+  if (value.link !== void 0) {
+    if (!isRecord(value.link)) {
+      throw new OfficeValidationError("validation", `runs[${index}].link must be an object`);
+    }
+    const href = expectString(value.link.href, `runs[${index}].link.href`);
+    const tooltip = value.link.tooltip !== void 0 ? expectString(value.link.tooltip, `runs[${index}].link.tooltip`, false) : void 0;
+    link = { href, ...tooltip !== void 0 ? { tooltip } : {} };
+  }
+  return {
+    text,
+    ...bold === true ? { bold: true } : {},
+    ...italic === true ? { italic: true } : {},
+    ...underline === true ? { underline: true } : {},
+    ...strike === true ? { strike: true } : {},
+    ...link !== void 0 ? { link } : {}
+  };
+}
+function expectSerializedBlock(value, index) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `blocks[${index}] must be an object`);
+  }
+  const docxIndex = value.docxIndex === null || value.docxIndex === void 0 ? null : expectNumber(value.docxIndex, `blocks[${index}].docxIndex`);
+  const type = expectString(value.type, `blocks[${index}].type`);
+  const allowedTypes = [
+    "paragraph",
+    "heading",
+    "listItem",
+    "table",
+    "image",
+    "passthrough",
+    "hidden"
+  ];
+  if (!allowedTypes.includes(type)) {
+    throw new OfficeValidationError(
+      "validation",
+      `blocks[${index}].type must be one of: ${allowedTypes.join(", ")}`
+    );
+  }
+  const text = expectString(value.text, `blocks[${index}].text`, false);
+  const runs = value.runs !== void 0 ? expectArray(value.runs, `blocks[${index}].runs`, expectSerializedRun) : void 0;
+  const block = {
+    docxIndex,
+    type,
+    text,
+    ...runs !== void 0 ? { runs } : {},
+    ...value.level !== void 0 ? { level: expectNumber(value.level, `blocks[${index}].level`) } : {},
+    ...value.listKind !== void 0 ? (() => {
+      const k = value.listKind;
+      if (k !== "bullet" && k !== "ordered") {
+        throw new OfficeValidationError(
+          "validation",
+          `blocks[${index}].listKind must be 'bullet' or 'ordered'`
+        );
+      }
+      return { listKind: k };
+    })() : {},
+    ...typeof value.edited === "boolean" ? { edited: value.edited } : {},
+    ...typeof value.hidden === "boolean" ? { hidden: value.hidden } : {}
+  };
+  return block;
+}
+function validateFileName(name) {
+  expectString(name, "fileName");
+  if (typeof name !== "string")
+    throw new OfficeValidationError("validation", "fileName is required");
   if (name.length > 255) {
     throw new OfficeValidationError("validation", "fileName exceeds 255 characters");
   }
   if (name.includes("/") || name.includes("\\") || name.includes("..") || name.includes("\0")) {
-    throw new OfficeValidationError("validation", "fileName may not contain path separators or traversal sequences");
+    throw new OfficeValidationError(
+      "validation",
+      "fileName may not contain path separators or traversal sequences"
+    );
   }
   if (!SAFE_NAME_RE.test(name)) {
-    throw new OfficeValidationError("validation", "fileName contains invalid characters (allowed: A-Z a-z 0-9 . - _)");
+    throw new OfficeValidationError(
+      "validation",
+      "fileName contains invalid characters (allowed: A-Z a-z 0-9 . - _)"
+    );
   }
   const lower = name.toLowerCase();
   const ext = lower.match(/\.[^.]+$/)?.[0] ?? "";
@@ -41188,50 +41320,79 @@ function validateFileName(name) {
   }
   return name;
 }
-function decodeFileBytes(b64) {
-  if (typeof b64 !== "string" || b64.length === 0) {
+function decodeFileBytes(b64, codec) {
+  expectString(b64, "fileBytes");
+  if (typeof b64 !== "string")
     throw new OfficeValidationError("validation", "fileBytes (base64) is required");
-  }
-  let buf;
+  let bytes;
   try {
-    buf = Buffer.from(b64, "base64");
+    bytes = codec.decode(b64);
   } catch {
     throw new OfficeValidationError("validation", "fileBytes is not valid base64");
   }
-  if (buf.length === 0) {
+  if (bytes.length === 0) {
     throw new OfficeValidationError("validation", "fileBytes decoded to an empty buffer");
   }
-  if (buf.length > MAX_FILE_BYTES) {
+  if (bytes.length > MAX_FILE_BYTES) {
     throw new OfficeValidationError(
       "validation",
-      `fileBytes exceeds the 10MB limit (decoded to ${buf.length} bytes)`
+      `fileBytes exceeds the 10MB limit (decoded to ${bytes.length} bytes)`
     );
   }
-  return buf;
+  return bytes;
 }
-function encodeFileBytes(buf) {
-  const out = buf instanceof Buffer ? buf : Buffer.from(buf);
-  return out.toString("base64");
+function encodeFileBytes(bytes, codec) {
+  return codec.encode(bytes);
 }
-function asObject3(body) {
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
+function parseOpenWorkbookRequest(body, codec) {
+  if (!isRecord(body)) {
     throw new OfficeValidationError("validation", "Request body must be a JSON object");
   }
-  return body;
+  const fileName = validateFileName(body.fileName);
+  const fileBytes = decodeFileBytes(body.fileBytes, codec);
+  return { fileName, fileBytes };
 }
-function asArray(value, field) {
-  if (!Array.isArray(value)) {
-    throw new OfficeValidationError("validation", `${field} must be an array`);
+function parseSaveWorkbookRequest(body, codec) {
+  if (!isRecord(body)) {
+    throw new OfficeValidationError("validation", "Request body must be a JSON object");
   }
-  return value;
+  const fileName = validateFileName(body.fileName);
+  const fileBytes = decodeFileBytes(body.fileBytes, codec);
+  if (body.savePlan !== void 0) {
+    if (!isRecord(body.savePlan)) {
+      throw new OfficeValidationError("validation", "savePlan must be an object");
+    }
+    const edits = expectArray(body.savePlan.edits, "savePlan.edits", expectCellEdit);
+    return { fileName, fileBytes, savePlan: { edits } };
+  }
+  if (body.cellEdits !== void 0) {
+    const edits = expectArray(body.cellEdits, "cellEdits", expectCellEdit);
+    return { fileName, fileBytes, savePlan: { edits } };
+  }
+  throw new OfficeValidationError("validation", "savePlan.edits (or legacy cellEdits) is required");
 }
-async function handleOpenWorkbook(body) {
-  const obj = asObject3(body);
-  validateFileName(obj.fileName);
-  const buf = decodeFileBytes(obj.fileBytes);
+function parseOpenDocumentRequest(body, codec) {
+  if (!isRecord(body)) {
+    throw new OfficeValidationError("validation", "Request body must be a JSON object");
+  }
+  const fileName = validateFileName(body.fileName);
+  const fileBytes = decodeFileBytes(body.fileBytes, codec);
+  return { fileName, fileBytes };
+}
+function parseSaveDocumentRequest(body, codec) {
+  if (!isRecord(body)) {
+    throw new OfficeValidationError("validation", "Request body must be a JSON object");
+  }
+  const fileName = validateFileName(body.fileName);
+  const fileBytes = decodeFileBytes(body.fileBytes, codec);
+  const blocks = expectArray(body.blocks, "blocks", expectSerializedBlock);
+  return { fileName, fileBytes, blocks };
+}
+async function handleOpenWorkbook(body, codec) {
+  const { fileBytes } = parseOpenWorkbookRequest(body, codec);
   let imported;
   try {
-    imported = await readBasicWorkbook(buf);
+    imported = await readBasicWorkbook(Buffer.from(fileBytes));
   } catch (e) {
     throw new OfficeValidationError(
       "malformed",
@@ -41244,28 +41405,10 @@ async function handleOpenWorkbook(body) {
   };
   return { status: 200, body: res };
 }
-async function handleSaveWorkbook(body) {
-  const obj = asObject3(body);
-  validateFileName(obj.fileName);
-  const buf = decodeFileBytes(obj.fileBytes);
-  const edits = asArray(obj.cellEdits, "cellEdits");
-  for (const edit of edits) {
-    if (!edit || typeof edit !== "object") {
-      throw new OfficeValidationError("validation", "cellEdits contains a non-object entry");
-    }
-    if (typeof edit.sheetName !== "string" || edit.sheetName.length === 0) {
-      throw new OfficeValidationError("validation", "cellEdits entry is missing sheetName");
-    }
-    if (typeof edit.row !== "number" || typeof edit.column !== "number") {
-      throw new OfficeValidationError("validation", "cellEdits entry is missing row/column");
-    }
-    if (typeof edit.writeValue !== "boolean") {
-      throw new OfficeValidationError("validation", "cellEdits entry is missing writeValue");
-    }
-    if (!edit.cell || typeof edit.cell !== "object") {
-      throw new OfficeValidationError("validation", "cellEdits entry is missing cell");
-    }
-  }
+async function handleSaveWorkbook(body, codec) {
+  const req = parseSaveWorkbookRequest(body, codec);
+  const buf = Buffer.from(req.fileBytes);
+  const edits = req.savePlan.edits;
   let mutation;
   try {
     mutation = await applyCellEditsToXlsx(buf, edits);
@@ -41275,30 +41418,40 @@ async function handleSaveWorkbook(body) {
       e instanceof Error ? e.message : "Failed to apply cell edits"
     );
   }
-  const res = { fileBytes: encodeFileBytes(mutation.buffer) };
+  const res = { fileBytes: encodeFileBytes(mutation.buffer, codec) };
   return { status: 200, body: res };
+}
+function serializeRun(run) {
+  const out = { text: run.text };
+  if (run.bold) out.bold = true;
+  if (run.italic) out.italic = true;
+  if (run.underline) out.underline = true;
+  if (run.strike) out.strike = true;
+  if (run.link)
+    out.link = { href: run.link.href, ...run.link.tooltip ? { tooltip: run.link.tooltip } : {} };
+  return out;
 }
 function serializeBlock(block) {
   const runs = block.runs ?? [];
   const text = runs.map((r) => r.text).join("");
   const type = block.hidden ? "hidden" : block.type === "heading" ? "heading" : block.type === "listItem" ? "listItem" : block.type === "paragraph" ? "paragraph" : block.type === "table" ? "table" : block.type === "image" ? "image" : "passthrough";
+  const serializedRuns = runs.length > 0 ? runs.map(serializeRun) : void 0;
   return {
     docxIndex: block.docxIndex,
     type,
     text,
+    ...serializedRuns ? { runs: serializedRuns } : {},
     level: block.level,
     listKind: block.list?.kind,
     edited: false,
     hidden: block.hidden === true
   };
 }
-async function handleOpenDocument(body) {
-  const obj = asObject3(body);
-  validateFileName(obj.fileName);
-  const buf = decodeFileBytes(obj.fileBytes);
+async function handleOpenDocument(body, codec) {
+  const { fileBytes } = parseOpenDocumentRequest(body, codec);
   let parsed;
   try {
-    parsed = await parseDocx(buf);
+    parsed = await parseDocx(fileBytes);
   } catch (e) {
     throw new OfficeValidationError(
       "malformed",
@@ -41318,13 +41471,21 @@ function toSaveBlocks(blocks) {
       out.push({ kind: "original", docxIndex: b.docxIndex });
       continue;
     }
+    const runs = b.runs && b.runs.length > 0 ? b.runs.map((r) => ({
+      text: r.text,
+      ...r.bold ? { bold: true } : {},
+      ...r.italic ? { italic: true } : {},
+      ...r.underline ? { underline: true } : {},
+      ...r.strike ? { strike: true } : {},
+      ...r.link ? { link: r.link } : {}
+    })) : [{ text: b.text }];
     if (b.type === "heading") {
       out.push({
         kind: "generated",
         block: {
           type: "heading",
           level: b.level ?? 1,
-          runs: [{ text: b.text }]
+          runs
         }
       });
     } else if (b.type === "listItem") {
@@ -41333,7 +41494,7 @@ function toSaveBlocks(blocks) {
         block: {
           type: "listItem",
           list: { kind: b.listKind ?? "bullet", numId: "1", ilvl: 0 },
-          runs: [{ text: b.text }]
+          runs
         }
       });
     } else {
@@ -41341,28 +41502,25 @@ function toSaveBlocks(blocks) {
         kind: "generated",
         block: {
           type: "paragraph",
-          runs: [{ text: b.text }]
+          runs
         }
       });
     }
   }
   return out;
 }
-async function handleSaveDocument(body) {
-  const obj = asObject3(body);
-  validateFileName(obj.fileName);
-  const buf = decodeFileBytes(obj.fileBytes);
-  const blocks = asArray(obj.blocks, "blocks");
+async function handleSaveDocument(body, codec) {
+  const req = parseSaveDocumentRequest(body, codec);
   let parsed;
   try {
-    parsed = await parseDocx(buf);
+    parsed = await parseDocx(req.fileBytes);
   } catch (e) {
     throw new OfficeValidationError(
       "malformed",
       e instanceof Error ? e.message : "Failed to parse document"
     );
   }
-  const saveBlocks = toSaveBlocks(blocks);
+  const saveBlocks = toSaveBlocks(req.blocks);
   let saved;
   try {
     saved = await saveDocx(parsed, saveBlocks);
@@ -41372,24 +41530,25 @@ async function handleSaveDocument(body) {
       e instanceof Error ? e.message : "Failed to save document"
     );
   }
-  const res = { fileBytes: encodeFileBytes(saved) };
+  const res = { fileBytes: encodeFileBytes(saved, codec) };
   return { status: 200, body: res };
 }
-async function routeOffice(req) {
+async function routeOffice(req, services) {
   const path = req.path;
   const method = req.method;
+  const codec = services?.codec ?? DEFAULT_CODEC;
   try {
     if (method === "POST" && path === "/office/workbooks/open") {
-      return await handleOpenWorkbook(req.body);
+      return await handleOpenWorkbook(req.body, codec);
     }
     if (method === "POST" && path === "/office/workbooks/save") {
-      return await handleSaveWorkbook(req.body);
+      return await handleSaveWorkbook(req.body, codec);
     }
     if (method === "POST" && path === "/office/documents/open") {
-      return await handleOpenDocument(req.body);
+      return await handleOpenDocument(req.body, codec);
     }
     if (method === "POST" && path === "/office/documents/save") {
-      return await handleSaveDocument(req.body);
+      return await handleSaveDocument(req.body, codec);
     }
     return null;
   } catch (e) {
@@ -41856,11 +42015,20 @@ async function getDeps() {
   };
   if (!magicLinkConfig.linkSecret || magicLinkConfig.linkSecret.length < 32) {
     if (!config.devAuthEnabled) {
-      throw new Error("CG_MAGIC_LINK_SECRET must be set (min 32 bytes) for production magic-link auth");
+      throw new Error(
+        "CG_MAGIC_LINK_SECRET must be set (min 32 bytes) for production magic-link auth"
+      );
     }
   }
   const magicLinkAuth = new MagicLinkAuthService(users, magicLinks, magicLinkConfig);
-  const passwordAuth = new PasswordAuthService({ db, users, memberships, organizations, waitlist, audit });
+  const passwordAuth = new PasswordAuthService({
+    db,
+    users,
+    memberships,
+    organizations,
+    waitlist,
+    audit
+  });
   cachedDeps = {
     coreApi,
     resolver,
@@ -41897,8 +42065,18 @@ var DEMO_ORG_SLUG = "genoffice-demo";
 var DEMO_WS_ID = "ws_demo_default";
 var DEMO_USERS = [
   { id: "usr_demo_owner", role: "owner", email: "demo-owner@contractor.dev", name: "Demo Owner" },
-  { id: "usr_demo_member", role: "member", email: "demo-member@contractor.dev", name: "Demo Member" },
-  { id: "usr_demo_viewer", role: "viewer", email: "demo-viewer@contractor.dev", name: "Demo Viewer" }
+  {
+    id: "usr_demo_member",
+    role: "member",
+    email: "demo-member@contractor.dev",
+    name: "Demo Member"
+  },
+  {
+    id: "usr_demo_viewer",
+    role: "viewer",
+    email: "demo-viewer@contractor.dev",
+    name: "Demo Viewer"
+  }
 ];
 async function seedDemoData(deps) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -41924,9 +42102,13 @@ async function seedDemoData(deps) {
   }
   for (const u of DEMO_USERS) {
     if (await deps.users.getByEmail(u.email)) continue;
-    await deps.users.createDemoUser(
-      { id: u.id, email: u.email, displayName: u.name, status: "active", createdAt: now }
-    );
+    await deps.users.createDemoUser({
+      id: u.id,
+      email: u.email,
+      displayName: u.name,
+      status: "active",
+      createdAt: now
+    });
     await deps.users.createBinding({
       id: `auth_${u.id}`,
       userId: u.id,
@@ -41985,7 +42167,11 @@ async function handler(req, res) {
           message: msg === "payload_too_large" ? "Payload too large" : "Invalid JSON body"
         });
       }
-      const officeRes = await routeOffice({ method, path, body: officeBody });
+      const officeRes = await routeOffice({
+        method,
+        path: path.slice("/api".length),
+        body: officeBody
+      });
       if (officeRes) return sendApiResponse(res, officeRes);
       return sendJson(res, 404, { error: "not_found", message: "Unknown office route" });
     }
@@ -42050,7 +42236,8 @@ async function handleDevLogin(req, res, deps) {
     return sendJson(res, 404, { error: "not_found", message: "Dev auth is not enabled" });
   }
   const body = await readJsonBody(req);
-  if (!body || typeof body !== "object") return sendJson(res, 400, { error: "validation", message: "Invalid body" });
+  if (!body || typeof body !== "object")
+    return sendJson(res, 400, { error: "validation", message: "Invalid body" });
   const credential = body.credential;
   if (typeof credential !== "string" || credential.length === 0) {
     return sendJson(res, 400, { error: "validation", message: "credential required" });
@@ -42059,10 +42246,14 @@ async function handleDevLogin(req, res, deps) {
     return sendJson(res, 401, { error: "unauthenticated", message: "Invalid dev credential" });
   }
   const devUserEmail = process.env.CG_DEV_USER_EMAIL;
-  if (!devUserEmail) return sendJson(res, 500, { error: "internal_error", message: "Dev user email not configured" });
+  if (!devUserEmail)
+    return sendJson(res, 500, { error: "internal_error", message: "Dev user email not configured" });
   const user = await deps.users.getByEmail(devUserEmail);
   if (!user || user.status !== "active") {
-    return sendJson(res, 401, { error: "unauthenticated", message: "Dev user not found or inactive" });
+    return sendJson(res, 401, {
+      error: "unauthenticated",
+      message: "Dev user not found or inactive"
+    });
   }
   const existingBinding = await deps.users.getBindingBySubject("web", user.id);
   if (!existingBinding) {
@@ -42076,13 +42267,24 @@ async function handleDevLogin(req, res, deps) {
     });
   }
   const exp = Math.floor(Date.now() / 1e3) + deps.config.sessionTtlSeconds;
-  const token = signSession({ userId: user.id, selectedMembershipId: null, exp }, deps.config.sessionSecret);
-  res.setHeader("Set-Cookie", sessionCookieHeader(token, deps.config.sessionTtlSeconds, process.env.NODE_ENV === "production"));
+  const token = signSession(
+    { userId: user.id, selectedMembershipId: null, exp },
+    deps.config.sessionSecret
+  );
+  res.setHeader(
+    "Set-Cookie",
+    sessionCookieHeader(
+      token,
+      deps.config.sessionTtlSeconds,
+      process.env.NODE_ENV === "production"
+    )
+  );
   return sendJson(res, 200, { userId: user.id, email: user.email, displayName: user.displayName });
 }
 async function handleRequestLink(req, res, deps) {
   const body = await readJsonBody(req);
-  if (!body || typeof body !== "object") return sendJson(res, 400, { error: "validation", message: "Invalid body" });
+  if (!body || typeof body !== "object")
+    return sendJson(res, 400, { error: "validation", message: "Invalid body" });
   const email = body.email;
   if (typeof email !== "string" || email.length === 0) {
     return sendJson(res, 400, { error: "validation", message: "email required" });
@@ -42094,7 +42296,10 @@ async function handleRequestLink(req, res, deps) {
     }
     return sendJson(res, 200, { sent: true, email: result.email });
   } catch (e) {
-    return sendJson(res, 400, { error: "validation", message: e instanceof Error ? e.message : "Failed" });
+    return sendJson(res, 400, {
+      error: "validation",
+      message: e instanceof Error ? e.message : "Failed"
+    });
   }
 }
 async function handleVerify(req, res, deps, url) {
@@ -42103,44 +42308,81 @@ async function handleVerify(req, res, deps, url) {
   try {
     const result = await deps.magicLinkAuth.verifyLink(token);
     const exp = Math.floor(Date.now() / 1e3) + deps.config.sessionTtlSeconds;
-    const sessionToken = signSession({ userId: result.userId, selectedMembershipId: null, exp }, deps.config.sessionSecret);
-    res.setHeader("Set-Cookie", sessionCookieHeader(sessionToken, deps.config.sessionTtlSeconds, process.env.NODE_ENV === "production"));
+    const sessionToken = signSession(
+      { userId: result.userId, selectedMembershipId: null, exp },
+      deps.config.sessionSecret
+    );
+    res.setHeader(
+      "Set-Cookie",
+      sessionCookieHeader(
+        sessionToken,
+        deps.config.sessionTtlSeconds,
+        process.env.NODE_ENV === "production"
+      )
+    );
     res.writeHead(302, { Location: "/" });
     res.end();
     return;
   } catch (e) {
-    return sendJson(res, 401, { error: "unauthenticated", message: e instanceof Error ? e.message : "Invalid token" });
+    return sendJson(res, 401, {
+      error: "unauthenticated",
+      message: e instanceof Error ? e.message : "Invalid token"
+    });
   }
 }
 async function handleListMemberships(req, res, deps) {
   const payload = deps.resolver.resolvePayload(req.headers.cookie);
-  if (!payload) return sendJson(res, 401, { error: "unauthenticated", message: "Not authenticated" });
+  if (!payload)
+    return sendJson(res, 401, { error: "unauthenticated", message: "Not authenticated" });
   const user = await deps.users.getById(payload.userId);
-  if (!user || user.status !== "active") return sendJson(res, 401, { error: "unauthenticated", message: "User not found" });
+  if (!user || user.status !== "active")
+    return sendJson(res, 401, { error: "unauthenticated", message: "User not found" });
   const memberships = await deps.memberships.listTenantsForUser(payload.userId);
   const result = [];
   for (const m of memberships) {
     const org = await deps.organizations.getById(m.organizationId, m.organizationId);
-    result.push({ membershipId: m.id, organizationId: m.organizationId, organizationName: org?.name ?? m.organizationId, role: m.role });
+    result.push({
+      membershipId: m.id,
+      organizationId: m.organizationId,
+      organizationName: org?.name ?? m.organizationId,
+      role: m.role
+    });
   }
   return sendJson(res, 200, { memberships: result });
 }
 async function handleSelectTenant(req, res, deps) {
   const payload = deps.resolver.resolvePayload(req.headers.cookie);
-  if (!payload) return sendJson(res, 401, { error: "unauthenticated", message: "Not authenticated" });
+  if (!payload)
+    return sendJson(res, 401, { error: "unauthenticated", message: "Not authenticated" });
   const body = await readJsonBody(req);
-  if (!body || typeof body !== "object") return sendJson(res, 400, { error: "validation", message: "Invalid body" });
+  if (!body || typeof body !== "object")
+    return sendJson(res, 400, { error: "validation", message: "Invalid body" });
   const membershipId = body.membershipId;
   if (typeof membershipId !== "string" || membershipId.length === 0) {
     return sendJson(res, 400, { error: "validation", message: "membershipId required" });
   }
   const userMemberships = await deps.memberships.listTenantsForUser(payload.userId);
   const found = userMemberships.find((m) => m.id === membershipId);
-  if (!found) return sendJson(res, 403, { error: "forbidden", message: "Membership not found or not yours" });
+  if (!found)
+    return sendJson(res, 403, { error: "forbidden", message: "Membership not found or not yours" });
   const exp = Math.floor(Date.now() / 1e3) + deps.config.sessionTtlSeconds;
-  const token = signSession({ userId: payload.userId, selectedMembershipId: membershipId, exp }, deps.config.sessionSecret);
-  res.setHeader("Set-Cookie", sessionCookieHeader(token, deps.config.sessionTtlSeconds, process.env.NODE_ENV === "production"));
-  return sendJson(res, 200, { tenantId: found.organizationId, membershipId: found.id, role: found.role });
+  const token = signSession(
+    { userId: payload.userId, selectedMembershipId: membershipId, exp },
+    deps.config.sessionSecret
+  );
+  res.setHeader(
+    "Set-Cookie",
+    sessionCookieHeader(
+      token,
+      deps.config.sessionTtlSeconds,
+      process.env.NODE_ENV === "production"
+    )
+  );
+  return sendJson(res, 200, {
+    tenantId: found.organizationId,
+    membershipId: found.id,
+    role: found.role
+  });
 }
 async function handleSession(req, res, deps) {
   const payload = deps.resolver.resolvePayload(req.headers.cookie);
@@ -42157,21 +42399,35 @@ async function handleSession(req, res, deps) {
 }
 async function handlePasswordLogin(req, res, deps) {
   const body = await readJsonBody(req);
-  if (!body || typeof body !== "object") return sendJson(res, 400, { error: "validation", message: "Invalid body" });
+  if (!body || typeof body !== "object")
+    return sendJson(res, 400, { error: "validation", message: "Invalid body" });
   const b = body;
   const email = typeof b.email === "string" ? b.email : "";
   const password = typeof b.password === "string" ? b.password : "";
-  if (!email || !password) return sendJson(res, 400, { error: "validation", message: "email and password required" });
+  if (!email || !password)
+    return sendJson(res, 400, { error: "validation", message: "email and password required" });
   const result = await deps.passwordAuth.login(email, password);
-  if (!result) return sendJson(res, 401, { error: "unauthenticated", message: "Invalid email or password" });
+  if (!result)
+    return sendJson(res, 401, { error: "unauthenticated", message: "Invalid email or password" });
   const exp = Math.floor(Date.now() / 1e3) + deps.config.sessionTtlSeconds;
-  const token = signSession({ userId: result.userId, selectedMembershipId: null, exp }, deps.config.sessionSecret);
-  res.setHeader("Set-Cookie", sessionCookieHeader(token, deps.config.sessionTtlSeconds, process.env.NODE_ENV === "production"));
+  const token = signSession(
+    { userId: result.userId, selectedMembershipId: null, exp },
+    deps.config.sessionSecret
+  );
+  res.setHeader(
+    "Set-Cookie",
+    sessionCookieHeader(
+      token,
+      deps.config.sessionTtlSeconds,
+      process.env.NODE_ENV === "production"
+    )
+  );
   return sendJson(res, 200, { userId: result.userId });
 }
 async function handleSignup(req, res, deps) {
   const body = await readJsonBody(req);
-  if (!body || typeof body !== "object") return sendJson(res, 400, { error: "validation", message: "Invalid body" });
+  if (!body || typeof body !== "object")
+    return sendJson(res, 400, { error: "validation", message: "Invalid body" });
   const b = body;
   const email = typeof b.email === "string" ? b.email : "";
   const displayName = typeof b.displayName === "string" ? b.displayName : null;
@@ -42179,60 +42435,98 @@ async function handleSignup(req, res, deps) {
     return sendJson(res, 400, { error: "validation", message: "valid email required" });
   }
   const entry = await deps.passwordAuth.joinWaitlist(email, displayName);
-  return sendJson(res, 200, { id: entry.id, email: entry.email, status: entry.status, message: "You are on the waitlist. An admin will review your request." });
+  return sendJson(res, 200, {
+    id: entry.id,
+    email: entry.email,
+    status: entry.status,
+    message: "You are on the waitlist. An admin will review your request."
+  });
 }
 async function handleDemoLogin(req, res, deps) {
   const body = await readJsonBody(req);
-  if (!body || typeof body !== "object") return sendJson(res, 400, { error: "validation", message: "Invalid body" });
+  if (!body || typeof body !== "object")
+    return sendJson(res, 400, { error: "validation", message: "Invalid body" });
   const role = body.role;
   if (role !== "owner" && role !== "member" && role !== "viewer") {
-    return sendJson(res, 400, { error: "validation", message: "role must be owner, member, or viewer" });
+    return sendJson(res, 400, {
+      error: "validation",
+      message: "role must be owner, member, or viewer"
+    });
   }
   const result = await deps.passwordAuth.demoLogin(role);
-  if (!result) return sendJson(res, 401, { error: "unauthenticated", message: "Demo user not found. Run the bootstrap script." });
+  if (!result)
+    return sendJson(res, 401, {
+      error: "unauthenticated",
+      message: "Demo user not found. Run the bootstrap script."
+    });
   const exp = Math.floor(Date.now() / 1e3) + deps.config.sessionTtlSeconds;
-  const token = signSession({ userId: result.userId, selectedMembershipId: null, exp }, deps.config.sessionSecret);
-  res.setHeader("Set-Cookie", sessionCookieHeader(token, deps.config.sessionTtlSeconds, process.env.NODE_ENV === "production"));
+  const token = signSession(
+    { userId: result.userId, selectedMembershipId: null, exp },
+    deps.config.sessionSecret
+  );
+  res.setHeader(
+    "Set-Cookie",
+    sessionCookieHeader(
+      token,
+      deps.config.sessionTtlSeconds,
+      process.env.NODE_ENV === "production"
+    )
+  );
   return sendJson(res, 200, { userId: result.userId, role });
 }
 async function handleListWaitlist(req, res, deps) {
   const payload = deps.resolver.resolvePayload(req.headers.cookie);
-  if (!payload) return sendJson(res, 401, { error: "unauthenticated", message: "Not authenticated" });
+  if (!payload)
+    return sendJson(res, 401, { error: "unauthenticated", message: "Not authenticated" });
   if (!payload.selectedMembershipId) {
     return sendJson(res, 403, { error: "forbidden", message: "No tenant selected" });
   }
   const userMemberships = await deps.memberships.listTenantsForUser(payload.userId);
   const selectedM = userMemberships.find((m) => m.id === payload.selectedMembershipId);
   if (!selectedM || selectedM.status !== "active" || selectedM.role !== "admin" && selectedM.role !== "owner") {
-    return sendJson(res, 403, { error: "forbidden", message: "Admin or owner role required for the selected tenant" });
+    return sendJson(res, 403, {
+      error: "forbidden",
+      message: "Admin or owner role required for the selected tenant"
+    });
   }
   const entries = await deps.waitlist.listAll();
   return sendJson(res, 200, { entries });
 }
 async function handleApproveWaitlist(req, res, deps) {
   const payload = deps.resolver.resolvePayload(req.headers.cookie);
-  if (!payload) return sendJson(res, 401, { error: "unauthenticated", message: "Not authenticated" });
+  if (!payload)
+    return sendJson(res, 401, { error: "unauthenticated", message: "Not authenticated" });
   if (!payload.selectedMembershipId) {
     return sendJson(res, 403, { error: "forbidden", message: "No tenant selected" });
   }
   const userMemberships = await deps.memberships.listTenantsForUser(payload.userId);
   const selectedM = userMemberships.find((m) => m.id === payload.selectedMembershipId);
   if (!selectedM) {
-    return sendJson(res, 403, { error: "forbidden", message: "Selected membership not found or revoked" });
+    return sendJson(res, 403, {
+      error: "forbidden",
+      message: "Selected membership not found or revoked"
+    });
   }
   if (selectedM.status !== "active") {
     return sendJson(res, 403, { error: "forbidden", message: "Selected membership is not active" });
   }
   if (selectedM.role !== "admin" && selectedM.role !== "owner") {
-    return sendJson(res, 403, { error: "forbidden", message: "Admin or owner role required for the selected tenant" });
+    return sendJson(res, 403, {
+      error: "forbidden",
+      message: "Admin or owner role required for the selected tenant"
+    });
   }
   const body = await readJsonBody(req);
-  if (!body || typeof body !== "object") return sendJson(res, 400, { error: "validation", message: "Invalid body" });
+  if (!body || typeof body !== "object")
+    return sendJson(res, 400, { error: "validation", message: "Invalid body" });
   const b = body;
   const waitlistId = typeof b.waitlistId === "string" ? b.waitlistId : "";
   const password = typeof b.password === "string" ? b.password : "";
   if (!waitlistId || !password || password.length < 6) {
-    return sendJson(res, 400, { error: "validation", message: "waitlistId and password (min 6 chars) required" });
+    return sendJson(res, 400, {
+      error: "validation",
+      message: "waitlistId and password (min 6 chars) required"
+    });
   }
   try {
     const result = await deps.passwordAuth.approveWaitlistEntry(
@@ -42241,13 +42535,20 @@ async function handleApproveWaitlist(req, res, deps) {
       selectedM.organizationId,
       password
     );
-    return sendJson(res, 200, { userId: result.userId, email: result.email, message: "User created. They can now login with their email + the password you set." });
+    return sendJson(res, 200, {
+      userId: result.userId,
+      email: result.email,
+      message: "User created. They can now login with their email + the password you set."
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Failed to approve";
     if (msg.includes("not found") || msg.includes("already") || msg.includes("could not be approved")) {
       return sendJson(res, 409, { error: "conflict", message: msg });
     }
-    return sendJson(res, 500, { error: "internal_error", message: "Failed to approve waitlist entry" });
+    return sendJson(res, 500, {
+      error: "internal_error",
+      message: "Failed to approve waitlist entry"
+    });
   }
 }
 async function readJsonBody(req) {
@@ -42283,7 +42584,10 @@ async function readLargeJsonBody(req) {
 }
 function sendJson(res, status, body) {
   const json2 = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(json2) });
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(json2)
+  });
   res.end(json2);
 }
 function sendApiResponse(res, apiRes) {
