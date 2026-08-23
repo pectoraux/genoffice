@@ -226,6 +226,7 @@ function makeMockWc() {
   return {
     isDestroyed: () => false,
     send: (channel: string, data: unknown) => { sends.push({ channel, data }) },
+    once: (_event: string, _handler: () => void) => { /* no-op for tests */ },
     _sends: sends,
   }
 }
@@ -408,70 +409,64 @@ describe('Increment 15A — Rename mutation serialization (SIDECAR-FREE)', () =>
     await coordinator.teardown(100)
   })
 
-  test('no stale legacy mirror: onWorkbookRenamed callback fires with old/new paths', async () => {
+  test('shell rename updates coordinator session path (no stale originalPath)', async () => {
+    // Phase 2 Increment 17: the manual rename path (shell → sheetsFileRenamed)
+    // delegates to `coordinator.renameWorkbookFromShell(wcId, oldPath, newPath)`.
+    // The coordinator finds the session by `originalPath` and updates it.
+    // There is NO legacy SessionInfo mirror — `ShellWorkbookSession.originalPath`
+    // is the sole authoritative path.
     const service = new MockSpreadsheetService()
-    // The "legacy mirror" lives in sheets-main.ts as `sheetsTabs`. In
-    // this sidecar-free test we mock the legacy mirror as a simple Map
-    // that the `onWorkbookRenamed` callback updates. This proves the
-    // coordinator invokes the callback with the correct (wcId, oldPath,
-    // newPath) tuple — wiring that updateLegacySessionPath relies on.
-    const legacyMirror = new Map<string, string>() // sessionId → path
-    const onWorkbookRenamed = vi.fn(
-      (wcId: number, oldPath: string, newPath: string) => {
-        // Find any session in the mirror whose path === oldPath and
-        // update it. (Mirrors the real updateLegacySessionPath helper.)
-        for (const [sid, p] of legacyMirror) {
-          if (p === oldPath) legacyMirror.set(sid, newPath)
-        }
-      },
-    )
-    const coordinator = new SheetsShellCoordinator({ service, onWorkbookRenamed })
+    const coordinator = new SheetsShellCoordinator({ service })
 
     const fixturePath = join(testDir, 'Untitled.xlsx')
     writeFileSync(fixturePath, Buffer.from('fake xlsx content'))
     coordinator.markUntitledPath(fixturePath)
     const { sessionId } = await adoptSession(coordinator, 100, fixturePath)
 
-    // Seed the legacy mirror with the original path (simulating the
-    // legacy `workbook:select` having registered the same sessionId).
-    legacyMirror.set(sessionId, fixturePath)
+    // Register a mock WebContents so the coordinator can push events.
+    const wc = makeMockWc()
+    coordinator.registerRenderer(100, wc as unknown as import('electron').WebContents)
+
+    // Simulate the shell renaming the file on disk.
+    const newPath = join(testDir, 'ShellRenamed.xlsx')
+    const matched = coordinator.renameWorkbookFromShell(100, fixturePath, newPath)
+    expect(matched).toBe(true)
+
+    // The coordinator's session now has the new path — NOT stale.
+    const session = coordinator.getSession(100, sessionId)
+    expect(session.originalPath).toBe(newPath)
+
+    // The event was pushed exactly once.
+    const renamedEvents = wc._sends.filter((s) => s.channel === 'workbook:renamed')
+    expect(renamedEvents.length).toBe(1)
+    expect(renamedEvents[0]?.data).toBe('ShellRenamed.xlsx')
+
+    await coordinator.teardown(100)
+  })
+
+  test('shell rename with no matching session: no-op, no event pushed', async () => {
+    // When the shell renames a file that is NOT open in any session,
+    // `renameWorkbookFromShell` returns false and pushes nothing.
+    const service = new MockSpreadsheetService()
+    const coordinator = new SheetsShellCoordinator({ service })
 
     const wc = makeMockWc()
-    const result = await coordinator.renameWorkbook(
-      100, wc as unknown as import('electron').WebContents,
-      sessionId, 'MirrorUpdated',
-    )
-    expect(result.renamed).toBe(true)
+    coordinator.registerRenderer(100, wc as unknown as import('electron').WebContents)
 
-    // The callback MUST have been invoked exactly once with the correct
-    // (wcId, oldPath, newPath) tuple.
-    expect(onWorkbookRenamed).toHaveBeenCalledTimes(1)
-    expect(onWorkbookRenamed).toHaveBeenCalledWith(
+    const matched = coordinator.renameWorkbookFromShell(
       100,
-      fixturePath,
-      join(testDir, 'MirrorUpdated.xlsx'),
+      '/nonexistent/old.xlsx',
+      '/nonexistent/new.xlsx',
     )
-
-    // The legacy mirror now reflects the new path — NOT stale.
-    expect(legacyMirror.get(sessionId)).toBe(join(testDir, 'MirrorUpdated.xlsx'))
+    expect(matched).toBe(false)
+    expect(wc._sends.length).toBe(0)
 
     await coordinator.teardown(100)
   })
 
   test('no duplicate workbook:renamed event: coordinator pushes exactly once', async () => {
     const service = new MockSpreadsheetService()
-    // The `onWorkbookRenamed` callback represents the legacy mirror
-    // updater. If the coordinator (incorrectly) pushed the
-    // `workbook:renamed` event BOTH directly AND via the callback,
-    // we'd see two events. This test asserts the coordinator pushes
-    // exactly once.
-    const onWorkbookRenamed = vi.fn(() => {
-      // Simulate the legacy mirror update. Note: the real
-      // `updateLegacySessionPath` does NOT push the IPC event —
-      // only the coordinator does. We assert that here by counting
-      // the mock WebContents sends.
-    })
-    const coordinator = new SheetsShellCoordinator({ service, onWorkbookRenamed })
+    const coordinator = new SheetsShellCoordinator({ service })
 
     const fixturePath = join(testDir, 'Untitled.xlsx')
     writeFileSync(fixturePath, Buffer.from('fake xlsx content'))
@@ -479,6 +474,8 @@ describe('Increment 15A — Rename mutation serialization (SIDECAR-FREE)', () =>
     const { sessionId } = await adoptSession(coordinator, 100, fixturePath)
 
     const wc = makeMockWc()
+    coordinator.registerRenderer(100, wc as unknown as import('electron').WebContents)
+
     await coordinator.renameWorkbook(
       100, wc as unknown as import('electron').WebContents,
       sessionId, 'SingleEvent',
@@ -492,10 +489,9 @@ describe('Increment 15A — Rename mutation serialization (SIDECAR-FREE)', () =>
     await coordinator.teardown(100)
   })
 
-  test('failed rename: callback NOT invoked, no event pushed', async () => {
+  test('failed rename: no event pushed', async () => {
     const service = new MockSpreadsheetService()
-    const onWorkbookRenamed = vi.fn()
-    const coordinator = new SheetsShellCoordinator({ service, onWorkbookRenamed })
+    const coordinator = new SheetsShellCoordinator({ service })
 
     const fixturePath = join(testDir, 'Untitled.xlsx')
     writeFileSync(fixturePath, Buffer.from('fake xlsx content'))
@@ -513,9 +509,6 @@ describe('Increment 15A — Rename mutation serialization (SIDECAR-FREE)', () =>
     // No event was pushed (rename did not happen).
     const renamedEvents = wc._sends.filter((s) => s.channel === 'workbook:renamed')
     expect(renamedEvents.length).toBe(0)
-
-    // The legacy mirror callback was NOT invoked.
-    expect(onWorkbookRenamed).not.toHaveBeenCalled()
 
     // The session's path is unchanged.
     const session = coordinator.getSession(100, sessionId)

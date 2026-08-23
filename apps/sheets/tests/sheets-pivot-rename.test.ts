@@ -171,8 +171,7 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 16 — Real pivot + auto-rename E
       sidecarClient.start()
       const engine = new ElectronXlsxSidecarEngine({ binaryPath: SIDECAR_BIN, sidecarClient })
       const service = new SpreadsheetServiceImpl({ engine })
-      const onWorkbookRenamed = vi.fn()
-      const coordinator = new SheetsShellCoordinator({ service, onWorkbookRenamed })
+      const coordinator = new SheetsShellCoordinator({ service })
       const bundle = { engine, service, coordinator } as unknown as SheetsRuntimeBundle
 
       const fixturePath = join(testDir, 'Untitled.xlsx')

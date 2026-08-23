@@ -117,7 +117,6 @@ import {
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { closeGuardDecision } from './close-guard'
 import { exportPdf } from './pdf-export'
-import { XlsxSidecarClient } from './xlsx-sidecar-client'
 import { initSheetsRuntime, type SheetsRuntimeBundle } from './sheets-runtime'
 import { registerMigratedSheetsIpc } from './sheets-migrated-handlers'
 import { registerMigratedSheetsAiIpc, abortStreamsForRenderer } from './sheets-ai-handlers'
@@ -1019,47 +1018,6 @@ const tMain = createI18n({
 const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[2]) =>
   tMain(getUiLang(), key, params)
 
-interface SessionInfo {
-  readonly path: string
-  /// Byte-for-byte copy of the file as it was opened (in the OS temp dir).
-  /// Saves patch this snapshot rather than the live path, so an external
-  /// overwrite of the file can never corrupt the save base — and Save As
-  /// stays usable after one. Removed when the session closes.
-  readonly snapshotPath: string
-  /// Digest of the snapshot (== the file at open time).
-  readonly sha256: string
-  readonly sheetNames: ReadonlyMap<string, string>
-  /// Set when the session opened a converted copy (.xls/.csv import): the
-  /// first save routes through Save As, defaulting to this .xlsx path.
-  readonly suggestSaveAs?: string
-  /// The converted copy came from a CSV: the Save As dialog explains that
-  /// formatting requires .xlsx (CSV keeps values only).
-  readonly csvImport?: boolean
-  /// Set when the session opened a restored crash-recovery copy: the restore
-  /// prompt was the user's confirmation, so a plain Save silently writes back
-  /// to this original path (no Save As detour).
-  readonly restoreTarget?: string
-  /// Digest of the original file at restore time — guards the silent
-  /// write-back against external modification, mirroring the sha256 check on
-  /// the session's own path.
-  readonly restoreTargetSha?: string
-  /**
-   * INCREMENT 5A — LEGACY SESSION ADOPTION:
-   *   True when this session has been adopted into the
-   *   SheetsShellCoordinator's registry. After adoption:
-   *     - The coordinator is the EXCLUSIVE owner of the engine handle
-   *       (which wraps the sidecar `sessionId`) and the snapshot path.
-   *     - This legacy `SessionInfo` is a NON-OWNING reference kept only
-   *       for the legacy `save` / `write-recovery` paths to keep working
-   *       (they use `entry.client` + `session.sheetNames`, NOT the engine
-   *       handle or the snapshot lifecycle).
-   *     - `closeAllSessions(entry)` (called on renderer teardown) MUST NOT
-   *       `client.close(sessionId)` or `rm(snapshotPath)` for adopted
-   *       sessions — the coordinator's `teardown(wcId)` does that exactly
-   *       once.
-   */
-  adopted?: boolean
-}
 
 // ---- runtime configuration (paths differ when bundled into the shell) ----
 
@@ -1085,53 +1043,37 @@ export function configureSheetsRuntime(config: SheetsRuntimeConfig): void {
 }
 
 let mainWindow: BrowserWindow | null = null
-let sidecar: XlsxSidecarClient | null = null
 
 /**
  * The migrated runtime bundle (coordinator-backed). Initialized lazily
  * on the first createSheetsWindow/createSheetsView call. The migrated
- * IPC handlers use this coordinator for read-range, read-formulas,
- * recalc, read-media, and close operations.
+ * IPC handlers use this coordinator for all workbook operations.
  *
- * INCREMENT 5A — LEGACY SIDECAR SHARING:
- *   The legacy `sidecar: XlsxSidecarClient` (created lazily by
- *   createSheetsWindow / createSheetsView) is passed to the engine via
- *   `initSheetsRuntime({ sidecarClient: sidecar })`. This makes the
- *   engine use the SAME sidecar process as the legacy `workbook:select`
- *   path — eliminating double-spawn and enabling zero-overhead legacy
- *   session adoption.
- *
- *   The engine does NOT own the injected client's lifecycle: stop() is
- *   a no-op for the client (the legacy path owns starting/stopping it).
+ * Phase 2 Increment 17: the engine owns the sidecar process lifecycle.
+ * `getMigratedRuntime` constructs a `SidecarProtocolClient` via the
+ * engine (which internally creates its own `XlsxSidecarClient`-equivalent
+ * and starts the Rust sidecar binary). There is NO separate
+ * `XlsxSidecarClient` lifecycle in sheets-main — the engine is the sole
+ * sidecar process owner.
  */
 let migratedRuntime: ReturnType<typeof initSheetsRuntime> | null = null
 
 function getMigratedRuntime(): ReturnType<typeof initSheetsRuntime> {
   if (!migratedRuntime) {
     const sidecarPath = resolveSidecarPath()
-    // Share the legacy sidecar client (constructed lazily by
-    // createSheetsWindow / createSheetsView) with the engine. This
-    // preserves the "exactly ONE sidecar process" invariant — the engine
-    // and any remaining legacy handlers speak to the SAME process.
+    // Phase 2 Increment 17: the engine owns the sidecar process. We pass
+    // `binaryPath` only (no `sidecarClient`) — `initSheetsRuntime` calls
+    // `engine.start()` which spawns the sidecar binary. There is NO
+    // separate `XlsxSidecarClient` in sheets-main.
     //
-    // Phase 2 Increment 16: the coordinator is the SOLE owner of workbook
-    // sessions. The shell plumbs four callbacks:
-    //   - onWorkbookRenamed: update the legacy `sheetsTabs.sessions[].path`
-    //     mirror (kept until resolveSheetsSessionPath is migrated — Phase F).
-    //   - recoveryDialogText: localized recovery prompt text (the coordinator
-    //     is language-agnostic; this callback returns the current lang's text).
-    //   - onWorkbookOpened: fire `workbookOpenedHook` (tab tracking) after a
-    //     successful open.
+    // The shell plumbs three coordinator-level callbacks:
+    //   - recoveryDialogText: localized recovery prompt text.
+    //   - onWorkbookOpened: fire `workbookOpenedHook` (tab tracking).
     //   - consumeQueuedWorkbookPath: return the shell-queued path (set by
-    //     setForcedWorkbookPath / the dev capture server). The coordinator
-    //     consumes it WITHOUT showing the dialog — matching legacy behavior.
-    const sharedClient = sidecar ?? new XlsxSidecarClient(sidecarPath)
-    sidecar = sharedClient
-    sharedClient.start()
+    //     setForcedWorkbookPath / the dev capture server).
     migratedRuntime = initSheetsRuntime(
-      { binaryPath: sidecarPath, sidecarClient: sharedClient },
+      { binaryPath: sidecarPath },
       {
-        onWorkbookRenamed: updateLegacySessionPath,
         recoveryDialogText: () => ({
           restoreButton: tm('autosaveRestore'),
           discardButton: tm('autosaveDiscard'),
@@ -1173,8 +1115,7 @@ export function setSheetsShellWindow(win: BrowserWindow | null): void {
 
 interface SheetsTabSession {
   readonly webContents: WebContents
-  readonly client: XlsxSidecarClient
-  readonly sessions: Map<string, SessionInfo>
+  /** Per-renderer AI stream tracking (requestId → AbortController). */
   readonly aiStreams: Map<string, AbortController>
 }
 
@@ -1212,33 +1153,27 @@ async function saveFileDialog(event: IpcMainInvokeEvent, options: SaveDialogOpti
   )
 }
 
-/** register a tab's webContents/client pair and wire up cleanup on teardown */
-function registerSheetsSession(webContents: WebContents, client: XlsxSidecarClient): void {
-  sheetsTabs.set(webContents.id, { webContents, client, sessions: new Map(), aiStreams: new Map() })
+/** register a tab's webContents and wire up cleanup on teardown */
+function registerSheetsSession(webContents: WebContents): void {
+  sheetsTabs.set(webContents.id, { webContents, aiStreams: new Map() })
   activeSheetsWebContents = webContents
-  // INCREMENT 5A — register this tab with the SheetsShellCoordinator so
-  // that adoption (called later from workbook:select) lands in the right
-  // per-renderer registry, and the coordinator's teardown is invoked when
-  // the webContents is destroyed. The coordinator's teardown handles
-  // adopted sessions (closing the sidecar session + removing the snapshot
-  // exactly once); closeAllSessions below handles non-adopted legacy sessions.
+  // Register this tab with the SheetsShellCoordinator so the coordinator's
+  // teardown is invoked when the webContents is destroyed. The coordinator
+  // owns the workbook sessions (closing engine handles + removing snapshots).
   try {
     const { coordinator } = getMigratedRuntime()
     coordinator.registerRenderer(webContents.id, webContents)
   } catch (error) {
-    // If the runtime can't be constructed (e.g., sidecar binary missing),
-    // adoption is impossible — the renderer will fall back to the legacy
-    // session registry only. Log and continue.
+    // If the runtime can't be constructed (e.g. sidecar binary missing),
+    // the renderer will not be able to open workbooks. Log and continue.
     console.warn('[sheets] coordinator.registerRenderer failed:', error)
   }
   webContents.once('destroyed', () => {
-    const entry = sheetsTabs.get(webContents.id)
     sheetsTabs.delete(webContents.id)
-    if (entry) void closeAllSessions(entry)
     if (activeSheetsWebContents === webContents) activeSheetsWebContents = null
-    // INCREMENT 10: abort all AI streams for this renderer
+    // Abort all AI streams for this renderer.
     abortStreamsForRenderer(webContents.id)
-    // INCREMENT 5A — tear down the coordinator's sessions for this renderer.
+    // Tear down the coordinator's sessions for this renderer.
     // This is idempotent (safe to call even if registerRenderer failed).
     // The coordinator's teardown acquires per-session locks and waits for
     // any in-progress commit to complete before closing handles.
@@ -1266,57 +1201,24 @@ export function setActiveSheetsWebContents(wc: WebContents | null): void {
 }
 
 /** Shell notification: an open view's file was renamed on disk (renamed in the
- *  Home list) — sync the matching session's path in that tab (later saves write
- *  the new file) and push the renderer to update the title-bar file name.
+ *  Home list) — sync the coordinator's session path and push the renderer to
+ *  update the title-bar file name.
  *
- *  This is the MANUAL rename path (shell → home:rename-file IPC). It updates
- *  the legacy `sheetsTabs.sessions[].path` mirror AND pushes the
- *  `workbook:renamed` event to the renderer.
- *
- *  The COORDINATOR's auto-rename path (`coordinator.renameWorkbook`) does NOT
- *  call this function — it updates its own `ShellWorkbookSession.originalPath`
- *  and pushes the event itself, then invokes the `onWorkbookRenamed`
- *  callback (which calls `updateLegacySessionPath` directly — no push,
- *  avoiding a duplicate event).
+ *  Phase 2 Increment 17: this delegates to `coordinator.renameWorkbookFromShell()`
+ *  — the coordinator is the SOLE owner of workbook paths. There is NO legacy
+ *  `SessionInfo.path` mirror to sync; the coordinator's `ShellWorkbookSession.originalPath`
+ *  is the single authoritative source.
  */
 export function sheetsFileRenamed(wc: WebContents, oldPath: string, newPath: string): void {
   // A user-chosen name always wins: the file no longer qualifies for auto-rename
   untitledWorkbookPaths.delete(oldPath)
-  const matched = updateLegacySessionPath(wc.id, oldPath, newPath)
-  if (matched) wc.send(IPC_CHANNELS.workbookRenamed, basename(newPath))
-}
-
-/**
- * Update the legacy `sheetsTabs.sessions[].path` mirror for a renamed
- * workbook — WITHOUT pushing any IPC event.
- *
- * Returns `true` if at least one session's path matched `oldPath` (and was
- * therefore updated); `false` otherwise. Callers use the return value to
- * decide whether to push the `workbook:renamed` event.
- *
- * USED BY:
- *   - `sheetsFileRenamed()` — the manual rename path (pushes the event
- *     itself when at least one session matched).
- *   - the coordinator's `onWorkbookRenamed` callback (wired in
- *     `getMigratedRuntime()`) — invoked after a successful auto-rename to
- *     keep the legacy mirror in sync. The coordinator pushes the event
- *     itself; this helper MUST NOT re-push (avoids the duplicate-event
- *     hazard called out in Increment 15A).
- */
-export function updateLegacySessionPath(
-  wcId: number,
-  oldPath: string,
-  newPath: string,
-): boolean {
-  const entry = sheetsTabs.get(wcId)
-  if (!entry) return false
-  let matched = false
-  for (const [id, session] of entry.sessions) {
-    if (session.path !== oldPath) continue
-    entry.sessions.set(id, { ...session, path: newPath })
-    matched = true
+  try {
+    const { coordinator } = getMigratedRuntime()
+    coordinator.renameWorkbookFromShell(wc.id, oldPath, newPath)
+  } catch (error) {
+    // Runtime not constructed (e.g. sidecar binary missing) — nothing to sync.
+    console.warn('[sheets] sheetsFileRenamed: coordinator.renameWorkbookFromShell failed:', error)
   }
-  return matched
 }
 
 /**
@@ -1364,8 +1266,8 @@ function userDataPath(...parts: string[]): string {
 }
 
 // ── Crash recovery ──────────────────────────────────────────
-// A dirty renderer asks for a recovery copy every 30s; it is written through the
-// normal save pipeline (writeWorkbookTo) to a userData path, so it is a real .xlsx.
+// A dirty renderer asks for a recovery copy every 30s; it is written through
+// the coordinator's writeRecovery path to a userData path, so it is a real .xlsx.
 // A successful save removes it; opening a file whose copy is newer offers Restore.
 const recoveryDir = () => userDataPath('sheets-autosave')
 const recoveryPathFor = (filePath: string) =>
@@ -1499,9 +1401,11 @@ const sidecarOpenResultSchema = workbookFileSchema.omit({
 export async function createSheetsWindow(
   options: { includeAiHandlers?: boolean } = {},
 ): Promise<BrowserWindow> {
-  const client = sidecar ?? new XlsxSidecarClient(resolveSidecarPath())
-  sidecar = client
-  client.start()
+  // Construct the runtime (engine + service + coordinator). The engine
+  // owns the sidecar process via its injected `sidecarClient`. There is
+  // NO separate XlsxSidecarClient lifecycle here — `getMigratedRuntime`
+  // handles start/stop.
+  const bundle = getMigratedRuntime()
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -1521,11 +1425,10 @@ export async function createSheetsWindow(
   })
   mainWindow = window
   registerSheetsIpc()
-  const bundle = getMigratedRuntime()
   registerMigratedSheetsIpc(bundle.coordinator, bundle.screenCapture, getUiLang)
   if (options.includeAiHandlers ?? true) registerMigratedSheetsAiIpc()
   if (options.includeAiHandlers ?? true) registerProjectIpc()
-  registerSheetsSession(window.webContents, client)
+  registerSheetsSession(window.webContents)
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
   if (!app.isPackaged) {
@@ -1557,9 +1460,7 @@ export async function createSheetsWindow(
 
 /** tab-mode equivalent of createSheetsWindow: same runtime/IPC wiring, no BrowserWindow of its own. */
 export function createSheetsView(options: { includeAiHandlers?: boolean } = {}): WebContentsView {
-  const client = sidecar ?? new XlsxSidecarClient(resolveSidecarPath())
-  sidecar = client
-  client.start()
+  const bundle = getMigratedRuntime()
   const view = new WebContentsView({
     webPreferences: {
       preload: runtime.preloadPath,
@@ -1570,10 +1471,9 @@ export function createSheetsView(options: { includeAiHandlers?: boolean } = {}):
     },
   })
   registerSheetsIpc()
-  const bundle = getMigratedRuntime()
   registerMigratedSheetsIpc(bundle.coordinator, bundle.screenCapture, getUiLang)
   if (options.includeAiHandlers ?? true) registerMigratedSheetsAiIpc()
-  registerSheetsSession(view.webContents, client)
+  registerSheetsSession(view.webContents)
   view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   view.webContents.on('will-navigate', (event) => event.preventDefault())
   if (!app.isPackaged) {
@@ -1881,230 +1781,6 @@ export function registerSheetsIpc(): void {
   ipcMain.handle('sheets:has-queued-workbook', () => hasQueuedWorkbook())
 
 
-  ipcMain.handle(IPC_CHANNELS.readWorkbookRange, async (event, input: unknown) => {
-    const entry = sessionFor(event)
-    const request = workbookRangeRequestSchema.parse(input)
-    if (!entry.sessions.has(request.sessionId)) throw new Error('Unknown workbook session.')
-    const result = await entry.client.readRange(request)
-    return workbookRangeResultSchema.parse(result)
-  })
-
-  ipcMain.handle(IPC_CHANNELS.readWorkbookFormulas, async (event, input: unknown) => {
-    const entry = sessionFor(event)
-    const request = workbookFormulaCellsRequestSchema.parse(input)
-    if (!entry.sessions.has(request.sessionId)) throw new Error('Unknown workbook session.')
-    const result = await entry.client.readFormulaCells(request)
-    return workbookFormulaCellsResultSchema.parse(result)
-  })
-
-  // IronCalc recalculation: sheet ids resolve through the session's file
-  // sheet names, so the renderer never sees paths and sheets added this
-  // session (no file part) fail closed before reaching the engine.
-  const sidecarRecalcResultSchema = z
-    .object({
-      cells: z.array(
-        z
-          .object({
-            sheet: z.string(),
-            row: z.number().int().nonnegative(),
-            column: z.number().int().nonnegative(),
-            formatted: z.string(),
-            number: z.number().optional(),
-            isFormula: z.boolean(),
-          })
-          .strict(),
-      ),
-      cached: z.boolean().optional(),
-    })
-    .strict()
-  ipcMain.handle(IPC_CHANNELS.recalcWorkbook, async (event, input: unknown) => {
-    const entry = sessionFor(event)
-    const request = workbookRecalcRequestSchema.parse(input)
-    const session = entry.sessions.get(request.sessionId)
-    if (!session) throw new Error('Unknown workbook session.')
-    const fileSheetName = (sheetId: string): string => {
-      const name = session.sheetNames.get(sheetId)
-      if (name === undefined) throw new Error(`Unknown sheet for recalculation: ${sheetId}`)
-      return name
-    }
-    const result = sidecarRecalcResultSchema.parse(
-      await entry.client.recalcCells({
-        // The snapshot, not the live path: recalculated values are painted on
-        // the session's grid (and saved into its formula cells), so they must
-        // come from the session's own bytes even if the file changed on disk.
-        path: session.snapshotPath,
-        edits: request.edits.map((edit) => ({
-          sheet: fileSheetName(edit.sheetId),
-          row: edit.row,
-          column: edit.column,
-          input: edit.input,
-        })),
-        reads: request.reads.map((read) => ({
-          sheet: fileSheetName(read.sheetId),
-          range: read.range,
-        })),
-      }),
-    )
-    const idsByName = new Map([...session.sheetNames].map(([id, name]) => [name, id]))
-    return workbookRecalcResultSchema.parse({
-      cells: result.cells.flatMap((cell) => {
-        const sheetId = idsByName.get(cell.sheet)
-        if (sheetId === undefined) return []
-        return [
-          {
-            sheetId,
-            row: cell.row,
-            column: cell.column,
-            formatted: cell.formatted,
-            ...(cell.number === undefined ? {} : { number: cell.number }),
-            isFormula: cell.isFormula,
-          },
-        ]
-      }),
-    })
-  })
-
-  ipcMain.handle(IPC_CHANNELS.readWorkbookMedia, async (event, input: unknown) => {
-    const entry = sessionFor(event)
-    const request = workbookMediaRequestSchema.parse(input)
-    if (!entry.sessions.has(request.sessionId)) throw new Error('Unknown workbook session.')
-    const result = await entry.client.readMedia(request)
-    return workbookMediaResultSchema.parse(result)
-  })
-
-  function sniffImageType(bytes: Buffer): 'image/png' | 'image/jpeg' | 'image/gif' | null {
-    if (
-      bytes.length >= 8 &&
-      bytes[0] === 0x89 &&
-      bytes[1] === 0x50 &&
-      bytes[2] === 0x4e &&
-      bytes[3] === 0x47
-    )
-      return 'image/png'
-    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-      return 'image/jpeg'
-    }
-    if (bytes.length >= 6 && bytes.subarray(0, 4).toString('latin1') === 'GIF8') return 'image/gif'
-    return null
-  }
-
-  ipcMain.handle(IPC_CHANNELS.readLocalImage, async (event, input: unknown) => {
-    sessionFor(event)
-    const request = localImageRequestSchema.parse(input)
-    const resolved = request.path.startsWith('~/')
-      ? join(app.getPath('home'), request.path.slice(2))
-      : request.path
-    if (!isAbsolute(resolved)) throw new Error(tm('errImgAbsPath'))
-    const info = await stat(resolved).catch(() => null)
-    if (!info?.isFile()) throw new Error(tm('errImgNotFound', { path: request.path }))
-    if (info.size > 20 * 1024 * 1024) throw new Error(tm('errImgTooLarge20'))
-    const bytes = await readFile(resolved)
-    const mediaType = sniffImageType(bytes)
-    if (mediaType === null) {
-      throw new Error(tm('errImgBadType'))
-    }
-    return localImageResultSchema.parse({ mediaType, base64: bytes.toString('base64') })
-  })
-
-  ipcMain.handle(IPC_CHANNELS.captureScreenSources, async (event) => {
-    sessionFor(event)
-    // macOS gates desktopCapturer behind the Screen Recording permission and
-    // returns black frames instead of failing; surface a real denied state.
-    if (process.platform === 'darwin') {
-      const status = systemPreferences.getMediaAccessStatus('screen')
-      if (status !== 'granted' && status !== 'not-determined') {
-        return screenSourcesResultSchema.parse({ status: 'denied', sources: [] })
-      }
-    }
-    const sources = await desktopCapturer.getSources({
-      types: ['screen', 'window'],
-      thumbnailSize: { width: 320, height: 200 },
-      fetchWindowIcons: false,
-    })
-    if (
-      process.platform === 'darwin' &&
-      systemPreferences.getMediaAccessStatus('screen') !== 'granted'
-    ) {
-      return screenSourcesResultSchema.parse({ status: 'denied', sources: [] })
-    }
-    // In tab mode the sheets renderer is a WebContentsView, so fromWebContents
-    // on the sender is null; the shell window is the one to exclude.
-    const selfWindow = sheetsShellWindow ?? BrowserWindow.fromWebContents(event.sender)
-    const selfId = selfWindow?.getMediaSourceId()
-    return screenSourcesResultSchema.parse({
-      status: 'ok',
-      sources: sources
-        .filter((source) => source.id !== selfId)
-        .map((source) => ({
-          id: source.id,
-          name: source.name,
-          kind: source.id.startsWith('screen') ? 'screen' : 'window',
-          thumbnail: source.thumbnail.isEmpty() ? '' : source.thumbnail.toDataURL(),
-        })),
-    })
-  })
-
-  ipcMain.handle(IPC_CHANNELS.captureScreenSource, async (event, input: unknown) => {
-    sessionFor(event)
-    const request = screenCaptureRequestSchema.parse(input)
-    // desktopCapturer only ever returns thumbnails, so a full-res capture is
-    // a re-listing with the thumbnail sized to the largest physical display.
-    const displays = screen.getAllDisplays()
-    const captureSize = {
-      width: Math.min(
-        4096,
-        Math.max(1920, ...displays.map((d) => Math.ceil(d.size.width * d.scaleFactor))),
-      ),
-      height: Math.min(
-        4096,
-        Math.max(1080, ...displays.map((d) => Math.ceil(d.size.height * d.scaleFactor))),
-      ),
-    }
-    const sources = await desktopCapturer.getSources({
-      types: ['screen', 'window'],
-      thumbnailSize: captureSize,
-      fetchWindowIcons: false,
-    })
-    const source = sources.find((candidate) => candidate.id === request.id)
-    if (!source || source.thumbnail.isEmpty()) return null
-    let image = source.thumbnail
-    let png = image.toPNG()
-    if (png.length > 20 * 1024 * 1024) {
-      image = image.resize({ width: Math.round(image.getSize().width / 2) })
-      png = image.toPNG()
-    }
-    const { width, height } = image.getSize()
-    return screenCaptureResultSchema.parse({
-      mediaType: 'image/png',
-      base64: png.toString('base64'),
-      width,
-      height,
-    })
-  })
-
-  ipcMain.handle(IPC_CHANNELS.readPivotDefinition, async (event, input: unknown) => {
-    const entry = sessionFor(event)
-    const request = workbookPivotRequestSchema.parse(input)
-    const session = entry.sessions.get(request.sessionId)
-    if (!session) throw new Error('Unknown workbook session.')
-    // Read from the session snapshot so the definition matches what the
-    // renderer shows even if the file on disk changed since open.
-    const [pivotXml, cacheXml] = await Promise.all([
-      readArchiveEntryText(entry.client, session.snapshotPath, request.path),
-      readArchiveEntryText(entry.client, session.snapshotPath, request.cachePath),
-    ])
-    return workbookPivotDefinitionSchema.parse(parsePivotDefinition(pivotXml, cacheXml))
-  })
-
-  ipcMain.handle(IPC_CHANNELS.exportPdf, async (event, input: unknown) => {
-    sessionFor(event)
-    const request = workbookExportPdfRequestSchema.parse(input)
-    return exportPdf(event, request)
-  })
-
-
-
-
   ipcMain.handle(IPC_CHANNELS.openExternal, async (event, url: unknown) => {
     sessionFor(event)
     const validatedUrl = safeExternalUrl(url)
@@ -2113,296 +1789,8 @@ export function registerSheetsIpc(): void {
     }
     await shell.openExternal(validatedUrl)
   })
-
-  // ── Chat attachments (same structure as the docs/slides files:* pipeline) ──
-
-  ipcMain.handle(IPC_CHANNELS.filesPick, async (event): Promise<AttachmentAddResult | null> => {
-    sessionFor(event)
-    const selection = await openFileDialog(event, {
-      title: tm('dlgAddAttachment'),
-      filters: [
-        { name: tm('filterSupported'), extensions: [...ATTACHMENT_EXTS] },
-        { name: tm('filterAll'), extensions: ['*'] },
-      ],
-      properties: ['openFile', 'multiSelections'],
-    })
-    if (selection.canceled || selection.filePaths.length === 0) return null
-    return collectAttachments(selection.filePaths)
-  })
-
-  ipcMain.handle(IPC_CHANNELS.filesAdd, (event, paths: unknown): AttachmentAddResult => {
-    sessionFor(event)
-    return collectAttachments(z.array(z.string().min(1).max(1024)).max(50).parse(paths))
-  })
-
-  ipcMain.handle(
-    IPC_CHANNELS.filesRead,
-    async (
-      event,
-      filePath: unknown,
-      offset: unknown,
-      maxChars: unknown,
-    ): Promise<AttachmentReadResult> => {
-      sessionFor(event)
-      const validatedPath = z.string().min(1).max(1024).parse(filePath)
-      const name = basename(validatedPath)
-      const ext = name.split('.').pop()?.toLowerCase() ?? ''
-      if (!ATTACHMENT_EXTS.has(ext)) return { ok: false, error: tm('errUnsupportedExt', { ext }) }
-      if (ATTACHMENT_IMAGE_EXTS.has(ext)) {
-        return { ok: false, error: tm('errImageNoText') }
-      }
-      try {
-        const text = await extractAttachmentText(validatedPath)
-        const start = Math.max(0, Math.floor(Number(offset)) || 0)
-        const size = Math.min(Math.max(1, Math.floor(Number(maxChars)) || 1), 48_000)
-        return {
-          ok: true,
-          name,
-          totalChars: text.length,
-          offset: start,
-          text: text.slice(start, start + size),
-        }
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  )
-
-  // Image attachments read raw bytes → base64; the renderer puts them into the
-  // user message's images for multimodal input
-  ipcMain.handle(IPC_CHANNELS.filesReadImage, (event, filePath: unknown): AttachmentImageResult => {
-    sessionFor(event)
-    const validatedPath = z.string().min(1).max(1024).parse(filePath)
-    const name = basename(validatedPath)
-    const ext = name.split('.').pop()?.toLowerCase() ?? ''
-    const mime = ATTACHMENT_IMAGE_MIME[ext]
-    if (!mime) return { ok: false, error: `${name}: ${tm('errNotImage')}` }
-    try {
-      const stat = statSync(validatedPath)
-      if (stat.size > ATTACHMENT_IMAGE_MAX_BYTES) {
-        return { ok: false, error: `${name}: ${tm('errImageTooLarge')}` }
-      }
-      return { ok: true, base64: readFileSync(validatedPath).toString('base64'), mime }
-    } catch {
-      return { ok: false, error: `${name}: ${tm('errUnreadable')}` }
-    }
-  })
-
-  // Clipboard-pasted images (screenshots and other bitmaps without a local
-  // path): persisted to a temp file, then go through the regular attachment flow
-  ipcMain.handle(
-    IPC_CHANNELS.filesAddPastedImage,
-    (event, data: unknown, ext: unknown): AttachmentAddResult => {
-      sessionFor(event)
-      const filePath = savePastedImage(data, ext)
-      return filePath
-        ? collectAttachments([filePath])
-        : { accepted: [], rejected: [tm('errNotImage')] }
-    },
-  )
 }
 
-let aiIpcRegistered = false
-
-export function registerSheetsAiIpc(): void {
-  if (aiIpcRegistered) return
-  aiIpcRegistered = true
-
-  // Node fetch (undici) direct connections get reset under VPN/tun setups; retry over Chromium's stack
-  setRescueFetch((url, init) => net.fetch(url, init))
-
-  ipcMain.handle(IPC_CHANNELS.aiGetSettings, (event): AiSettings => {
-    sessionFor(event)
-    const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
-    const settings = resolveAiSettings(stored, defaultAiSettings())
-    // AI features all go through Genspark (gsk login); legacy settings that chose
-    // another provider are reset
-    settings.provider = 'genspark'
-    return settings
-  })
-
-  // Genspark account (gsk login state): the auth source for AI features; the
-  // frontend uses it to guide sign-in when logged out
-  ipcMain.handle(
-    IPC_CHANNELS.aiGskStatus,
-    async (_event, withEmail?: unknown): Promise<GenSparkAccountStatus> => {
-      if (!hasGskAuth()) return { loggedIn: false }
-      if (!withEmail) return { loggedIn: true }
-      const info = await gskLoginInfo()
-      return info?.email ? { loggedIn: true, email: info.email } : { loggedIn: true }
-    },
-  )
-
-  ipcMain.handle(IPC_CHANNELS.aiGskLogin, () => {
-    ensureGenofficeLogin((url) => void shell.openExternal(url))
-  })
-
-  ipcMain.handle(IPC_CHANNELS.aiSetSettings, (event, input: unknown) => {
-    sessionFor(event)
-    const settings = aiSettingsInputSchema.parse(input)
-    writeJson(SETTINGS_PATH(), settings)
-  })
-
-  ipcMain.handle(IPC_CHANNELS.aiChat, async (event, input: unknown) => {
-    sessionFor(event)
-    const request = aiChatRequestSchema.parse(input)
-    const provider = request.settings.provider as AiProviderId
-    let config = request.settings.providers[provider]
-    if (provider === 'genspark' && config && !config.apiKey) {
-      config = { ...config, apiKey: gskApiKey() }
-    }
-    if (!config?.apiKey) {
-      return {
-        ok: false,
-        error: provider === 'genspark' ? tm('errGskNotLoggedIn') : tm('errNoApiKey', { provider }),
-      }
-    }
-    if (!config.model) return { ok: false, error: tm('errNoModel') }
-    try {
-      return await chatForProvider(provider, config, request.system, request.user)
-    } catch (err) {
-      return { ok: false, error: String(err) }
-    }
-  })
-
-  ipcMain.handle(IPC_CHANNELS.aiStream, async (event, input: unknown) => {
-    const entry = sessionFor(event)
-    const request = aiStreamRequestSchema.parse(input)
-    const { requestId, system, messages } = request
-    const tools = request.tools ?? []
-    const maxTokens = request.maxTokens ?? 8192
-    const provider = request.settings.provider as AiProviderId
-    let config = request.settings.providers[provider]
-    // Genspark's key never enters the settings file; it is read from the gsk
-    // login state per request
-    if (provider === 'genspark' && config && !config.apiKey) {
-      config = { ...config, apiKey: gskApiKey() }
-    }
-    const send = (chunk: AiStreamChunk) => {
-      if (!event.sender.isDestroyed()) event.sender.send(IPC_CHANNELS.aiStreamChunk, chunk)
-    }
-    if (!config?.apiKey) {
-      send({
-        requestId,
-        type: 'error',
-        error: provider === 'genspark' ? tm('errGskNotLoggedIn') : tm('errNoApiKey', { provider }),
-      })
-      return
-    }
-    if (!config.model) {
-      send({ requestId, type: 'error', error: tm('errNoModel') })
-      return
-    }
-    const controller = new AbortController()
-    entry.aiStreams.set(requestId, controller)
-    // wire-activity keepalive: lets the renderer's silence watchdog tell a slow turn from a dead one
-    let lastPing = 0
-    const ping = () => {
-      const now = Date.now()
-      if (now - lastPing < 5_000) return
-      lastPing = now
-      send({ requestId, type: 'ping' })
-    }
-    try {
-      await streamForProvider(provider, config, system, messages, tools, maxTokens, {
-        signal: controller.signal,
-        onDelta: (text) => send({ requestId, type: 'delta', text }),
-        onToolCall: (toolCall) => send({ requestId, type: 'tool-call', toolCall }),
-        onActivity: ping,
-      })
-      send({ requestId, type: 'done' })
-    } catch (err) {
-      if (controller.signal.aborted) {
-        send({ requestId, type: 'done' })
-      } else {
-        send({
-          requestId,
-          type: 'error',
-          error: err instanceof Error ? err.message : String(err),
-          ...(err instanceof AiTimeoutError
-            ? { errorCode: 'timeout' as const }
-            : err instanceof AiCreditsError
-              ? { errorCode: 'credits' as const }
-              : isAiNetworkError(err)
-                ? { errorCode: 'network' as const }
-                : {}),
-        })
-      }
-    } finally {
-      entry.aiStreams.delete(requestId)
-    }
-  })
-
-  ipcMain.handle(IPC_CHANNELS.aiStreamCancel, (event, requestId: unknown) => {
-    const entry = sessionFor(event)
-    entry.aiStreams.get(z.string().min(1).parse(requestId))?.abort()
-  })
-
-  // Shared search tools (content + images): Serper with DuckDuckGo fallback
-  // (same source as slides/docs)
-  ipcMain.handle('ai:web-search', async (_event, query: unknown, maxResults?: unknown) => {
-    try {
-      return await webSearch(
-        z.string().parse(query),
-        typeof maxResults === 'number' ? maxResults : 6,
-      )
-    } catch (err) {
-      return { results: [], method: 'error', error: String(err) }
-    }
-  })
-  ipcMain.handle('ai:image-search', async (_event, query: unknown, maxResults?: unknown) => {
-    try {
-      return await imageSearch(
-        z.string().parse(query),
-        typeof maxResults === 'number' ? maxResults : 8,
-      )
-    } catch (err) {
-      return { images: [], method: 'error', error: String(err) }
-    }
-  })
-
-  // Standalone parity with docs-main's shell-wide handler: AI-supplied URLs are
-  // prompt-injectable, so fetchRemoteImage refuses non-http schemes and
-  // private/link-local targets and validates every redirect hop. Size-capped to
-  // match the local add_image limit.
-  ipcMain.handle(
-    'ai:fetch-image',
-    async (_event, url: unknown): Promise<{ base64: string; mime: string } | null> => {
-      try {
-        const resp = await fetchRemoteImage(z.string().parse(url))
-        if (!resp || !resp.ok || !resp.body) return null
-        const declared = Number(resp.headers.get('content-length') ?? 0)
-        if (declared > MAX_REMOTE_IMAGE_BYTES) return null
-        // Stream with a running cap: a missing/understated Content-Length must
-        // not let a prompt-injected URL buffer unbounded bytes before a
-        // post-hoc size check
-        const reader = resp.body.getReader()
-        const chunks: Buffer[] = []
-        let received = 0
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          received += value.byteLength
-          if (received > MAX_REMOTE_IMAGE_BYTES) {
-            await reader.cancel()
-            return null
-          }
-          chunks.push(Buffer.from(value))
-        }
-        const buf = Buffer.concat(chunks)
-        const ct = resp.headers.get('content-type') ?? ''
-        const mime = ct.includes('png')
-          ? 'image/png'
-          : ct.includes('gif')
-            ? 'image/gif'
-            : 'image/jpeg'
-        return { base64: buf.toString('base64'), mime }
-      } catch {
-        return null
-      }
-    },
-  )
-}
 
 // ── project-store IPC (standalone mode) ────────────────────────────────────
 // In shell mode docs-main.registerProjectIpc has already registered it
@@ -2429,10 +1817,9 @@ export function registerProjectIpc(): void {
       // sheets mode: reverse-look up the file path via sessionId
       let resolvedPath = args.filePath
       if (!resolvedPath && args.sessionId) {
-        const tabEntry = sheetsTabs.get(event.sender.id)
-        if (tabEntry) {
-          resolvedPath = tabEntry.sessions.get(args.sessionId)?.path ?? null
-        }
+        // Phase 2 Increment 17: read from the coordinator (sole owner),
+        // NOT from the legacy sheetsTabs.sessions[].path mirror.
+        resolvedPath = resolveSheetsSessionPath(event.sender.id, args.sessionId)
       }
 
       if (!resolvedPath) {
@@ -2530,258 +1917,6 @@ export function resolveSheetsSessionPath(senderId: number, sessionId: string): s
  * the sidecar. Split out of the save handler so a crash-recovery copy can reuse the
  * exact same pipeline with a different targetPath.
  */
-async function writeWorkbookTo(
-  client: XlsxSidecarClient,
-  session: SessionInfo,
-  request: WorkbookSaveRequest,
-  targetPath: string,
-): Promise<Awaited<ReturnType<typeof saveWorkbookViaSidecar>>> {
-  // Sheet ops resolve first: added sheets have Univer ids the session map
-  // doesn't know, so cell edits into them resolve through the op's name.
-  const addedSheetNames = new Map<string, string>()
-  // Added sheet id → file name of the sheet whose part seeds the new part.
-  const duplicateSources = new Map<string, string>()
-  const renames: { sheetName: string; newName: string }[] = []
-  const removals: string[] = []
-  const hiddenChanges: { sheetName: string; hidden: boolean }[] = []
-  let orderChanged = false
-  for (const op of request.sheetOps) {
-    if (op.kind === 'add-sheet') {
-      addedSheetNames.set(op.sheetId, op.name)
-      continue
-    }
-    if (op.kind === 'duplicate-sheet') {
-      // The renderer resolves duplicate chains to a sheet the file knows,
-      // so the source must be in the session map.
-      const sourceName = session.sheetNames.get(op.sourceSheetId)
-      if (!sourceName) throw new Error(`Unknown duplicate source ${op.sourceSheetId}.`)
-      addedSheetNames.set(op.sheetId, op.name)
-      duplicateSources.set(op.sheetId, sourceName)
-      continue
-    }
-    if (op.kind === 'reorder-sheets') {
-      orderChanged = true
-      continue
-    }
-    const sheetName = addedSheetNames.get(op.sheetId) ?? session.sheetNames.get(op.sheetId)
-    if (!sheetName) throw new Error(`Unknown worksheet ${op.sheetId}.`)
-    if (op.kind === 'rename-sheet') renames.push({ sheetName, newName: op.newName })
-    else if (op.kind === 'set-sheet-hidden') {
-      hiddenChanges.push({ sheetName, hidden: op.hidden })
-    } else removals.push(sheetName)
-  }
-  const renameByOriginal = new Map(renames.map((rename) => [rename.sheetName, rename.newName]))
-  const resolveSheetName = (sheetId: string): string => {
-    const sheetName = addedSheetNames.get(sheetId) ?? session.sheetNames.get(sheetId)
-    if (!sheetName) throw new Error(`Unknown worksheet ${sheetId}.`)
-    return sheetName
-  }
-  let sheetPlan: SheetEditPlan | undefined
-  if (request.sheetOps.length > 0) {
-    sheetPlan = {
-      renames,
-      additions: [...addedSheetNames].map(([sheetId, name]) => ({
-        name,
-        sourceSheetName: duplicateSources.get(sheetId),
-      })),
-      removals,
-      hiddenChanges,
-      orderChanged,
-      order: request.sheetOrder.map((sheetId) => {
-        const original = resolveSheetName(sheetId)
-        return addedSheetNames.has(sheetId)
-          ? original
-          : (renameByOriginal.get(original) ?? original)
-      }),
-    }
-  }
-
-  const edits: CellEdit[] = request.edits.map((edit) => ({
-    sheetName: resolveSheetName(edit.sheetId),
-    row: edit.row,
-    column: edit.column,
-    writeValue: edit.writeValue,
-    cell: { value: edit.value, formula: edit.formula },
-    style: edit.style,
-    rich: edit.rich,
-    styleReset: edit.styleReset,
-  }))
-  const opsBySheet = new Map<string, SheetStructuralOps['ops'][number][]>()
-  for (const op of request.structuralOps) {
-    const sheetName = resolveSheetName(op.sheetId)
-    const sheetOps = opsBySheet.get(sheetName) ?? []
-    if ('range' in op) {
-      sheetOps.push({ kind: op.kind, range: op.range })
-    } else if ('size' in op) {
-      sheetOps.push({ kind: op.kind, start: op.start, end: op.end, size: op.size })
-    } else if ('level' in op) {
-      sheetOps.push({
-        kind: op.kind,
-        start: op.start,
-        end: op.end,
-        level: op.level,
-        ...(op.collapsed === undefined ? {} : { collapsed: op.collapsed }),
-      })
-    } else if ('hidden' in op) {
-      sheetOps.push({ kind: op.kind, start: op.start, end: op.end, hidden: op.hidden })
-    } else if ('before' in op) {
-      sheetOps.push({ kind: op.kind, index: op.index, count: op.count, before: op.before })
-    } else {
-      sheetOps.push({ kind: op.kind, index: op.index, count: op.count })
-    }
-    opsBySheet.set(sheetName, sheetOps)
-  }
-  const structuralOps: SheetStructuralOps[] = [...opsBySheet].map(([sheetName, ops]) => ({
-    sheetName,
-    ops,
-  }))
-  const filterStates = request.filterStates.map((state) => ({
-    sheetName: resolveSheetName(state.sheetId),
-    filter: state.filter,
-    hiddenRows: state.hiddenRows,
-    visibilityRange: state.visibilityRange,
-  }))
-  const linksBySheet = new Map<string, { row: number; column: number; target: string | null }[]>()
-  for (const link of request.hyperlinkEdits) {
-    const sheetName = resolveSheetName(link.sheetId)
-    const sheetLinks = linksBySheet.get(sheetName) ?? []
-    sheetLinks.push({ row: link.row, column: link.column, target: link.target })
-    linksBySheet.set(sheetName, sheetLinks)
-  }
-  const hyperlinkEdits = [...linksBySheet].map(([sheetName, links]) => ({
-    sheetName,
-    edits: links,
-  }))
-  const cfStates = request.cfStates.map((state) => ({
-    sheetName: resolveSheetName(state.sheetId),
-    rules: state.rules,
-  }))
-  const dvStates = request.dvStates.map((state) => ({
-    sheetName: resolveSheetName(state.sheetId),
-    rules: state.rules,
-  }))
-  const sheetProtections = request.sheetProtections.map((state) => ({
-    sheetName: resolveSheetName(state.sheetId),
-    protected: state.protected,
-  }))
-  const protectedRangeStates = request.protectedRangeStates.map((state) => ({
-    sheetName: resolveSheetName(state.sheetId),
-    ranges: state.ranges,
-  }))
-  const pageSetupStates = request.pageSetupStates.map(({ sheetId, ...state }) => ({
-    sheetName: resolveSheetName(sheetId),
-    ...state,
-  }))
-  const noteStates = request.noteStates.map(({ sheetId, notes }) => ({
-    sheetName: resolveSheetName(sheetId),
-    notes,
-  }))
-  const visualAdditions = request.visualAdditions.map((addition) => ({
-    sheetName: resolveSheetName(addition.sheetId),
-    anchor: addition.anchor,
-    chart: addition.chart,
-    shape: addition.shape,
-    image: addition.image,
-  }))
-  const tableAdditions = request.tableAdditions.map((table) => ({
-    sheetName: resolveSheetName(table.sheetId),
-    area: table.area,
-    name: table.name,
-    columnNames: table.columnNames,
-    style: table.style,
-    bandedRows: table.bandedRows,
-  }))
-  const pivotAdditions = request.pivotAdditions.map((pivot) => ({
-    sheetName: resolveSheetName(pivot.sheetId),
-    sourceSheetName: resolveSheetName(pivot.sourceSheetId),
-    sourceArea: pivot.sourceArea,
-    location: pivot.location,
-    name: pivot.name,
-    fieldNames: pivot.fieldNames,
-    rowFieldIndices: pivot.rowFieldIndices,
-    columnFieldIndex: pivot.columnFieldIndex,
-    pageFieldIndices: pivot.pageFieldIndices,
-    rowItems: pivot.rowItems,
-    rowLevelItems: pivot.rowLevelItems,
-    rowLines: pivot.rowLines,
-    columnItems: pivot.columnItems,
-    columnFieldIndices: pivot.columnFieldIndices,
-    colLevelItems: pivot.colLevelItems,
-    colLines: pivot.colLines,
-    groupings: pivot.groupings,
-    filters: pivot.filters,
-    rowHiddenItems: pivot.rowHiddenItems,
-    colHiddenItems: pivot.colHiddenItems,
-    values: pivot.values,
-  }))
-  const sparklineAdditions = request.sparklineAdditions.map(({ sheetId, ...group }) => ({
-    sheetName: resolveSheetName(sheetId),
-    ...group,
-  }))
-  // Recalculated formula values: sheetId → file sheet name, the same
-  // resolution the cell edits use.
-  const formulaValuesBySheet = new Map<
-    string,
-    { row: number; column: number; value: string | number | boolean | null }[]
-  >()
-  for (const cell of request.formulaValues) {
-    const sheetName = resolveSheetName(cell.sheetId)
-    const list = formulaValuesBySheet.get(sheetName) ?? []
-    list.push({ row: cell.row, column: cell.column, value: cell.value })
-    formulaValuesBySheet.set(sheetName, list)
-  }
-  const formulaValues = [...formulaValuesBySheet].map(([sheetName, cells]) => ({
-    sheetName,
-    cells,
-  }))
-  const mutation = await saveWorkbookViaSidecar({
-    client,
-    // The snapshot, not the live path: the save base must be the bytes this
-    // session's pending edits were made against, regardless of what other
-    // programs did to the file since.
-    sourcePath: session.snapshotPath,
-    targetPath,
-    edits,
-    structuralOps,
-    chartEdits: request.chartEdits,
-    // Located by package-absolute drawingPath, so no sheet-name mapping.
-    visualEdits: request.visualEdits,
-    sheetPlan,
-    filterStates,
-    hyperlinkEdits,
-    cfStates,
-    dvStates,
-    sheetProtections,
-    definedNamesState: request.definedNamesState,
-    themeState: request.themeState,
-    workbookProtectionState: request.workbookProtectionState,
-    protectedRangeStates,
-    visualAdditions,
-    pageSetupStates,
-    noteStates,
-    tableAdditions,
-    pivotAdditions,
-    sparklineAdditions,
-    formulaValues,
-    pivotCacheRefreshPaths: request.pivotCacheRefreshPaths,
-    // Output-area expansion from layout growth: sheetId → sheet name; the part
-    // path is resolved by the gateway.
-    pivotRefreshUpdates: request.pivotRefreshUpdates.map((update) => ({
-      cachePath: update.cachePath,
-      sheetName: resolveSheetName(update.sheetId),
-      newOutputRef: update.newOutputRef,
-      ...(update.relayout === undefined
-        ? {}
-        : {
-            relayout: (({ sheetId: _sheetId, sourceSheetId, ...rest }) => ({
-              ...rest,
-              sourceSheetName: resolveSheetName(sourceSheetId),
-            }))(update.relayout),
-          }),
-    })),
-  })
-  return mutation
-}
 
 
 /** shell-injected items appended to the File menu (e.g. Back to Home) */
@@ -2874,8 +2009,15 @@ function installApplicationMenu(): void {
 
 /** stop the Rust sidecar (shell calls this from its own before-quit hook) */
 export function stopSheetsSidecar(): void {
-  sidecar?.stop()
-  sidecar = null
+  // Phase 2 Increment 17: the engine owns the sidecar process.
+  // Stop it via the runtime bundle's engine.stop().
+  try {
+    if (migratedRuntime) {
+      void migratedRuntime.engine.stop()
+    }
+  } catch {
+    // Best-effort — the app is quitting anyway.
+  }
 }
 
 export {
@@ -2979,25 +2121,3 @@ async function sha256File(path: string): Promise<string> {
   })
 }
 
-async function closeAllSessions(entry: {
-  client: XlsxSidecarClient
-  sessions: Map<string, SessionInfo>
-}): Promise<void> {
-  const sessions = [...entry.sessions.entries()]
-  entry.sessions.clear()
-  await Promise.allSettled(
-    sessions.map(async ([sessionId, session]) => {
-      // INCREMENT 5A — LEGACY SESSION ADOPTION:
-      //   Adopted sessions are owned EXCLUSIVELY by SheetsShellCoordinator.
-      //   The coordinator's teardown(wcId) will close the sidecar session
-      //   (via the engine handle that wraps it) and remove the snapshot.
-      //   Doing it here too would double-close — the sidecar would emit
-      //   "unknown session" errors and the rm would race the coordinator's
-      //   rm. Skip adopted sessions entirely.
-      if (session.adopted) return
-      // Close before removing the snapshot the sidecar session has open
-      await entry.client.close(sessionId).catch(() => undefined)
-      await rm(session.snapshotPath, { force: true })
-    }),
-  )
-}

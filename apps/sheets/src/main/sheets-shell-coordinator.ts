@@ -79,30 +79,6 @@ export interface SheetsShellCoordinatorDeps {
   readonly onMarkerWritten?: (markerPath: string, sessionId: string) => Promise<void>
   readonly pdfRenderer?: SpreadsheetPdfRenderer
   /**
-   * Optional callback invoked after a SUCCESSFUL auto-rename to update the
-   * legacy `SessionInfo.path` mirror in the shell (`sheetsTabs`).
-   *
-   * The coordinator is the AUTHORITATIVE owner of the session path
-   * (`ShellWorkbookSession.originalPath`); the legacy `SessionInfo` is a
-   * NON-OWNING compatibility reference kept only so legacy consumers
-   * (e.g. `resolveSheetsSessionPath` used by `project:rebindChat`) see
-   * the new path. Without this callback the legacy mirror would go stale
-   * after an auto-rename.
-   *
-   * The callback is invoked AFTER the coordinator has:
-   *   - updated `ShellWorkbookSession.originalPath`
-   *   - removed the old path from `untitledPaths`
-   *   - pushed the `workbook:renamed` event to the initiating renderer
-   * The callback MUST NOT re-push the event (the coordinator already did).
-   *
-   * IMPLEMENTATION (Increment 15A):
-   *   The shell plumbs `updateLegacySessionPath(wcId, oldPath, newPath)`
-   *   (extracted from `sheetsFileRenamed`) as this callback. That helper
-   *   updates the legacy `sheetsTabs.sessions[].path` mirror ONLY — it
-   *   does NOT push any IPC event, avoiding the duplicate-push hazard.
-   */
-  readonly onWorkbookRenamed?: (wcId: number, oldPath: string, newPath: string) => void
-  /**
    * Localized recovery-dialog text provider. The coordinator calls this
    * when `prepareWorkbookForOpen` finds a pending crash-recovery copy —
    * the dialog must use the user's UI language (the coordinator itself
@@ -160,6 +136,12 @@ interface RendererState {
   readonly locks: Map<string, Promise<unknown>>
   /** Per-session commit state — controls teardown/commit race semantics. */
   readonly commitStates: Map<string, SessionCommitState>
+  /**
+   * The renderer's WebContents — used by `renameWorkbookFromShell` to push
+   * the `workbook:renamed` event when the shell renames a file on disk.
+   * Set by `registerRenderer()`.
+   */
+  webContents: WebContents | undefined
 }
 
 // ── OwnedResources ──
@@ -234,8 +216,12 @@ export class SheetsShellCoordinator {
     if (!this.tabs.has(wcId)) {
       this.tabs.set(wcId, {
         sessions: new Map(), epoch: 0, locks: new Map(), commitStates: new Map(),
+        webContents: undefined,
       })
     }
+    // Store the WebContents so `renameWorkbookFromShell` can push events.
+    const state = this.tabs.get(wcId)!
+    state.webContents = webContents
     webContents.once('destroyed', () => { void this.teardown(wcId) })
   }
 
@@ -283,7 +269,7 @@ export class SheetsShellCoordinator {
   ): Promise<{ sessionId: string; session: ShellWorkbookSession } | null> {
     let state = this.tabs.get(wcId)
     if (!state) {
-      state = { sessions: new Map(), epoch: 0, locks: new Map(), commitStates: new Map() }
+      state = { sessions: new Map(), epoch: 0, locks: new Map(), commitStates: new Map(), webContents: undefined }
       this.tabs.set(wcId, state)
     }
     const startEpoch = state.epoch
@@ -409,6 +395,7 @@ export class SheetsShellCoordinator {
         epoch: 0,
         locks: new Map(),
         commitStates: new Map(),
+        webContents: undefined,
       }
       this.tabs.set(wcId, state)
     }
@@ -794,33 +781,65 @@ export class SheetsShellCoordinator {
       this.untitledPaths.delete(oldPath)
 
       // Push event to the initiating renderer only — exactly once.
-      // The legacy mirror callback below MUST NOT also push.
       const name = basename(target)
       if (!webContents.isDestroyed()) {
         webContents.send('workbook:renamed', name)
       }
 
-      // Update the legacy `SessionInfo.path` mirror (NON-authoritative —
-      // the coordinator's `ShellWorkbookSession.originalPath` is the
-      // source of truth). Legacy consumers (resolveSheetsSessionPath
-      // used by project:rebindChat) read from sheetsTabs.sessions[].path
-      // and would see a stale path without this callback. The callback
-      // is invoked exactly once after a successful rename; it MUST NOT
-      // re-push the workbook:renamed event (the coordinator already did).
-      const onWorkbookRenamed = this.deps.onWorkbookRenamed
-      if (onWorkbookRenamed) {
-        try {
-          onWorkbookRenamed(wcId, oldPath, target)
-        } catch (err) {
-          // Best-effort — the authoritative state is already updated.
-          // A failure in the legacy mirror update MUST NOT undo the
-          // rename or affect the return value.
-          console.warn('[sheets] onWorkbookRenamed callback failed:', err)
-        }
-      }
-
       return { renamed: true, name }
     })
+  }
+
+  /**
+   * Notify the coordinator that a workbook file was renamed on disk by the
+   * SHELL (e.g. the user renamed it from the Home list). This is the manual
+   * rename path — distinct from `renameWorkbook()` (the auto-rename path
+   * triggered by the renderer after an AI run).
+   *
+   * The coordinator finds the session whose `originalPath` matches `oldPath`
+   * and updates it to `newPath`. If a match is found, the `workbook:renamed`
+   * event is pushed to the owning renderer. If no match is found (the file
+   * was not open in any session), this is a no-op.
+   *
+   * Phase 2 Increment 17: this method REPLACES the legacy
+   * `sheetsFileRenamed()` + `updateLegacySessionPath()` + `onWorkbookRenamed`
+   * callback chain. The coordinator is the SOLE owner of workbook paths —
+   * there is no legacy `SessionInfo.path` mirror to sync.
+   *
+   * @returns true if a session was found and updated; false otherwise.
+   */
+  renameWorkbookFromShell(
+    wcId: number,
+    oldPath: string,
+    newPath: string,
+  ): boolean {
+    const state = this.tabs.get(wcId)
+    if (!state) return false
+    let matched = false
+    for (const [sessionId, session] of state.sessions) {
+      if (session.originalPath !== oldPath) continue
+      // Update the session's originalPath. The file has ALREADY been
+      // renamed on disk by the shell (via `renameSync` in the home:rename-file
+      // handler) — we just sync the coordinator's authoritative path.
+      state.sessions.set(sessionId, { ...session, originalPath: newPath })
+      // Remove from untitled set (a user-chosen name always wins).
+      this.untitledPaths.delete(oldPath)
+      matched = true
+    }
+    if (matched) {
+      // Push the event to the owning renderer — exactly once.
+      // The shell's `sheetsFileRenamed` wrapper no longer pushes; the
+      // coordinator owns the push (matching the auto-rename path).
+      try {
+        const wc = state.webContents
+        if (wc && !wc.isDestroyed()) {
+          wc.send('workbook:renamed', basename(newPath))
+        }
+      } catch (err) {
+        console.warn('[sheets] renameWorkbookFromShell: push event failed:', err)
+      }
+    }
+    return matched
   }
 
   /** Check if a path is in the untitled workbook set (shell-owned state). */

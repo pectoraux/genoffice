@@ -55,13 +55,6 @@ export interface SheetsRuntimeBundle {
  */
 export interface SheetsCoordinatorConfig {
   /**
-   * Invoked after a SUCCESSFUL auto-rename to update the legacy
-   * `SessionInfo.path` mirror. MUST NOT push the `workbook:renamed`
-   * IPC event — the coordinator already pushed it. See
-   * `SheetsShellCoordinatorDeps.onWorkbookRenamed` for the contract.
-   */
-  readonly onWorkbookRenamed?: (wcId: number, oldPath: string, newPath: string) => void
-  /**
    * Localized recovery-dialog text provider. See
    * `SheetsShellCoordinatorDeps.recoveryDialogText`.
    */
@@ -129,22 +122,22 @@ export function initSheetsRuntime(
   // — screen capture has no session/lifecycle concerns).
   const screenCapture = new ElectronScreenCapture()
 
-  // Phase 2 Increment 16: the coordinator is the SOLE owner of workbook
-  // sessions. The shell plumbs four coordinator-level callbacks:
-  //   - onWorkbookRenamed: update the legacy `sheetsTabs.sessions[].path`
-  //     mirror after a successful auto-rename (kept until resolveSheetsSessionPath
-  //     is migrated to read from the coordinator — see Phase F).
+  // Phase 2 Increment 17: the coordinator is the SOLE owner of workbook
+  // sessions. The shell plumbs three coordinator-level callbacks:
   //   - recoveryDialogText: localized recovery prompt text (the coordinator
-  //     itself is language-agnostic).
-  //   - onWorkbookOpened: fire `workbookOpenedHook` + consume the shell-queued
-  //     workbook path.
-  //   - consumeQueuedWorkbookPath: return the shell-queued path (if any).
+  //     is language-agnostic).
+  //   - onWorkbookOpened: fire `workbookOpenedHook` (tab tracking) after a
+  //     successful open.
+  //   - consumeQueuedWorkbookPath: return the shell-queued path (set by
+  //     setForcedWorkbookPath / the dev capture server). The coordinator
+  //     consumes it WITHOUT showing the dialog — matching legacy behavior.
+  //
+  // The manual rename path (`sheetsFileRenamed`) now calls
+  // `coordinator.renameWorkbookFromShell(wcId, oldPath, newPath)` directly
+  // — NO legacy SessionInfo mirror, NO onWorkbookRenamed callback.
   const coordinator = new SheetsShellCoordinator({
     service,
     pdfRenderer,
-    ...(coordinatorConfig.onWorkbookRenamed !== undefined
-      ? { onWorkbookRenamed: coordinatorConfig.onWorkbookRenamed }
-      : {}),
     ...(coordinatorConfig.recoveryDialogText !== undefined
       ? { recoveryDialogText: coordinatorConfig.recoveryDialogText }
       : {}),

@@ -531,21 +531,20 @@ describe('@genoffice/sheets architecture boundary (Increment 3I/5/5A — AST-bas
     expect(stripped).not.toMatch(/getAllWindows\(\)/)
   })
 
-  test('coordinator has onWorkbookRenamed dep callback (Increment 15A)', () => {
-    // The coordinator deps interface must accept an `onWorkbookRenamed`
-    // callback. The shell wires `updateLegacySessionPath` as this callback
-    // so the legacy SessionInfo.path mirror stays in sync after a
-    // successful auto-rename.
+  test('coordinator has renameWorkbookFromShell method (Increment 17)', () => {
+    // Phase 2 Increment 17: the manual rename path (shell → sheetsFileRenamed)
+    // delegates to `coordinator.renameWorkbookFromShell(wcId, oldPath, newPath)`.
+    // The coordinator finds the session by `originalPath` and updates it.
+    // There is NO legacy SessionInfo mirror — the coordinator is the SOLE owner.
     const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
-    expect(src).toMatch(/onWorkbookRenamed\?:\s*\(wcId:\s*number,\s*oldPath:\s*string,\s*newPath:\s*string\)\s*=>\s*void/)
+    expect(src).toMatch(/renameWorkbookFromShell\s*\(/)
   })
 
-  test('coordinator renameWorkbook invokes onWorkbookRenamed after success (Increment 15A)', () => {
+  test('coordinator has NO onWorkbookRenamed dep callback (Increment 17 — removed)', () => {
     const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
-    // The rename method must invoke the callback. Match the property access
-    // + invocation — guards against accidental removal.
-    expect(src).toMatch(/this\.deps\.onWorkbookRenamed/)
-    expect(src).toMatch(/onWorkbookRenamed\(wcId,\s*oldPath,\s*target\)/)
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/onWorkbookRenamed\??\s*:/)
+    expect(stripped).not.toMatch(/this\.deps\.onWorkbookRenamed/)
   })
 
   test('coordinator has ZERO raw sidecar command construction (Increment 15A)', () => {
@@ -570,33 +569,54 @@ describe('@genoffice/sheets architecture boundary (Increment 3I/5/5A — AST-bas
     expect(stripped).not.toMatch(/^(let|var|const)\s+(currentWcId|activeSession|globalSession|currentRenderer)\b/m)
   })
 
-  test('sheets-runtime plumbs onWorkbookRenamed to the coordinator (Increment 15A)', () => {
+  test('sheets-runtime has NO onWorkbookRenamed in SheetsCoordinatorConfig (Increment 17 — removed)', () => {
     const src = readFileSync(join(SRC, 'main', 'sheets-runtime.ts'), 'utf8')
-    expect(src).toMatch(/SheetsCoordinatorConfig/)
-    expect(src).toMatch(/onWorkbookRenamed/)
-    expect(src).toMatch(/coordinatorConfig/)
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/onWorkbookRenamed/)
   })
 
-  test('sheets-main wires updateLegacySessionPath as the onWorkbookRenamed callback (Increment 15A)', () => {
+  test('sheets-main sheetsFileRenamed delegates to coordinator.renameWorkbookFromShell (Increment 17)', () => {
     const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
-    expect(src).toMatch(/updateLegacySessionPath/)
-    expect(src).toMatch(/onWorkbookRenamed:\s*updateLegacySessionPath/)
+    expect(src).toMatch(/coordinator\.renameWorkbookFromShell\b/)
   })
 
-  test('sheets-main extracts updateLegacySessionPath from sheetsFileRenamed (Increment 15A)', () => {
-    // The legacy mirror update helper MUST exist as a separate function
-    // (no push) so the coordinator's callback can invoke it without
-    // triggering a duplicate workbook:renamed event.
+  test('sheets-main has NO updateLegacySessionPath (Increment 17 — removed)', () => {
     const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
-    expect(src).toMatch(/export function updateLegacySessionPath/)
-    // The helper must NOT push the IPC event itself — only the caller
-    // (sheetsFileRenamed or the coordinator) decides whether to push.
-    // Match the body to ensure no `wc.send(...)` call inside it.
-    const helperBody = src.match(
-      /export function updateLegacySessionPath[\s\S]*?^}/m,
-    )?.[0] ?? ''
-    expect(helperBody.length).toBeGreaterThan(0)
-    expect(helperBody).not.toMatch(/\.send\(/)
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/export function updateLegacySessionPath/)
+    expect(stripped).not.toMatch(/updateLegacySessionPath\b/)
+  })
+
+  test('sheets-main has NO SessionInfo interface (Increment 17 — removed)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/interface SessionInfo\b/)
+  })
+
+  test('sheets-main has NO closeAllSessions function (Increment 17 — removed)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/async function closeAllSessions\b/)
+    expect(stripped).not.toMatch(/closeAllSessions\b/)
+  })
+
+  test('sheets-main has NO XlsxSidecarClient import (Increment 17 — removed)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/from\s+['"]\.\/xlsx-sidecar-client['"]/)
+    expect(stripped).not.toMatch(/new XlsxSidecarClient\b/)
+  })
+
+  test('sheets-main has NO registerSheetsAiIpc (Increment 17 — removed)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/export function registerSheetsAiIpc\b/)
+  })
+
+  test('sheets-main has NO writeWorkbookTo (Increment 17 — removed)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/async function writeWorkbookTo\b/)
   })
 
   // ═══ INCREMENT 16 — Legacy open cutover architecture guards ═══
