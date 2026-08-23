@@ -31,6 +31,7 @@
  */
 
 import type { SavePlan } from './save-plan.js'
+import type { WorkbookPivotDefinition } from './pivot-definition.js'
 
 // ── Opaque engine session handle ───────────────────────────────────────
 
@@ -519,24 +520,51 @@ export interface SpreadsheetEngine {
   close(handle: EngineSessionHandle): Promise<void>
 
   /**
-   * Read a single archive entry (XML text) from the workbook's on-disk
-   * temp file. Used by pivot-definition reads: the handler needs the raw
-   * XML from specific parts (e.g. xl/pivotTables/pivotTable1.xml) that
-   * are not exposed by the structured read methods.
+   * Read a pivot table definition from the workbook's archive.
+   *
+   * This is a Sheets-specific operation (NOT a generic ZIP entry API):
+   * the engine reads the two OOXML parts that define a pivot table
+   * (`pivotTableN.xml` and the matching `pivotCacheDefinitionN.xml`),
+   * parses them via the canonical `@genoffice/xlsx-gateway`
+   * `parsePivotDefinition()` parser, and returns the typed
+   * `WorkbookPivotDefinition`.
+   *
+   * The engine implementation is the SINGLE translation point between
+   * the OOXML wire format and the runtime-independent contract. The
+   * service, coordinator, and handler pass the typed value through
+   * unchanged.
+   *
+   * DESIGN RATIONALE (Increment 15A):
+   *   The previous generic `readArchiveEntry(handle, entryPath)` exposed
+   *   a ZIP-entry escape-hatch on the engine contract. That invited
+   *   callers above the engine boundary to pluck arbitrary OOXML parts
+   *   (and forced the service to perform the parsing). The contract
+   *   now exposes only the Sheets-specific operation the renderer
+   *   actually needs — read a pivot definition. There is no other
+   *   current production consumer of generic archive reads.
    *
    * @param handle — opaque engine session handle (determines which temp file)
-   * @param entryName — the archive entry path (e.g. 'xl/pivotTables/pivotTable1.xml')
-   * @returns the entry's text content (UTF-8)
+   * @param pivotTablePath — archive entry path of the pivotTable part
+   *                         (e.g. 'xl/pivotTables/pivotTable1.xml')
+   * @param cacheDefinitionPath — archive entry path of the matching
+   *                              pivotCacheDefinition part
+   *                              (e.g. 'xl/pivotCache/pivotCacheDefinition1.xml')
+   * @returns the parsed pivot definition (runtime-independent contract)
    *
    * THROWS on failure:
    *   - InvalidSessionError — handle was closed or never opened
-   *   - InvalidInputError    — entry not found in the archive
+   *   - InvalidInputError    — entry not found in the archive, or the
+   *                            XML is malformed in a way the parser
+   *                            refuses (e.g. missing <location>)
    *   - EngineError          — engine/protocol failure
+   *                            (code 'PROTOCOL_ERROR' for malformed
+   *                            sidecar responses)
    */
-  readArchiveEntry(
+  readPivotDefinition(
     handle: EngineSessionHandle,
-    entryName: string,
-  ): Promise<string>
+    pivotTablePath: string,
+    cacheDefinitionPath: string,
+  ): Promise<WorkbookPivotDefinition>
 
   /**
    * Stop the engine entirely. Kills any background processes, releases

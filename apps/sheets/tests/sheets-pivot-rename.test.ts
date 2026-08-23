@@ -142,18 +142,21 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       // Open + adopt
       const { sessionId } = await openAndAdopt(bundle, 100, sidecarClient, pivotPath)
 
-      // Read pivot definition — now returns the parsed object (not raw XML)
+      // Read pivot definition — returns the typed WorkbookPivotDefinition
+      // contract (NOT `unknown`). The handler in sheets-migrated-handlers.ts
+      // runs the value through workbookPivotDefinitionSchema.parse() as a
+      // frozen-IPC sanity check; here we verify the typed fields directly.
       const pivotDefinition = await bundle.coordinator.readPivotDefinition(
         100, sessionId,
         'xl/pivotTables/pivotTable1.xml',
         'xl/pivotCache/pivotCacheDefinition1.xml',
       )
 
-      // Verify the parsed pivot definition has real data
+      // Verify the parsed pivot definition has real data — typed access,
+      // no `as` cast (the coordinator returns WorkbookPivotDefinition).
       expect(pivotDefinition).toBeDefined()
-      const parsed = pivotDefinition as { outputRef: string; fields: unknown[] }
-      expect(parsed.outputRef).toBeTruthy()
-      expect(parsed.fields.length).toBe(3) // Name, Category, Value
+      expect(pivotDefinition.outputRef).toBeTruthy()
+      expect(pivotDefinition.fields.length).toBe(3) // Name, Category, Value
 
       await bundle.coordinator.teardown(100)
       sidecarClient.stop()
@@ -217,7 +220,6 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       const service = new SpreadsheetServiceImpl({ engine })
       const coordinator = new SheetsShellCoordinator({
         service,
-        sidecarClient: sidecarClient,
       })
       const bundle = { engine, service, coordinator } as SheetsRuntimeBundle
 
@@ -280,7 +282,6 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       const service = new SpreadsheetServiceImpl({ engine })
       const coordinator = new SheetsShellCoordinator({
         service,
-        sidecarClient: sidecarClient,
       })
       const bundle = { engine, service, coordinator } as SheetsRuntimeBundle
 
@@ -315,7 +316,6 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       const service = new SpreadsheetServiceImpl({ engine })
       const coordinator = new SheetsShellCoordinator({
         service,
-        sidecarClient: sidecarClient,
       })
       const bundle = { engine, service, coordinator } as SheetsRuntimeBundle
 
@@ -357,7 +357,6 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       const service = new SpreadsheetServiceImpl({ engine })
       const coordinator = new SheetsShellCoordinator({
         service,
-        sidecarClient: sidecarClient,
       })
       const bundle = { engine, service, coordinator } as SheetsRuntimeBundle
 
@@ -389,7 +388,6 @@ describe.skipIf(!SIDECAR_AVAILABLE)('Increment 14 — Real pivot + auto-rename E
       const service = new SpreadsheetServiceImpl({ engine })
       const coordinator = new SheetsShellCoordinator({
         service,
-        sidecarClient: sidecarClient,
       })
 
       const mockWc = { isDestroyed: () => false, send: () => {} }

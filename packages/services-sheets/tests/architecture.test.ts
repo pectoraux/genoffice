@@ -199,7 +199,40 @@ describe('@genoffice/services-sheets architecture boundary', () => {
   })
 
   test('ZERO references to xlsx-gateway / xlsx-package-io (engine boundary translation is injected)', () => {
-    const hits = scanForImports(SRC, [/xlsx-gateway/, /xlsx-package-io/])
+    // The service must NOT statically OR dynamically import from
+    // xlsx-gateway. The engine implementation (platform-electron) is
+    // the single translation point between OOXML wire format and the
+    // runtime-independent WorkbookPivotDefinition contract.
+    //
+    // INCREMENT 15A: the previous version of this test only matched
+    // `from '...'` and `require('...')` patterns — it missed dynamic
+    // `await import('...')`. The service used to use a dynamic import
+    // to call `parsePivotDefinition` directly, which slipped through.
+    // This guard now matches ALL forms: static, dynamic, require.
+    //
+    // Comments are stripped before matching so JSDoc rationale that
+    // references `xlsx-gateway` does not produce false positives.
+    const hits: Array<{ file: string; line: number; text: string }> = []
+    for (const file of listSourceFiles(SRC)) {
+      const text = readFileSync(file, 'utf8')
+      // Strip block comments and line comments — only CODE counts.
+      const stripped = text
+        .replace(/\/\*\*?[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '')
+      const lines = stripped.split('\n')
+      lines.forEach((line, i) => {
+        // Static import: from 'xlsx-gateway' / require('xlsx-gateway')
+        // Dynamic import: await import('xlsx-gateway')
+        if (
+          /(?:from\s+|require\s*\(\s*)['"]@genoffice\/xlsx-gateway/.test(line) ||
+          /import\s*\(\s*['"]@genoffice\/xlsx-gateway/.test(line) ||
+          /(?:from\s+|require\s*\(\s*)['"][^'"]*xlsx-package-io/.test(line) ||
+          /import\s*\(\s*['"][^'"]*xlsx-package-io/.test(line)
+        ) {
+          hits.push({ file, line: i + 1, text: line.trim() })
+        }
+      })
+    }
     expect(hits).toEqual([])
   })
 
@@ -207,6 +240,46 @@ describe('@genoffice/services-sheets architecture boundary', () => {
     const hits = scanForTokens(SRC, ['XlsxSidecarClient', 'sidecar'])
       .filter((h) => !h.text.startsWith('*') && !h.text.startsWith('//') && !h.text.startsWith('/*'))
     expect(hits).toEqual([])
+  })
+
+  test('ZERO Promise<unknown> return types for pivot (Increment 15A)', () => {
+    // The service's readPivotDefinition method must declare a typed
+    // return — `Promise<WorkbookPivotDefinition>`, NOT `Promise<unknown>`.
+    // This guards against regression: the prior version returned
+    // Promise<unknown> and the typed contract was lost.
+    const src = readFileSync(join(SRC, 'spreadsheet-service.ts'), 'utf8')
+    expect(src).toMatch(/readPivotDefinition[\s\S]*?:\s*Promise<WorkbookPivotDefinition>/m)
+    expect(src).not.toMatch(/readPivotDefinition[\s\S]*?:\s*Promise<unknown>/m)
+  })
+
+  test('ZERO raw sidecar protocol construction in services-sheets (Increment 15A)', () => {
+    // The service must NOT construct `{ command: '...' }` sidecar
+    // payloads — all sidecar wire-protocol construction lives behind
+    // the engine boundary (ElectronXlsxSidecarEngine).
+    const src = readFileSync(join(SRC, 'spreadsheet-service.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/command:\s*['"]read_entries['"]/)
+    expect(stripped).not.toMatch(/command:\s*['"]read_range['"]/)
+    expect(stripped).not.toMatch(/command:\s*['"]open['"]/)
+    expect(stripped).not.toMatch(/command:\s*['"]save_archive['"]/)
+  })
+
+  test('ZERO filesystem references in services-sheets (Increment 15A)', () => {
+    // The service must not perform filesystem operations — all archive
+    // I/O is private to the engine adapter. The service operates on
+    // Uint8Array content + opaque handles only.
+    const src = readFileSync(join(SRC, 'spreadsheet-service.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/^import.*node:fs/m)
+    expect(stripped).not.toMatch(/readFileSync|writeFileSync|mkdirSync|rmSync|existsSync|renameSync/)
+  })
+
+  test('ZERO Electron references in services-sheets (Increment 15A)', () => {
+    // The service must not import Electron — it is runtime-independent.
+    const src = readFileSync(join(SRC, 'spreadsheet-service.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/from\s+['"]electron['"]/)
+    expect(stripped).not.toMatch(/BrowserWindow|WebContents|webContents/)
   })
 
   test('SpreadsheetServiceDeps is referenced (engine-only dependency, no translator)', () => {

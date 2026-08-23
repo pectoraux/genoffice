@@ -39,7 +39,7 @@ import type {
   SpreadsheetService, WorkbookSession, WorkbookOpenResult, EngineSessionHandle,
   ExternalChangeStatus, SaveRequest, SaveResult, EngineRangeResult, EngineFormulaCellsResult,
   EngineRecalcEdit, EngineRecalcRead, EngineRecalcResult, EngineMediaResult,
-  SpreadsheetPdfRenderer, SpreadsheetPdfOptions,
+  SpreadsheetPdfRenderer, SpreadsheetPdfOptions, WorkbookPivotDefinition,
 } from '@genoffice/runtime-contracts'
 import { EngineError, InvalidInputError, InvalidSessionError } from '@genoffice/runtime-contracts'
 
@@ -66,6 +66,30 @@ export interface SheetsShellCoordinatorDeps {
   readonly onCommitGate?: (sessionId: string) => Promise<void>
   readonly onMarkerWritten?: (markerPath: string, sessionId: string) => Promise<void>
   readonly pdfRenderer?: SpreadsheetPdfRenderer
+  /**
+   * Optional callback invoked after a SUCCESSFUL auto-rename to update the
+   * legacy `SessionInfo.path` mirror in the shell (`sheetsTabs`).
+   *
+   * The coordinator is the AUTHORITATIVE owner of the session path
+   * (`ShellWorkbookSession.originalPath`); the legacy `SessionInfo` is a
+   * NON-OWNING compatibility reference kept only so legacy consumers
+   * (e.g. `resolveSheetsSessionPath` used by `project:rebindChat`) see
+   * the new path. Without this callback the legacy mirror would go stale
+   * after an auto-rename.
+   *
+   * The callback is invoked AFTER the coordinator has:
+   *   - updated `ShellWorkbookSession.originalPath`
+   *   - removed the old path from `untitledPaths`
+   *   - pushed the `workbook:renamed` event to the initiating renderer
+   * The callback MUST NOT re-push the event (the coordinator already did).
+   *
+   * IMPLEMENTATION (Increment 15A):
+   *   The shell plumbs `updateLegacySessionPath(wcId, oldPath, newPath)`
+   *   (extracted from `sheetsFileRenamed`) as this callback. That helper
+   *   updates the legacy `sheetsTabs.sessions[].path` mirror ONLY — it
+   *   does NOT push any IPC event, avoiding the duplicate-push hazard.
+   */
+  readonly onWorkbookRenamed?: (wcId: number, oldPath: string, newPath: string) => void
 }
 
 // ── Session commit lifecycle ──
@@ -597,24 +621,31 @@ export class SheetsShellCoordinator {
     await this.withSessionLock(wcId, sessionId, async () => { await this.closeSession(wcId, sessionId) })
   }
 
-  // ── Pivot definition read (INCREMENT 12, corrected 15) ──
+  // ── Pivot definition read (INCREMENT 12, corrected 15, hardened 15A) ──
 
   /**
    * Read a pivot table definition from the session's workbook.
    *
-   * Delegates to `service.readPivotDefinition()` which reads XML entries
-   * via `engine.readArchiveEntry()` and parses via the canonical
-   * @genoffice/xlsx-gateway `parsePivotDefinition()`.
+   * Delegates to `service.readPivotDefinition()`, which in turn delegates
+   * to `engine.readPivotDefinition()` — the SINGLE translation point
+   * between the OOXML wire format and the runtime-independent
+   * `WorkbookPivotDefinition` contract. The engine reads both XML parts
+   * from its on-disk temp file and parses them via the canonical
+   * `@genoffice/xlsx-gateway` `parsePivotDefinition()` parser.
    *
    * The coordinator owns only session lookup (wcId + sessionId).
-   * All archive I/O and parsing happen below the service boundary.
+   * All archive I/O and parsing happen below the service boundary — the
+   * coordinator passes the typed `WorkbookPivotDefinition` through
+   * unchanged.
+   *
+   * @returns the parsed pivot definition (typed contract — NOT `unknown`)
    */
   async readPivotDefinition(
     wcId: number,
     sessionId: string,
     pivotTablePath: string,
     cacheDefinitionPath: string,
-  ): Promise<unknown> {
+  ): Promise<WorkbookPivotDefinition> {
     const session = this.getSession(wcId, sessionId)
     return this.deps.service.readPivotDefinition(
       session.domainSession,
@@ -690,8 +721,9 @@ export class SheetsShellCoordinator {
       }
 
       // Atomic rename (no copy fallback — matching legacy)
+      const oldPath = session.originalPath
       try {
-        renameSync(session.originalPath, target)
+        renameSync(oldPath, target)
       } catch (err) {
         console.warn('[sheets] auto-rename failed:', err)
         return { renamed: false }
@@ -708,12 +740,32 @@ export class SheetsShellCoordinator {
       }
 
       // Remove from untitled set
-      this.untitledPaths.delete(session.originalPath)
+      this.untitledPaths.delete(oldPath)
 
-      // Push event to the initiating renderer only
+      // Push event to the initiating renderer only — exactly once.
+      // The legacy mirror callback below MUST NOT also push.
       const name = basename(target)
       if (!webContents.isDestroyed()) {
         webContents.send('workbook:renamed', name)
+      }
+
+      // Update the legacy `SessionInfo.path` mirror (NON-authoritative —
+      // the coordinator's `ShellWorkbookSession.originalPath` is the
+      // source of truth). Legacy consumers (resolveSheetsSessionPath
+      // used by project:rebindChat) read from sheetsTabs.sessions[].path
+      // and would see a stale path without this callback. The callback
+      // is invoked exactly once after a successful rename; it MUST NOT
+      // re-push the workbook:renamed event (the coordinator already did).
+      const onWorkbookRenamed = this.deps.onWorkbookRenamed
+      if (onWorkbookRenamed) {
+        try {
+          onWorkbookRenamed(wcId, oldPath, target)
+        } catch (err) {
+          // Best-effort — the authoritative state is already updated.
+          // A failure in the legacy mirror update MUST NOT undo the
+          // rename or affect the return value.
+          console.warn('[sheets] onWorkbookRenamed callback failed:', err)
+        }
       }
 
       return { renamed: true, name }

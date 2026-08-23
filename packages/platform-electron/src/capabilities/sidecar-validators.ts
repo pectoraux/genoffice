@@ -322,3 +322,85 @@ export function validateMediaResult(raw: unknown): EngineMediaResult {
     throw new EngineError('Invalid media response: missing mediaType or base64', 'PROTOCOL_ERROR')
   return { mediaType: raw.mediaType, base64: raw.base64 }
 }
+
+// ── read_entries response (Increment 15A) ──────────────────────────────
+//
+// The sidecar's `read_entries` command extracts one or more archive entries
+// to a caller-supplied output directory and returns a response of the form:
+//
+//   { entries: [{ name: string, path: string }, ...] }
+//
+// `name` is the archive entry path that was requested; `path` is the
+// absolute filesystem path the sidecar extracted it to (inside outputDir).
+// The order of the returned array matches the order of the requested
+// `entries` input.
+//
+// This validator performs runtime type checking on the `unknown` sidecar
+// response using only type guards (ZERO `as` casts on the response). It
+// returns a typed `ReadArchiveEntriesResult` that callers can use to look
+// up the on-disk path for a requested entry name.
+//
+// Malformed responses produce EngineError('PROTOCOL_ERROR') — the engine
+// adapter surfaces this as a typed protocol failure (no unchecked cast).
+
+/**
+ * One entry in the sidecar's `read_entries` response — the requested entry
+ * name and the absolute filesystem path where the sidecar extracted it.
+ */
+export interface ReadArchiveEntry {
+  readonly name: string
+  readonly path: string
+}
+
+/**
+ * Validated `read_entries` response — a list of `{ name, path }` pairs.
+ * The order matches the order of the requested entry names.
+ */
+export interface ReadArchiveEntriesResult {
+  readonly entries: readonly ReadArchiveEntry[]
+}
+
+/**
+ * Runtime-validate a sidecar `read_entries` response.
+ *
+ * Type-guard based — ZERO `as Record` / `as Array` / `as unknown as`
+ * casts on the response. Malformed shapes become typed
+ * `EngineError('PROTOCOL_ERROR')`.
+ *
+ * @param raw — the unknown response from the sidecar wire protocol
+ * @returns the validated entries list (typed)
+ * @throws EngineError('PROTOCOL_ERROR') when the response is not an object,
+ *         when `entries` is missing/not an array, or when any entry is not
+ *         an object with string `name` and `path` fields.
+ */
+export function validateReadEntriesResponse(raw: unknown): ReadArchiveEntriesResult {
+  if (!isRecord(raw)) {
+    throw new EngineError('Invalid read_entries response: not an object', 'PROTOCOL_ERROR')
+  }
+  const rawEntries = raw.entries
+  if (!isArray(rawEntries)) {
+    throw new EngineError('Invalid read_entries response: missing entries array', 'PROTOCOL_ERROR')
+  }
+  // rawEntries has been narrowed to `unknown[]` by isArray — iterate and
+  // validate each entry via type guards (no `as` cast).
+  const entries: ReadArchiveEntry[] = []
+  for (let i = 0; i < rawEntries.length; i++) {
+    const entry = rawEntries[i]
+    if (!isRecord(entry)) {
+      throw new EngineError(
+        `Invalid read_entries response: entries[${i}] is not an object`,
+        'PROTOCOL_ERROR',
+      )
+    }
+    const name = entry.name
+    const path = entry.path
+    if (!isString(name) || !isString(path)) {
+      throw new EngineError(
+        `Invalid read_entries response: entries[${i}] missing string name or path`,
+        'PROTOCOL_ERROR',
+      )
+    }
+    entries.push({ name, path })
+  }
+  return { entries }
+}

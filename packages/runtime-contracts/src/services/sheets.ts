@@ -69,6 +69,7 @@ import type {
   EngineRecalcResult,
   EngineMediaResult,
 } from './spreadsheet-engine.js'
+import type { WorkbookPivotDefinition } from './pivot-definition.js'
 
 // Re-export all SavePlan domain types so callers can construct save requests
 // without importing from two files. These types are defined in save-plan.ts
@@ -403,22 +404,40 @@ export interface SpreadsheetService {
   /**
    * Read a pivot table definition from the workbook's archive.
    *
-   * The service reads the pivotTable XML and pivotCacheDefinition XML
-   * from the engine's temp file via `engine.readArchiveEntry()`, then
-   * parses them via the canonical @genoffice/xlsx-gateway
-   * `parsePivotDefinition()` — runtime-independent, no duplication.
+   * The service delegates to `engine.readPivotDefinition(handle,
+   * pivotTablePath, cacheDefinitionPath)`. The engine implementation
+   * is the single translation point between the OOXML wire format and
+   * the runtime-independent `WorkbookPivotDefinition` contract — it
+   * reads both XML parts from the on-disk temp file and parses them
+   * via the canonical `@genoffice/xlsx-gateway` `parsePivotDefinition()`
+   * parser. The service performs NO archive I/O and NO parsing.
+   *
+   * DESIGN RATIONALE (Increment 15A):
+   *   Previously the service called `engine.readArchiveEntry()` twice
+   *   to pluck the raw XML strings and then dynamically imported the
+   *   xlsx-gateway parser to do the parsing itself. That arrangement
+   *   (a) leaked a generic ZIP-entry API onto the engine contract,
+   *   (b) forced `services-sheets` to depend on `xlsx-gateway` at
+   *   runtime (which its architecture test forbids), and (c) returned
+   *   `Promise<unknown>`. All three defects are closed: the contract
+   *   is Sheets-specific, the service contains ZERO xlsx-gateway
+   *   references, and the return type is the typed
+   *   `WorkbookPivotDefinition`.
    *
    * THROWS on failure:
    *   - InvalidSessionError — handle was closed or never opened
-   *   - InvalidInputError    — entry not found or malformed XML
+   *   - InvalidInputError    — entry not found, or the XML is malformed
+   *                            in a way the parser refuses
    *   - EngineError          — engine/protocol failure
+   *                            (code 'PROTOCOL_ERROR' for malformed
+   *                            sidecar responses)
    *
-   * @returns the parsed pivot definition (typed by xlsx-gateway)
+   * @returns the parsed pivot definition (typed contract — NOT `unknown`)
    */
   readPivotDefinition(
     session: WorkbookSession,
     engineHandle: EngineSessionHandle,
     pivotTablePath: string,
     cacheDefinitionPath: string,
-  ): Promise<unknown>
+  ): Promise<WorkbookPivotDefinition>
 }

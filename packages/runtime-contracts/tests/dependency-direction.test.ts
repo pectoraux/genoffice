@@ -99,4 +99,51 @@ describe('dependency direction: runtime-contracts must not import from app layer
     const violations = hits.filter((h) => !h.file.endsWith('runtime.ts'))
     expect(violations).toEqual([])
   })
+
+  // ═══ INCREMENT 15A — WorkbookPivotDefinition contract purity ═══
+  //
+  // The `WorkbookPivotDefinition` contract lives in src/services/pivot-definition.ts.
+  // It MUST be runtime-independent: ZERO Electron imports, ZERO node:* imports,
+  // ZERO @genoffice/xlsx-gateway imports (runtime-contracts cannot depend on
+  // xlsx-gateway — runtime-contracts is Layer 1, xlsx-gateway is a peer of
+  // platform-electron at Layer 4a). The shape mirrors xlsx-gateway's
+  // `PivotDefinition` structurally; the engine impl is the single translation
+  // point that bridges the two.
+  test('runtime-contracts pivot-definition.ts has ZERO Electron/node:/xlsx-gateway imports (Increment 15A)', () => {
+    const SRC = join(__dirname, '..', 'src')
+    const hits = scanForImports(SRC, [
+      'electron',
+      /^node:/,
+      '@genoffice/xlsx-gateway',
+    ])
+    // No file in runtime-contracts may import any of these.
+    expect(hits).toEqual([])
+  })
+
+  test('runtime-contracts exports WorkbookPivotDefinition (Increment 15A)', () => {
+    const SRC = join(__dirname, '..', 'src')
+    const pivotFile = join(SRC, 'services', 'pivot-definition.ts')
+    const text = readFileSync(pivotFile, 'utf8')
+    expect(text).toMatch(/export interface WorkbookPivotDefinition\b/)
+    expect(text).toMatch(/export type WorkbookPivotFilterDef\b/)
+    expect(text).toMatch(/export type WorkbookPivotFieldGrouping\b/)
+    expect(text).toMatch(/export interface WorkbookPivotCacheField\b/)
+    expect(text).toMatch(/export interface WorkbookPivotDataField\b/)
+    expect(text).toMatch(/export interface WorkbookPivotLayoutLine\b/)
+    expect(text).toMatch(/export type WorkbookPivotSharedItem\b/)
+    expect(text).toMatch(/export interface WorkbookPivotFieldItem\b/)
+  })
+
+  test('runtime-contracts SpreadsheetEngine.readPivotDefinition returns Promise<WorkbookPivotDefinition> (Increment 15A)', () => {
+    const SRC = join(__dirname, '..', 'src')
+    const engineFile = join(SRC, 'services', 'spreadsheet-engine.ts')
+    const text = readFileSync(engineFile, 'utf8')
+    expect(text).toMatch(/readPivotDefinition[\s\S]*?:\s*Promise<WorkbookPivotDefinition>/m)
+    // The generic readArchiveEntry method MUST NOT exist on the contract.
+    // Strip JSDoc/block comments before checking — the contract may
+    // reference `readArchiveEntry` in JSDoc rationale, but must NOT
+    // declare it as a method.
+    const stripped = text.replace(/\/\*\*?[\s\S]*?\*\//g, '')
+    expect(stripped).not.toMatch(/\breadArchiveEntry\s*\(/)
+  })
 })

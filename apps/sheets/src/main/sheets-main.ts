@@ -1116,7 +1116,18 @@ function getMigratedRuntime(): ReturnType<typeof initSheetsRuntime> {
     const sharedClient = sidecar ?? new XlsxSidecarClient(sidecarPath)
     sidecar = sharedClient
     sharedClient.start()
-    migratedRuntime = initSheetsRuntime({ binaryPath: sidecarPath, sidecarClient: sharedClient })
+    // INCREMENT 15A: wire the legacy `SessionInfo.path` mirror update
+    // callback. After a successful auto-rename the coordinator invokes
+    // this callback so the legacy `sheetsTabs.sessions[].path` is kept
+    // in sync with the new path. The callback updates the legacy mirror
+    // ONLY — the coordinator pushes `workbook:renamed` itself, avoiding
+    // a duplicate push. Without this, legacy consumers like
+    // `resolveSheetsSessionPath` (used by project:rebindChat) would see
+    // a stale path after an auto-rename.
+    migratedRuntime = initSheetsRuntime(
+      { binaryPath: sidecarPath, sidecarClient: sharedClient },
+      { onWorkbookRenamed: updateLegacySessionPath },
+    )
   }
   return migratedRuntime
 }
@@ -1223,19 +1234,56 @@ export function setActiveSheetsWebContents(wc: WebContents | null): void {
 
 /** Shell notification: an open view's file was renamed on disk (renamed in the
  *  Home list) — sync the matching session's path in that tab (later saves write
- *  the new file) and push the renderer to update the title-bar file name. */
+ *  the new file) and push the renderer to update the title-bar file name.
+ *
+ *  This is the MANUAL rename path (shell → home:rename-file IPC). It updates
+ *  the legacy `sheetsTabs.sessions[].path` mirror AND pushes the
+ *  `workbook:renamed` event to the renderer.
+ *
+ *  The COORDINATOR's auto-rename path (`coordinator.renameWorkbook`) does NOT
+ *  call this function — it updates its own `ShellWorkbookSession.originalPath`
+ *  and pushes the event itself, then invokes the `onWorkbookRenamed`
+ *  callback (which calls `updateLegacySessionPath` directly — no push,
+ *  avoiding a duplicate event).
+ */
 export function sheetsFileRenamed(wc: WebContents, oldPath: string, newPath: string): void {
   // A user-chosen name always wins: the file no longer qualifies for auto-rename
   untitledWorkbookPaths.delete(oldPath)
-  const entry = sheetsTabs.get(wc.id)
-  if (!entry) return
+  const matched = updateLegacySessionPath(wc.id, oldPath, newPath)
+  if (matched) wc.send(IPC_CHANNELS.workbookRenamed, basename(newPath))
+}
+
+/**
+ * Update the legacy `sheetsTabs.sessions[].path` mirror for a renamed
+ * workbook — WITHOUT pushing any IPC event.
+ *
+ * Returns `true` if at least one session's path matched `oldPath` (and was
+ * therefore updated); `false` otherwise. Callers use the return value to
+ * decide whether to push the `workbook:renamed` event.
+ *
+ * USED BY:
+ *   - `sheetsFileRenamed()` — the manual rename path (pushes the event
+ *     itself when at least one session matched).
+ *   - the coordinator's `onWorkbookRenamed` callback (wired in
+ *     `getMigratedRuntime()`) — invoked after a successful auto-rename to
+ *     keep the legacy mirror in sync. The coordinator pushes the event
+ *     itself; this helper MUST NOT re-push (avoids the duplicate-event
+ *     hazard called out in Increment 15A).
+ */
+export function updateLegacySessionPath(
+  wcId: number,
+  oldPath: string,
+  newPath: string,
+): boolean {
+  const entry = sheetsTabs.get(wcId)
+  if (!entry) return false
   let matched = false
   for (const [id, session] of entry.sessions) {
     if (session.path !== oldPath) continue
     entry.sessions.set(id, { ...session, path: newPath })
     matched = true
   }
-  if (matched) wc.send(IPC_CHANNELS.workbookRenamed, basename(newPath))
+  return matched
 }
 
 /**

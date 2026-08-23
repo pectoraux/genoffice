@@ -515,11 +515,17 @@ export function registerMigratedSheetsIpc(coordinator: SheetsShellCoordinator, s
     return readLocalImage(request.path)
   })
 
-  // ── workbook:read-pivot-definition (INCREMENT 12, corrected 15) ──
+  // ── workbook:read-pivot-definition (INCREMENT 12, corrected 15, hardened 15A) ──
   // Thin adapter: validates input, calls coordinator.readPivotDefinition()
-  // The coordinator delegates to service.readPivotDefinition() which reads
-  // XML entries via engine.readArchiveEntry() and parses via the canonical
-  // @genoffice/xlsx-gateway parser. ZERO parser logic in the handler.
+  // The coordinator delegates to service.readPivotDefinition() which in turn
+  // delegates to engine.readPivotDefinition() — the SINGLE translation point
+  // between the OOXML wire format and the runtime-independent
+  // WorkbookPivotDefinition contract. The engine reads both XML parts from
+  // its on-disk temp file and parses them via the canonical @genoffice/xlsx-gateway
+  // parser. ZERO parser logic in the handler. ZERO xlsx-gateway imports in the
+  // handler. The returned WorkbookPivotDefinition is run through
+  // workbookPivotDefinitionSchema.parse() as a frozen-IPC sanity check before
+  // being returned to the renderer.
   ipcMain.removeHandler(IPC_CHANNELS.readPivotDefinition)
   ipcMain.handle(IPC_CHANNELS.readPivotDefinition, async (event, input: unknown) => {
     const { workbookPivotRequestSchema, workbookPivotDefinitionSchema } = await import('../shared/desktop-api')
@@ -528,6 +534,10 @@ export function registerMigratedSheetsIpc(coordinator: SheetsShellCoordinator, s
     const pivotDefinition = await coordinator.readPivotDefinition(
       wcId, request.sessionId, request.path, request.cachePath,
     )
+    // The coordinator returns a typed `WorkbookPivotDefinition`. Run it
+    // through the frozen Zod schema as a final IPC-contract sanity check
+    // before returning to the renderer — this catches any drift between
+    // the engine's parser output and the renderer's expected shape.
     return workbookPivotDefinitionSchema.parse(pivotDefinition)
   })
 

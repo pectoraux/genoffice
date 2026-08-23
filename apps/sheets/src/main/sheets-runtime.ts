@@ -56,13 +56,37 @@ export interface SheetsRuntimeBundle {
 }
 
 /**
+ * Coordinator-level configuration that the runtime construction cannot
+ * derive from the engine config alone. Currently carries only the
+ * `onWorkbookRenamed` callback (used to update the legacy
+ * `SessionInfo.path` mirror after a successful auto-rename).
+ *
+ * Kept separate from `ElectronXlsxSidecarEngineConfig` so the engine
+ * config stays focused on the sidecar lifecycle.
+ */
+export interface SheetsCoordinatorConfig {
+  /**
+   * Invoked after a SUCCESSFUL auto-rename to update the legacy
+   * `SessionInfo.path` mirror. MUST NOT push the `workbook:renamed`
+   * IPC event — the coordinator already pushed it. See
+   * `SheetsShellCoordinatorDeps.onWorkbookRenamed` for the contract.
+   */
+  readonly onWorkbookRenamed?: (wcId: number, oldPath: string, newPath: string) => void
+}
+
+/**
  * Construct the Sheets runtime bundle.
  *
  * @param config — sidecar binary path + optional temp dir + optional
  *                 `sidecarClient` (legacy `XlsxSidecarClient` to share).
+ * @param coordinatorConfig — coordinator-level configuration (currently
+ *                             just the legacy mirror update callback).
  * @returns the runtime bundle (engine + service + coordinator + pdfRenderer)
  */
-export function initSheetsRuntime(config: ElectronXlsxSidecarEngineConfig): SheetsRuntimeBundle {
+export function initSheetsRuntime(
+  config: ElectronXlsxSidecarEngineConfig,
+  coordinatorConfig: SheetsCoordinatorConfig = {},
+): SheetsRuntimeBundle {
   // If a legacy `sidecarClient` is injected, the engine uses it INSTEAD of
   // constructing its own `SidecarProtocolClient` — sharing the same sidecar
   // process and enabling zero-overhead legacy session adoption.
@@ -88,7 +112,21 @@ export function initSheetsRuntime(config: ElectronXlsxSidecarEngineConfig): Shee
   // — screen capture has no session/lifecycle concerns).
   const screenCapture = new ElectronScreenCapture()
 
-  const coordinator = new SheetsShellCoordinator({ service, pdfRenderer })
+  // INCREMENT 15A: wire the legacy `SessionInfo.path` mirror update
+  // callback. After a successful auto-rename the coordinator invokes this
+  // callback so the legacy `sheetsTabs.sessions[].path` (kept in
+  // sheets-main.ts) is updated to the new path. Without this, legacy
+  // consumers like `resolveSheetsSessionPath` (used by project:rebindChat)
+  // would see a stale path after an auto-rename. The callback updates the
+  // legacy mirror ONLY — the coordinator pushes `workbook:renamed` itself,
+  // avoiding a duplicate push.
+  const coordinator = new SheetsShellCoordinator({
+    service,
+    pdfRenderer,
+    ...(coordinatorConfig.onWorkbookRenamed !== undefined
+      ? { onWorkbookRenamed: coordinatorConfig.onWorkbookRenamed }
+      : {}),
+  })
 
   return { engine, service, coordinator, pdfRenderer, screenCapture }
 }

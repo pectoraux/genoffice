@@ -65,6 +65,7 @@ import type {
   EngineRecalcRead,
   EngineRecalcResult,
   EngineMediaResult,
+  WorkbookPivotDefinition,
 } from '@genoffice/runtime-contracts'
 import { InvalidInputError } from '@genoffice/runtime-contracts'
 import type {
@@ -236,20 +237,33 @@ export class SpreadsheetServiceImpl implements SpreadsheetService {
   }
 
   async readPivotDefinition(
-    session: WorkbookSession,
+    _session: WorkbookSession,
     engineHandle: EngineSessionHandle,
     pivotTablePath: string,
     cacheDefinitionPath: string,
-  ): Promise<unknown> {
-    // Read both XML entries from the engine's temp file
-    const [pivotTableXml, cacheDefinitionXml] = await Promise.all([
-      this.deps.engine.readArchiveEntry(engineHandle, pivotTablePath),
-      this.deps.engine.readArchiveEntry(engineHandle, cacheDefinitionPath),
-    ])
-
-    // Parse via the canonical @genoffice/xlsx-gateway parser
-    const { parsePivotDefinition } = await import('@genoffice/xlsx-gateway/src/gateway/xlsx-pivot.js')
-    return parsePivotDefinition(pivotTableXml, cacheDefinitionXml)
+  ): Promise<WorkbookPivotDefinition> {
+    // The engine is the SINGLE translation point between the OOXML wire
+    // format and the runtime-independent `WorkbookPivotDefinition`. It
+    // reads both XML parts from its on-disk temp file (private to the
+    // adapter) and parses them via the canonical xlsx-gateway parser.
+    //
+    // The service performs NO archive I/O and NO parsing — it delegates
+    // directly. This closes two prior defects:
+    //   (a) The service used to call `engine.readArchiveEntry()` (a
+    //       generic ZIP-entry escape-hatch on the engine contract).
+    //   (b) The service used to `await import('@genoffice/xlsx-gateway/...')`
+    //       at runtime — a violation of the services-sheets architecture
+    //       test (which forbids xlsx-gateway imports).
+    //
+    // The `session` parameter is accepted for API consistency with
+    // readRange / readFormulaCells / recalculate / readMedia. The
+    // engineHandle is the complete session scope.
+    void _session
+    return this.deps.engine.readPivotDefinition(
+      engineHandle,
+      pivotTablePath,
+      cacheDefinitionPath,
+    )
   }
 
   // ── Internal: sheet-id translation (fail-closed) ───────────────────

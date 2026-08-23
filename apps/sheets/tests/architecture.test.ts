@@ -462,6 +462,34 @@ describe('@genoffice/sheets architecture boundary (Increment 3I/5/5A — AST-bas
     expect(stripped).not.toMatch(/parsePivotDefinition/)
   })
 
+  test('migrated pivot handler has ZERO xlsx-gateway imports (Increment 15A)', () => {
+    // The handler must NOT import xlsx-gateway directly — neither statically
+    // nor dynamically. The parser lives in the engine (platform-electron),
+    // which is the single translation point between OOXML wire format and
+    // the runtime-independent WorkbookPivotDefinition contract.
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/@genoffice\/xlsx-gateway/)
+    expect(stripped).not.toMatch(/import\s*\(\s*['"]@genoffice\/xlsx-gateway/)
+  })
+
+  test('migrated pivot handler has ZERO sidecarClient references (Increment 15A)', () => {
+    // The handler must not reference the sidecar client in any form —
+    // neither as a coordinator dep nor as a direct import.
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/sidecarClient/)
+  })
+
+  test('migrated pivot handler has ZERO filesystem implementation (Increment 15A)', () => {
+    // The handler must not perform filesystem operations — the engine
+    // owns the on-disk temp file (private to the adapter).
+    const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/^import.*node:fs/m)
+    expect(stripped).not.toMatch(/readFileSync|writeFileSync|mkdirSync|rmSync|existsSync/)
+  })
+
   test('migrated rename handler delegates to coordinator.renameWorkbook', () => {
     const src = readFileSync(join(SRC, 'main', 'sheets-migrated-handlers.ts'), 'utf8')
     expect(src).toMatch(/coordinator\.renameWorkbook/)
@@ -475,6 +503,14 @@ describe('@genoffice/sheets architecture boundary (Increment 3I/5/5A — AST-bas
   test('coordinator has readPivotDefinition method', () => {
     const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
     expect(src).toMatch(/async readPivotDefinition/)
+  })
+
+  test('coordinator readPivotDefinition returns WorkbookPivotDefinition (NOT unknown) — Increment 15A', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    // The coordinator's readPivotDefinition must declare a typed return —
+    // `Promise<WorkbookPivotDefinition>`, not `Promise<unknown>`.
+    expect(src).toMatch(/readPivotDefinition[\s\S]*?:\s*Promise<WorkbookPivotDefinition>/m)
+    expect(src).not.toMatch(/readPivotDefinition[\s\S]*?:\s*Promise<unknown>/m)
   })
 
   test('coordinator has renameWorkbook method', () => {
@@ -493,5 +529,73 @@ describe('@genoffice/sheets architecture boundary (Increment 3I/5/5A — AST-bas
     const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
     // No BrowserWindow.getAllWindows() or broadcast pattern
     expect(stripped).not.toMatch(/getAllWindows\(\)/)
+  })
+
+  test('coordinator has onWorkbookRenamed dep callback (Increment 15A)', () => {
+    // The coordinator deps interface must accept an `onWorkbookRenamed`
+    // callback. The shell wires `updateLegacySessionPath` as this callback
+    // so the legacy SessionInfo.path mirror stays in sync after a
+    // successful auto-rename.
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    expect(src).toMatch(/onWorkbookRenamed\?:\s*\(wcId:\s*number,\s*oldPath:\s*string,\s*newPath:\s*string\)\s*=>\s*void/)
+  })
+
+  test('coordinator renameWorkbook invokes onWorkbookRenamed after success (Increment 15A)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    // The rename method must invoke the callback. Match the property access
+    // + invocation — guards against accidental removal.
+    expect(src).toMatch(/this\.deps\.onWorkbookRenamed/)
+    expect(src).toMatch(/onWorkbookRenamed\(wcId,\s*oldPath,\s*target\)/)
+  })
+
+  test('coordinator has ZERO raw sidecar command construction (Increment 15A)', () => {
+    // The coordinator must NOT construct `{ command: '...' }` sidecar
+    // payloads directly — all sidecar wire-protocol construction lives
+    // behind the engine boundary (ElectronXlsxSidecarEngine).
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/command:\s*['"]read_entries['"]/)
+    expect(stripped).not.toMatch(/command:\s*['"]read_range['"]/)
+    expect(stripped).not.toMatch(/command:\s*['"]open['"]/)
+    expect(stripped).not.toMatch(/command:\s*['"]close['"]/)
+    expect(stripped).not.toMatch(/command:\s*['"]save_archive['"]/)
+  })
+
+  test('coordinator has ZERO global caller state (Increment 15A)', () => {
+    // The coordinator must not keep module-level mutable state keyed by
+    // renderer id or session id — all session state lives inside the
+    // `tabs` Map (per-renderer, lazily registered).
+    const src = readFileSync(join(SRC, 'main', 'sheets-shell-coordinator.ts'), 'utf8')
+    const stripped = src.replace(/\/\*\*?[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(stripped).not.toMatch(/^(let|var|const)\s+(currentWcId|activeSession|globalSession|currentRenderer)\b/m)
+  })
+
+  test('sheets-runtime plumbs onWorkbookRenamed to the coordinator (Increment 15A)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-runtime.ts'), 'utf8')
+    expect(src).toMatch(/SheetsCoordinatorConfig/)
+    expect(src).toMatch(/onWorkbookRenamed/)
+    expect(src).toMatch(/coordinatorConfig/)
+  })
+
+  test('sheets-main wires updateLegacySessionPath as the onWorkbookRenamed callback (Increment 15A)', () => {
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    expect(src).toMatch(/updateLegacySessionPath/)
+    expect(src).toMatch(/onWorkbookRenamed:\s*updateLegacySessionPath/)
+  })
+
+  test('sheets-main extracts updateLegacySessionPath from sheetsFileRenamed (Increment 15A)', () => {
+    // The legacy mirror update helper MUST exist as a separate function
+    // (no push) so the coordinator's callback can invoke it without
+    // triggering a duplicate workbook:renamed event.
+    const src = readFileSync(join(SRC, 'main', 'sheets-main.ts'), 'utf8')
+    expect(src).toMatch(/export function updateLegacySessionPath/)
+    // The helper must NOT push the IPC event itself — only the caller
+    // (sheetsFileRenamed or the coordinator) decides whether to push.
+    // Match the body to ensure no `wc.send(...)` call inside it.
+    const helperBody = src.match(
+      /export function updateLegacySessionPath[\s\S]*?^}/m,
+    )?.[0] ?? ''
+    expect(helperBody.length).toBeGreaterThan(0)
+    expect(helperBody).not.toMatch(/\.send\(/)
   })
 })

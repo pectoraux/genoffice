@@ -34,6 +34,7 @@ import type {
   EngineSaveResult,
   EngineError,
   WorksheetMetadata,
+  WorkbookPivotDefinition,
 } from '@genoffice/runtime-contracts'
 import {
   EngineError as EngineErrorClass,
@@ -43,6 +44,7 @@ import {
 } from '@genoffice/runtime-contracts'
 import type { SavePlan } from '@genoffice/runtime-contracts'
 import type { EntrySource } from '@genoffice/xlsx-gateway'
+import { parsePivotDefinition, PivotParseError } from '@genoffice/xlsx-gateway/src/gateway/xlsx-pivot.js'
 import { SidecarProtocolClient, type SidecarProtocolLike } from './sidecar-protocol-client.js'
 import {
   validateOpenResult,
@@ -51,8 +53,29 @@ import {
   validateFormulaCellsResult,
   validateRecalcResult,
   validateMediaResult,
+  validateReadEntriesResponse,
 } from './sidecar-validators.js'
 import { translateSavePlan, type EngineArchivePatch } from './save-plan-translator.js'
+
+// ── Module-level helpers ──────────────────────────────────────────────
+
+/**
+ * Look up the on-disk extraction path for a requested archive entry name
+ * in a validated `read_entries` response. Returns `undefined` when no
+ * entry with that name was returned (the caller surfaces this as a typed
+ * `InvalidInputError`).
+ *
+ * PURE: no I/O, no globals, no `as` casts.
+ */
+function findEntryPath(
+  entries: readonly { readonly name: string; readonly path: string }[],
+  requestedName: string,
+): string | undefined {
+  for (const entry of entries) {
+    if (entry.name === requestedName) return entry.path
+  }
+  return undefined
+}
 
 // ── Internal types ────────────────────────────────────────────────────
 
@@ -515,37 +538,70 @@ export class ElectronXlsxSidecarEngine implements SpreadsheetEngine {
     }
   }
 
-  async readArchiveEntry(
+  async readPivotDefinition(
     handle: EngineSessionHandle,
-    entryName: string,
-  ): Promise<string> {
+    pivotTablePath: string,
+    cacheDefinitionPath: string,
+  ): Promise<WorkbookPivotDefinition> {
     const session = this.resolveSession(handle)
-    const workDir = mkdtempSync(join(tmpdir(), 'genoffice-archive-read-'))
+    // Generate the work directory ONCE via mkdtempSync (deterministic path).
+    // The exact same `workDir` is cleaned up in `finally` on every path —
+    // no race between two randomUUID() calls, no orphaned temp dir on
+    // success or failure.
+    const workDir = mkdtempSync(join(this.tempDir, 'genoffice-pivot-read-'))
     try {
+      // Single sidecar call — request BOTH XML parts in one round-trip.
+      // The sidecar returns one { name, path } pair per requested entry,
+      // in the same order as the input `entries` array.
       const raw = await this.client.request(
         {
           command: 'read_entries',
           path: session.tempPath,
-          entries: [entryName],
+          entries: [pivotTablePath, cacheDefinitionPath],
           outputDir: workDir,
         },
         SidecarProtocolClient.ARCHIVE_TIMEOUT_MS,
       )
-      // Runtime-validate the read_entries response — NO raw cast
-      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-        throw new EngineErrorClass('Invalid read_entries response: not an object', 'PROTOCOL_ERROR')
+
+      // Runtime-validate the sidecar response via type guards — ZERO
+      // unchecked `as Record` / `as Array` casts. Malformed shapes become
+      // typed EngineError('PROTOCOL_ERROR').
+      const validated = validateReadEntriesResponse(raw)
+
+      // Resolve the on-disk path for each requested entry name.
+      // If the sidecar did not return an entry for a requested name, that
+      // is a typed InvalidInputError (entry not found in the archive).
+      const pivotTablePathOnDisk = findEntryPath(validated.entries, pivotTablePath)
+      if (pivotTablePathOnDisk === undefined) {
+        throw new InvalidInputError(`Archive entry not found: ${pivotTablePath}`)
       }
-      const obj = raw as Record<string, unknown>
-      if (!Array.isArray(obj.entries)) {
-        throw new EngineErrorClass('Invalid read_entries response: missing entries array', 'PROTOCOL_ERROR')
+      const cacheDefinitionPathOnDisk = findEntryPath(validated.entries, cacheDefinitionPath)
+      if (cacheDefinitionPathOnDisk === undefined) {
+        throw new InvalidInputError(`Archive entry not found: ${cacheDefinitionPath}`)
       }
-      const entries = obj.entries as Array<Record<string, unknown>>
-      if (entries.length === 0 || typeof entries[0]?.path !== 'string') {
-        throw new InvalidInputError(`Archive entry not found: ${entryName}`)
+
+      // Read both XML parts from disk.
+      const pivotTableXml = readFileSync(pivotTablePathOnDisk, 'utf8')
+      const cacheDefinitionXml = readFileSync(cacheDefinitionPathOnDisk, 'utf8')
+
+      // Parse via the canonical xlsx-gateway parser. The engine is the
+      // SINGLE translation point between OOXML wire format and the
+      // runtime-independent `WorkbookPivotDefinition` contract. The
+      // parser's return type (`PivotDefinition`) is structurally
+      // assignable to `WorkbookPivotDefinition` (the two types mirror
+      // each other — runtime-contracts cannot depend on xlsx-gateway,
+      // so we keep the contract in runtime-contracts and the parser
+      // in xlsx-gateway; structural typing bridges them).
+      try {
+        return parsePivotDefinition(pivotTableXml, cacheDefinitionXml)
+      } catch (error) {
+        if (error instanceof PivotParseError) {
+          // The parser refused the XML (e.g. missing <location> element).
+          // Surface as a typed InvalidInputError.
+          throw new InvalidInputError(`Pivot parse failed: ${error.message}`)
+        }
+        throw error
       }
-      const filePath = entries[0].path
-      const content = readFileSync(filePath, 'utf8')
-      return content
     } catch (error) {
       throw this.translateError(error)
     } finally {
