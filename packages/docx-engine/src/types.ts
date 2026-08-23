@@ -829,6 +829,9 @@ export interface Block {
   /** margin-relative wp:align of a floating image (Word position-gallery presets) */
   imagePosH?: 'left' | 'center' | 'right'
   imagePosV?: 'top' | 'center' | 'bottom'
+  /** wp:positionH/V relativeFrom base of a floating image (echo/display only) */
+  imagePosHRel?: 'margin' | 'page' | 'column' | 'paragraph' | 'character'
+  imagePosVRel?: 'margin' | 'page' | 'paragraph' | 'line'
   /** picture rotation in degrees clockwise 0-359 (pic a:xfrm rot / 60000) */
   imageRotDeg?: number
   /** picture mirror flips (pic a:xfrm flipH/flipV) */

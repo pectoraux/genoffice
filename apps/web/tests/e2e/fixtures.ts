@@ -321,6 +321,270 @@ export async function readZipEntry(buffer: Buffer, path: string): Promise<string
  * The vertical merge spans both rows of column 1; the merged cell carries
  * rich run content; cell (1,2) has a fill and centered paragraph.
  */
+// ── Deterministic PNG builder (for the image fixtures) ───────────────────────
+
+/** CRC32 (IEEE) for PNG chunks — deterministic, no zlib dependency. */
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    table[n] = c >>> 0
+  }
+  return table
+})()
+
+function crc32(bytes: Uint8Array): number {
+  let c = 0xffffffff
+  for (const b of bytes) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+
+/** Adler-32 for the zlib stream (PNG IDAT uses stored/uncompressed deflate). */
+function adler32(bytes: Uint8Array): number {
+  let a = 1
+  let b = 0
+  for (const byte of bytes) {
+    a = (a + byte) % 65521
+    b = (b + a) % 65521
+  }
+  return ((b << 16) | a) >>> 0
+}
+
+function u32(v: number): Uint8Array {
+  return new Uint8Array([(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff])
+}
+
+/** One PNG chunk: length + type + data + CRC. */
+function pngChunk(type: string, data: Uint8Array): Buffer {
+  const typeBytes = Buffer.from(type, 'latin1')
+  const crcBytes = u32(crc32(Buffer.concat([typeBytes, Buffer.from(data)])))
+  return Buffer.concat([u32(data.length), typeBytes, Buffer.from(data), crcBytes])
+}
+
+/**
+ * Build a deterministic solid-color PNG (no zlib compression — stored
+ * deflate blocks). w/h ≤ 32 keeps it tiny; color is [r,g,b].
+ */
+export function buildSolidPng(w: number, h: number, rgb: [number, number, number]): Buffer {
+  const ihdr = Buffer.concat([
+    u32(w),
+    u32(h),
+    new Uint8Array([8, 2, 0, 0, 0]), // 8-bit truecolor RGB
+  ])
+  // Raw scanlines: filter byte 0 + w RGB pixels
+  const raw: number[] = []
+  for (let y = 0; y < h; y++) {
+    raw.push(0)
+    for (let x = 0; x < w; x++) raw.push(rgb[0], rgb[1], rgb[2])
+  }
+  const rawBytes = new Uint8Array(raw)
+  // zlib stream with stored (uncompressed) deflate blocks
+  const maxStored = 65535
+  const blocks: number[] = [0x78, 0x01]
+  for (let off = 0; off < rawBytes.length; off += maxStored) {
+    const end = Math.min(off + maxStored, rawBytes.length)
+    const isLast = end === rawBytes.length ? 1 : 0
+    const len = end - off
+    blocks.push(isLast, 0, len & 0xff, (len >> 8) & 0xff, ~len & 0xff, (~len >> 8) & 0xff)
+    for (let i = off; i < end; i++) blocks.push(rawBytes[i])
+  }
+  blocks.push(...u32(adler32(rawBytes)))
+  const idat = new Uint8Array(blocks)
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', idat),
+    pngChunk('IEND', new Uint8Array(0)),
+  ])
+}
+
+// ── Word image fixture (editable-image E2E) ──────────────────────────────────
+
+const EMU = 9525 // per CSS px
+
+function imageDrawingXml(
+  rId: string,
+  opts: {
+    cx: number
+    cy: number
+    floating?: boolean
+    wrap?: 'square' | 'topBottom' | 'none' | 'behind'
+    posOffsetX?: number
+    posOffsetY?: number
+    rotDeg?: number
+    flipH?: boolean
+    flipV?: boolean
+    srcRect?: { l: number; t: number; r: number; b: number }
+    align?: 'center' | 'right'
+    docPrId: number
+  },
+): string {
+  const { cx, cy } = opts
+  let xfrmAttrs = ''
+  if (opts.rotDeg) xfrmAttrs += ` rot="${opts.rotDeg * 60000}"`
+  if (opts.flipH) xfrmAttrs += ' flipH="1"'
+  if (opts.flipV) xfrmAttrs += ' flipV="1"'
+  const srcRect = opts.srcRect
+    ? `<a:srcRect l="${Math.round(opts.srcRect.l * 100000)}" t="${Math.round(opts.srcRect.t * 100000)}" r="${Math.round(opts.srcRect.r * 100000)}" b="${Math.round(opts.srcRect.b * 100000)}"/>`
+    : ''
+  const pic = `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${opts.docPrId}" name="Picture ${opts.docPrId}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}"/>${srcRect}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm${xfrmAttrs}><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>`
+  const graphic = `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">${pic}</a:graphicData></a:graphic>`
+  const jc = opts.align ? `<w:pPr><w:jc w:val="${opts.align}"/></w:pPr>` : ''
+  if (!opts.floating) {
+    return `<w:p>${jc}<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="${opts.docPrId}" name="Picture ${opts.docPrId}"/>${graphic}</wp:inline></w:drawing></w:r></w:p>`
+  }
+  const behind = opts.wrap === 'behind' ? '1' : '0'
+  let wrapEl = '<wp:wrapNone/>'
+  if (opts.wrap === 'square') wrapEl = '<wp:wrapSquare wrapText="bothSides"/>'
+  else if (opts.wrap === 'topBottom') wrapEl = '<wp:wrapTopAndBottom/>'
+  const posH = `<wp:positionH relativeFrom="column"><wp:posOffset>${opts.posOffsetX ?? 0}</wp:posOffset></wp:positionH>`
+  const posV = `<wp:positionV relativeFrom="paragraph"><wp:posOffset>${opts.posOffsetY ?? 0}</wp:posOffset></wp:positionV>`
+  return `<w:p>${jc}<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251658240" behindDoc="${behind}" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>${posH}${posV}${wrapEl}<wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${opts.docPrId}" name="Picture ${opts.docPrId}"/>${graphic}</wp:anchor></w:drawing></w:r></w:p>`
+}
+
+/**
+ * Deterministic DOCX exercising the editable-image surfaces:
+ *
+ *   idx 0 — plain paragraph "First paragraph."
+ *   idx 1 — INLINE image (red 16×16, 64×64 px)
+ *   idx 2 — FLOATING image (green 16×16, square wrap left, posOffset)
+ *   idx 3 — NON-DEFAULT SIZE image (blue 16×16, 240×120 px)
+ *   idx 4 — WRAPPING image (cyan 16×16, topBottom wrap)
+ *   idx 5 — ROTATED image (magenta 16×16, 90°)
+ *   idx 6 — FLIPPED image (yellow 16×16, flipH + flipV)
+ *   idx 7 — CROPPED image (gray 16×16, srcRect l=10% t=20% r=10% b=20%)
+ *   idx 8 — trailing plain paragraph "Last paragraph."
+ *   trailing w:sectPr (hidden)
+ *
+ * Media: three PNG parts (image1/2/3.png) shared across drawings — the
+ * canonical parser resolves each blip to a data URL.
+ */
+export async function buildWordImageFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+  const png1 = buildSolidPng(16, 16, [200, 30, 30]) // red
+  const png2 = buildSolidPng(16, 16, [30, 160, 60]) // green
+  const png3 = buildSolidPng(16, 16, [40, 60, 200]) // blue
+  const png4 = buildSolidPng(16, 16, [30, 170, 170]) // cyan
+  const png5 = buildSolidPng(16, 16, [190, 40, 170]) // magenta
+  const png6 = buildSolidPng(16, 16, [210, 200, 40]) // yellow
+  const png7 = buildSolidPng(16, 16, [128, 128, 128]) // gray
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'word/_rels/document.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rIdImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+  <Relationship Id="rIdImg2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image2.png"/>
+  <Relationship Id="rIdImg3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image3.png"/>
+  <Relationship Id="rIdImg4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image4.png"/>
+  <Relationship Id="rIdImg5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image5.png"/>
+  <Relationship Id="rIdImg6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image6.png"/>
+  <Relationship Id="rIdImg7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image7.png"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'word/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>
+    <w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+</w:styles>`,
+  )
+
+  // Seven image paragraphs: inline / floating square / big size / topBottom
+  // wrap / rotated / flipped / cropped.
+  const imgs = [
+    imageDrawingXml('rIdImg1', { cx: 64 * EMU, cy: 64 * EMU, docPrId: 101 }),
+    imageDrawingXml('rIdImg2', {
+      cx: 80 * EMU,
+      cy: 80 * EMU,
+      floating: true,
+      wrap: 'square',
+      posOffsetX: 200000,
+      posOffsetY: 100000,
+      docPrId: 102,
+    }),
+    imageDrawingXml('rIdImg3', { cx: 240 * EMU, cy: 120 * EMU, docPrId: 103 }),
+    imageDrawingXml('rIdImg4', {
+      cx: 100 * EMU,
+      cy: 60 * EMU,
+      floating: true,
+      wrap: 'topBottom',
+      docPrId: 104,
+    }),
+    imageDrawingXml('rIdImg5', { cx: 70 * EMU, cy: 70 * EMU, rotDeg: 90, docPrId: 105 }),
+    imageDrawingXml('rIdImg6', {
+      cx: 70 * EMU,
+      cy: 70 * EMU,
+      flipH: true,
+      flipV: true,
+      docPrId: 106,
+    }),
+    imageDrawingXml('rIdImg7', {
+      cx: 90 * EMU,
+      cy: 90 * EMU,
+      srcRect: { l: 0.1, t: 0.2, r: 0.1, b: 0.2 },
+      docPrId: 107,
+    }),
+  ]
+
+  const body = `
+    <w:p><w:r><w:t xml:space="preserve">First paragraph.</w:t></w:r></w:p>
+    ${imgs.join('\n')}
+    <w:p><w:r><w:t xml:space="preserve">Last paragraph.</w:t></w:r></w:p>
+    <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>`
+
+  addFile(
+    zip,
+    'word/document.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+  <w:body>${body}
+  </w:body>
+</w:document>`,
+  )
+
+  zip.file('word/media/image1.png', png1, { date: FIXED_DATE, createFolders: false })
+  zip.file('word/media/image2.png', png2, { date: FIXED_DATE, createFolders: false })
+  zip.file('word/media/image3.png', png3, { date: FIXED_DATE, createFolders: false })
+  zip.file('word/media/image4.png', png4, { date: FIXED_DATE, createFolders: false })
+  zip.file('word/media/image5.png', png5, { date: FIXED_DATE, createFolders: false })
+  zip.file('word/media/image6.png', png6, { date: FIXED_DATE, createFolders: false })
+  zip.file('word/media/image7.png', png7, { date: FIXED_DATE, createFolders: false })
+
+  return toBytes(zip)
+}
+
 export async function buildWordTableFixture(): Promise<Buffer> {
   const zip = new JSZip()
 

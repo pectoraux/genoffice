@@ -34027,6 +34027,94 @@ var LEFT_RIGHT_CHARS = {
 };
 
 // packages/docx-engine/src/generate.ts
+var EMU_PER_PX2 = 9525;
+function patchImageParagraphXml(xml, patch) {
+  let out = xml;
+  if (patch.rotDeg !== void 0 || patch.flipH !== void 0 || patch.flipV !== void 0) {
+    out = out.replace(/(<pic:spPr[^>]*>[\s\S]*?)<a:xfrm([^>]*)>/, (_whole, prefix, attrs) => {
+      let a = attrs;
+      const setAttr = (name, value) => {
+        a = a.replace(new RegExp(`\\s*\\b${name}="[^"]*"`), "");
+        if (value != null) a += ` ${name}="${value}"`;
+      };
+      if (patch.rotDeg !== void 0) {
+        const norm = (Math.round(patch.rotDeg) % 360 + 360) % 360;
+        setAttr("rot", norm ? String(norm * 6e4) : null);
+      }
+      if (patch.flipH !== void 0) setAttr("flipH", patch.flipH ? "1" : null);
+      if (patch.flipV !== void 0) setAttr("flipV", patch.flipV ? "1" : null);
+      return `${prefix}<a:xfrm${a}>`;
+    });
+  }
+  if (patch.widthPx && patch.heightPx) {
+    const cx = Math.max(1, Math.round(patch.widthPx * EMU_PER_PX2));
+    const cy = Math.max(1, Math.round(patch.heightPx * EMU_PER_PX2));
+    const resize = (tag) => tag.replace(/cx="\d+"/, `cx="${cx}"`).replace(/cy="\d+"/, `cy="${cy}"`);
+    out = out.replace(/<wp:extent[^>]*\/?>/, resize);
+    out = out.replace(/<a:ext[^>]*\/>/, resize);
+  }
+  {
+    const rotM = /<pic:spPr[^>]*>[\s\S]*?<a:xfrm[^>]*?\brot="(-?\d+)"/.exec(out);
+    const extM = /<wp:extent[^>]*?\bcx="(\d+)"[^>]*?\bcy="(\d+)"/.exec(out);
+    const touchRot = patch.rotDeg !== void 0;
+    const touchSize = !!(patch.widthPx && patch.heightPx);
+    if (extM && (touchRot || touchSize && rotM)) {
+      const rad = (rotM ? Number(rotM[1]) : 0) / 6e4 * Math.PI / 180;
+      const cx = Number(extM[1]);
+      const cy = Number(extM[2]);
+      const bw = Math.abs(cx * Math.cos(rad)) + Math.abs(cy * Math.sin(rad));
+      const bh = Math.abs(cx * Math.sin(rad)) + Math.abs(cy * Math.cos(rad));
+      const dx = Math.max(0, Math.round((bw - cx) / 2));
+      const dy = Math.max(0, Math.round((bh - cy) / 2));
+      const ee = `<wp:effectExtent l="${dx}" t="${dy}" r="${dx}" b="${dy}"/>`;
+      if (/<wp:effectExtent\b[^>]*\/>/.test(out))
+        out = out.replace(/<wp:effectExtent\b[^>]*\/>/, ee);
+      else out = out.replace(/(<wp:extent\b[^>]*\/?>)/, `$1${ee}`);
+    }
+  }
+  if (patch.align !== void 0) {
+    out = out.replace(/<w:jc w:val="[^"]*"\/>/, "");
+    out = out.replace(/<w:pPr\s*\/>/, "<w:pPr></w:pPr>");
+    const align = patch.align === "left" ? null : patch.align;
+    if (align) {
+      const jc = `<w:jc w:val="${align}"/>`;
+      const pPr = /(<w:pPr[^>]*>)([\s\S]*?)<\/w:pPr>/.exec(out);
+      if (pPr) {
+        const [whole, open, inner] = pPr;
+        const rPrIdx = inner.indexOf("<w:rPr>");
+        const patched = rPrIdx === -1 ? inner + jc : inner.slice(0, rPrIdx) + jc + inner.slice(rPrIdx);
+        out = out.slice(0, pPr.index) + open + patched + "</w:pPr>" + out.slice(pPr.index + whole.length);
+      } else {
+        out = out.replace(/(<w:p(?: [^>]*)?>)/, `$1<w:pPr>${jc}</w:pPr>`);
+      }
+    }
+  }
+  if (patch.posOffsetX !== void 0) {
+    out = out.replace(
+      /(<wp:positionH[^>]*>[\s\S]*?)<wp:posOffset>-?\d+<\/wp:posOffset>([\s\S]*?<\/wp:positionH>)/,
+      `$1<wp:posOffset>${Math.round(patch.posOffsetX)}</wp:posOffset>$2`
+    );
+  }
+  if (patch.posOffsetY !== void 0) {
+    out = out.replace(
+      /(<wp:positionV[^>]*>[\s\S]*?)<wp:posOffset>-?\d+<\/wp:posOffset>([\s\S]*?<\/wp:positionV>)/,
+      `$1<wp:posOffset>${Math.round(patch.posOffsetY)}</wp:posOffset>$2`
+    );
+  }
+  if (patch.crop !== void 0) {
+    const rect = patch.crop;
+    const hasCrop = !!rect && !!(rect.l || rect.t || rect.r || rect.b);
+    const tag = hasCrop ? `<a:srcRect l="${Math.round((rect.l || 0) * 1e5)}" t="${Math.round(
+      (rect.t || 0) * 1e5
+    )}" r="${Math.round((rect.r || 0) * 1e5)}" b="${Math.round((rect.b || 0) * 1e5)}"/>` : "";
+    if (/<a:srcRect\b[^>]*\/>/.test(out)) {
+      out = hasCrop ? out.replace(/<a:srcRect\b[^>]*\/>/, tag) : out.replace(/<a:srcRect\b[^>]*\/>/, "");
+    } else if (hasCrop) {
+      out = out.replace(/(<pic:blipFill>[\s\S]*?<a:blip[^>]*\/>)/, `$1${tag}`);
+    }
+  }
+  return out;
+}
 var WRAP_ELEMENT_RE = /<wp:wrapNone\s*\/>|<wp:wrapSquare[^>]*\/>|<wp:wrapSquare[\s\S]*?<\/wp:wrapSquare>|<wp:wrapTight[\s\S]*?<\/wp:wrapTight>|<wp:wrapThrough[\s\S]*?<\/wp:wrapThrough>|<wp:wrapTopAndBottom\s*\/>|<wp:wrapTopAndBottom[\s\S]*?<\/wp:wrapTopAndBottom>/g;
 function applyImageWrap(xml, wrap, posOffset, marginAlign) {
   const hasAnchor = /<wp:anchor[\s>]/.test(xml);
@@ -36785,10 +36873,10 @@ function ruleDisplayOf(xml) {
     const color = /<a:solidFill>\s*<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(ln)?.[1];
     if (color) out.ruleColorHex = color.toUpperCase();
     const w = parseInt(/<a:ln\b[^>]*\bw="(\d+)"/.exec(ln)?.[1] ?? "", 10);
-    if (Number.isFinite(w) && w > 0) out.ruleThicknessPx = Math.max(1, Math.round(w / EMU_PER_PX2));
+    if (Number.isFinite(w) && w > 0) out.ruleThicknessPx = Math.max(1, Math.round(w / EMU_PER_PX3));
   }
   const cx = parseInt(/<wp:extent cx="(\d+)"/.exec(xml)?.[1] ?? "", 10);
-  if (Number.isFinite(cx) && cx > 0) out.ruleWidthPx = Math.round(cx / EMU_PER_PX2);
+  if (Number.isFinite(cx) && cx > 0) out.ruleWidthPx = Math.round(cx / EMU_PER_PX3);
   return out;
 }
 function isInvisibleEmptyShape(xml) {
@@ -37009,8 +37097,8 @@ function vmlWordArtBox(shape) {
       const pt2 = parseFloat(new RegExp(`(?:^|;)\\s*${key}:(-?[\\d.]+)pt`).exec(style)?.[1] ?? "");
       return Number.isFinite(pt2) ? pt2 / 72 * 96 : 0;
     };
-    box.offsetXEmu = Math.round(marginPx("margin-left") * EMU_PER_PX2);
-    box.offsetYEmu = Math.round(marginPx("margin-top") * EMU_PER_PX2);
+    box.offsetXEmu = Math.round(marginPx("margin-left") * EMU_PER_PX3);
+    box.offsetYEmu = Math.round(marginPx("margin-top") * EMU_PER_PX3);
   }
   const tpStyle = attrsOf(tp)["style"] ?? "";
   const family = /font-family:\s*"?([^;"]+)"?/.exec(tpStyle)?.[1]?.trim();
@@ -37077,14 +37165,14 @@ function lineBoxOf(shape, theme) {
   const ext = findChild(xfrm ?? {}, "a:ext");
   const cx = ext ? parseInt(attrsOf(ext)["cx"] ?? "", 10) : NaN;
   const cy = ext ? parseInt(attrsOf(ext)["cy"] ?? "", 10) : NaN;
-  if (Number.isFinite(cx) && cx > 0) box.widthPx = Math.round(cx / EMU_PER_PX2);
+  if (Number.isFinite(cx) && cx > 0) box.widthPx = Math.round(cx / EMU_PER_PX3);
   const straight = box.prst === "line" || box.prst === "lineArrow" || box.prst === "lineArrowDouble";
   if (straight) {
     if (xfrmAttrs["flipH"] === "1" || xfrmAttrs["flipH"] === "true") box.flipH = true;
     if (xfrmAttrs["flipV"] === "1" || xfrmAttrs["flipV"] === "true") box.flipV = true;
   }
   if (Number.isFinite(cy) && cy > 0) {
-    box.heightPx = Math.round(cy / EMU_PER_PX2);
+    box.heightPx = Math.round(cy / EMU_PER_PX3);
     box.minHeightPx = box.heightPx;
     if (straight && (box.heightPx > 12 || box.flipH || box.flipV)) box.lineDiag = true;
   } else {
@@ -37408,7 +37496,7 @@ function extractTextboxes(xml, ctx, opts) {
         if (border) box.borderColor = border;
         const w = parseInt(attrsOf(ln)["w"] ?? "", 10);
         if (Number.isFinite(w) && w > 0) {
-          box.borderWidthPx = Math.round(w / EMU_PER_PX2 * 100) / 100;
+          box.borderWidthPx = Math.round(w / EMU_PER_PX3 * 100) / 100;
         }
         const dash = attrsOf(findChild(ln, "a:prstDash") ?? {})["val"];
         if (dash) box.borderDash = /dot/i.test(dash) ? "dotted" : "dashed";
@@ -37437,12 +37525,12 @@ function extractTextboxes(xml, ctx, opts) {
       if (Number.isFinite(rot) && rot !== 0) box.rotDeg = Math.round(rot / 6e4);
       const ext = findChild(xfrm ?? {}, "a:ext");
       const cx = ext ? parseInt(attrsOf(ext)["cx"] ?? "", 10) : NaN;
-      if (Number.isFinite(cx) && cx > 0) box.widthPx = Math.round(cx / EMU_PER_PX2);
+      if (Number.isFinite(cx) && cx > 0) box.widthPx = Math.round(cx / EMU_PER_PX3);
       const bodyPrNode = findChild(shape, "wps:bodyPr");
       const autoFit = bodyPrNode ? !!findChild(bodyPrNode, "a:spAutoFit") : false;
       const cy = ext ? parseInt(attrsOf(ext)["cy"] ?? "", 10) : NaN;
       if (!autoFit && Number.isFinite(cy) && cy > 0) {
-        box.heightPx = Math.round(cy / EMU_PER_PX2);
+        box.heightPx = Math.round(cy / EMU_PER_PX3);
         box.minHeightPx = box.heightPx;
       }
     }
@@ -37451,7 +37539,7 @@ function extractTextboxes(xml, ctx, opts) {
       const attrs = attrsOf(bodyPr);
       const inset = (name) => {
         const emu = parseInt(attrs[name] ?? "", 10);
-        return Number.isFinite(emu) && emu >= 0 ? Math.round(emu / EMU_PER_PX2 * 100) / 100 : void 0;
+        return Number.isFinite(emu) && emu >= 0 ? Math.round(emu / EMU_PER_PX3 * 100) / 100 : void 0;
       };
       box.insetLeftPx = inset("lIns");
       box.insetTopPx = inset("tIns");
@@ -37533,8 +37621,8 @@ function extractTextboxes(xml, ctx, opts) {
           paras: [],
           readOnly: true,
           fillImageDataUrl: dataUrl,
-          widthPx: Math.round(parseInt(extent[1], 10) / EMU_PER_PX2),
-          heightPx: Math.round(parseInt(extent[2], 10) / EMU_PER_PX2),
+          widthPx: Math.round(parseInt(extent[1], 10) / EMU_PER_PX3),
+          heightPx: Math.round(parseInt(extent[2], 10) / EMU_PER_PX3),
           insetTopPx: 0,
           insetRightPx: 0,
           insetBottomPx: 0,
@@ -38142,8 +38230,8 @@ function buildRun(rNode, link, theme, themeFonts, mediaByRid, styles, paraRtl) {
         const extent = /<wp:extent[^>]*cx="(\d+)"[^>]*cy="(\d+)"/.exec(drawingXml);
         const cx = Number(extent?.[1]);
         const cy = Number(extent?.[2]);
-        if (cx > 0) image.widthPx = Math.round(cx / EMU_PER_PX2);
-        if (cy > 0) image.heightPx = Math.round(cy / EMU_PER_PX2);
+        if (cx > 0) image.widthPx = Math.round(cx / EMU_PER_PX3);
+        if (cy > 0) image.heightPx = Math.round(cy / EMU_PER_PX3);
         if (/<wp:anchor[\s>]/.test(drawingXml)) {
           const meta = imageMeta(drawingXml);
           if (meta.imageWrap) image.wrap = meta.imageWrap;
@@ -38755,8 +38843,8 @@ async function hfImages(zip, partPath, partXml) {
     const extent = /<wp:extent[^>]*\/?>/.exec(frag)?.[0] ?? "";
     const cx = parseInt(/cx="(\d+)"/.exec(extent)?.[1] ?? "", 10);
     const cy = parseInt(/cy="(\d+)"/.exec(extent)?.[1] ?? "", 10);
-    if (Number.isFinite(cx) && cx > 0) image.widthPx = Math.round(cx / EMU_PER_PX2);
-    if (Number.isFinite(cy) && cy > 0) image.heightPx = Math.round(cy / EMU_PER_PX2);
+    if (Number.isFinite(cx) && cx > 0) image.widthPx = Math.round(cx / EMU_PER_PX3);
+    if (Number.isFinite(cy) && cy > 0) image.heightPx = Math.round(cy / EMU_PER_PX3);
     if (/<wp:anchor[\s>]/.test(frag)) {
       image.floating = true;
       const anchorTag = /<wp:anchor[^>]*>/.exec(frag)?.[0] ?? "";
@@ -38814,7 +38902,7 @@ function readAnchorPos(frag, image) {
         image.posV = align;
       }
     } else if (offset != null) {
-      const px = Math.round(Number(offset) / EMU_PER_PX2);
+      const px = Math.round(Number(offset) / EMU_PER_PX3);
       const rel = m[1] === "page" ? "page" : "margin";
       if (axis === "H") {
         image.posXPx = px;
@@ -39262,7 +39350,7 @@ function fieldLabel(xml) {
   }
   return "Field (TOC/page number/etc.)";
 }
-var EMU_PER_PX2 = 9525;
+var EMU_PER_PX3 = 9525;
 function rectFrac(tag, name) {
   const v = parseFloat(new RegExp(`\\b${name}="(-?[\\d.]+)"`).exec(tag)?.[1] ?? "");
   return Number.isFinite(v) ? v / 1e5 : 0;
@@ -39273,8 +39361,8 @@ function imageMeta(xml) {
   if (extent) {
     const cx = parseInt(/cx="(\d+)"/.exec(extent)?.[1] ?? "", 10);
     const cy = parseInt(/cy="(\d+)"/.exec(extent)?.[1] ?? "", 10);
-    if (Number.isFinite(cx) && cx > 0) meta.imageWidthPx = Math.round(cx / EMU_PER_PX2);
-    if (Number.isFinite(cy) && cy > 0) meta.imageHeightPx = Math.round(cy / EMU_PER_PX2);
+    if (Number.isFinite(cx) && cx > 0) meta.imageWidthPx = Math.round(cx / EMU_PER_PX3);
+    if (Number.isFinite(cy) && cy > 0) meta.imageHeightPx = Math.round(cy / EMU_PER_PX3);
   }
   const jc = /<w:jc w:val="([^"]+)"/.exec(xml)?.[1];
   if (jc === "center") meta.imageAlign = "center";
@@ -39326,6 +39414,12 @@ function imageMeta(xml) {
     if (offsetY !== void 0) meta.imageOffsetYEmu = parseInt(offsetY, 10);
     const posHFrom = /<wp:positionH[^>]*relativeFrom="([^"]+)"/.exec(xml)?.[1];
     const posVFrom = /<wp:positionV[^>]*relativeFrom="([^"]+)"/.exec(xml)?.[1];
+    if (posHFrom === "margin" || posHFrom === "page" || posHFrom === "column" || posHFrom === "paragraph" || posHFrom === "character") {
+      meta.imagePosHRel = posHFrom;
+    }
+    if (posVFrom === "margin" || posVFrom === "page" || posVFrom === "paragraph" || posVFrom === "line") {
+      meta.imagePosVRel = posVFrom;
+    }
     const alignH = /<wp:align>(left|center|right)<\/wp:align>/.exec(posHBody)?.[1];
     const alignV = /<wp:align>(top|center|bottom)<\/wp:align>/.exec(posVBody)?.[1];
     if (posHFrom === "margin" && posVFrom === "margin" && alignH && alignV) {
@@ -39527,10 +39621,10 @@ function extractLockedCanvas(xml, ctx) {
     const ext = findChild(xfrm ?? {}, "a:ext");
     if (!off || !ext) continue;
     const shape = {
-      xPx: Math.round((emuAttr(off, "x", 0) - chOffX) * scaleX / EMU_PER_PX2),
-      yPx: Math.round((emuAttr(off, "y", 0) - chOffY) * scaleY / EMU_PER_PX2),
-      wPx: Math.round(emuAttr(ext, "cx", 0) * scaleX / EMU_PER_PX2),
-      hPx: Math.round(emuAttr(ext, "cy", 0) * scaleY / EMU_PER_PX2)
+      xPx: Math.round((emuAttr(off, "x", 0) - chOffX) * scaleX / EMU_PER_PX3),
+      yPx: Math.round((emuAttr(off, "y", 0) - chOffY) * scaleY / EMU_PER_PX3),
+      wPx: Math.round(emuAttr(ext, "cx", 0) * scaleX / EMU_PER_PX3),
+      hPx: Math.round(emuAttr(ext, "cy", 0) * scaleY / EMU_PER_PX3)
     };
     if (shape.wPx <= 0 || shape.hPx <= 0) continue;
     const rot = parseInt(attrsOf(xfrm)["rot"] ?? "", 10);
@@ -39612,8 +39706,8 @@ function extractLockedCanvas(xml, ctx) {
     shapes.sort((a, b) => a.yPx - b.yPx);
   }
   return {
-    widthPx: Math.round(extCx / EMU_PER_PX2),
-    heightPx: Math.round(extCy / EMU_PER_PX2),
+    widthPx: Math.round(extCx / EMU_PER_PX3),
+    heightPx: Math.round(extCy / EMU_PER_PX3),
     shapes,
     canvas: true
   };
@@ -39625,8 +39719,8 @@ async function extractDiagramDrawing(xml, ctx) {
   const file = drawingPath !== dmPath ? ctx.zip.file(drawingPath) : null;
   if (!file) return null;
   const extent = /<wp:extent[^>]*cx="(\d+)"[^>]*cy="(\d+)"/.exec(xml);
-  const widthPx = extent ? Math.round(parseInt(extent[1], 10) / EMU_PER_PX2) : 0;
-  const heightPx = extent ? Math.round(parseInt(extent[2], 10) / EMU_PER_PX2) : 0;
+  const widthPx = extent ? Math.round(parseInt(extent[1], 10) / EMU_PER_PX3) : 0;
+  const heightPx = extent ? Math.round(parseInt(extent[2], 10) / EMU_PER_PX3) : 0;
   if (!widthPx || !heightPx) return null;
   let parsed;
   try {
@@ -39666,10 +39760,10 @@ async function extractDiagramDrawing(xml, ctx) {
     const ext = xfrm ? findChild(xfrm, "a:ext") : void 0;
     if (!off || !ext) continue;
     const shape = {
-      xPx: Math.round(parseInt(attrsOf(off)["x"] ?? "0", 10) / EMU_PER_PX2),
-      yPx: Math.round(parseInt(attrsOf(off)["y"] ?? "0", 10) / EMU_PER_PX2),
-      wPx: Math.round(parseInt(attrsOf(ext)["cx"] ?? "0", 10) / EMU_PER_PX2),
-      hPx: Math.round(parseInt(attrsOf(ext)["cy"] ?? "0", 10) / EMU_PER_PX2)
+      xPx: Math.round(parseInt(attrsOf(off)["x"] ?? "0", 10) / EMU_PER_PX3),
+      yPx: Math.round(parseInt(attrsOf(off)["y"] ?? "0", 10) / EMU_PER_PX3),
+      wPx: Math.round(parseInt(attrsOf(ext)["cx"] ?? "0", 10) / EMU_PER_PX3),
+      hPx: Math.round(parseInt(attrsOf(ext)["cy"] ?? "0", 10) / EMU_PER_PX3)
     };
     if (shape.wPx <= 0 || shape.hPx <= 0) continue;
     const rot = parseInt(attrsOf(xfrm)["rot"] ?? "", 10);
@@ -39781,8 +39875,8 @@ async function extractChart(xml, ctx) {
     const extent = /<wp:extent cx="(\d+)" cy="(\d+)"/.exec(xml);
     const cx = extent ? parseInt(extent[1], 10) : NaN;
     const cy = extent ? parseInt(extent[2], 10) : NaN;
-    if (Number.isFinite(cx) && cx > 0) display.widthPx = Math.round(cx / EMU_PER_PX2);
-    if (Number.isFinite(cy) && cy > 0) display.heightPx = Math.round(cy / EMU_PER_PX2);
+    if (Number.isFinite(cx) && cx > 0) display.widthPx = Math.round(cx / EMU_PER_PX3);
+    if (Number.isFinite(cy) && cy > 0) display.heightPx = Math.round(cy / EMU_PER_PX3);
   }
   return display;
 }
@@ -40395,7 +40489,7 @@ var IMAGE_EXT = {
   "image/jpeg": "jpg",
   "image/gif": "gif"
 };
-var EMU_PER_PX3 = 9525;
+var EMU_PER_PX4 = 9525;
 var CORE_PROPS_PATH = "docProps/core.xml";
 function patchCoreProps(xml, savedAt) {
   const iso = (savedAt ?? (/* @__PURE__ */ new Date()).toISOString()).replace(/\.\d{3}Z$/, "Z");
@@ -40452,8 +40546,8 @@ async function saveDocx(parsed, finalBlocks, options = {}) {
   };
   const embedImage = (image) => {
     const rId = embedImageMedia(image);
-    const cx = Math.max(1, Math.round(image.widthPx * EMU_PER_PX3));
-    const cy = Math.max(1, Math.round(image.heightPx * EMU_PER_PX3));
+    const cx = Math.max(1, Math.round(image.widthPx * EMU_PER_PX4));
+    const cy = Math.max(1, Math.round(image.heightPx * EMU_PER_PX4));
     const rot = image.rotDeg ? (Math.round(image.rotDeg) % 360 + 360) % 360 : 0;
     const rad = rot * Math.PI / 180;
     const bw = Math.abs(cx * Math.cos(rad)) + Math.abs(cy * Math.sin(rad));
@@ -41759,6 +41853,185 @@ function expectSerializedTable(value, field) {
     ...headerRows !== void 0 ? { headerRows } : {}
   };
 }
+var IMAGE_WRAPS = [
+  "inline",
+  "square-left",
+  "square-right",
+  "tight-left",
+  "tight-right",
+  "through-left",
+  "through-right",
+  "topBottom",
+  "behind",
+  "front"
+];
+var IMAGE_ALIGNS = ["left", "center", "right"];
+var IMAGE_POS_H = ["left", "center", "right"];
+var IMAGE_POS_V = ["top", "center", "bottom"];
+var IMAGE_POS_H_RELS = ["margin", "page", "column", "paragraph", "character"];
+var IMAGE_POS_V_RELS = ["margin", "page", "paragraph", "line"];
+var MAX_IMAGE_DIM_PX = 1e4;
+var MAX_IMAGE_OFFSET_EMU = 5e7;
+var MAX_IMAGE_BASE64_CHARS = 11e6;
+var IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|gif);base64,[A-Za-z0-9+/=]*$/;
+var IMAGE_BASE64_RE = /^[A-Za-z0-9+/=]+$/;
+var IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif"];
+function expectImageRect(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object {l,t,r,b}`);
+  }
+  const rect = {};
+  for (const side of ["l", "t", "r", "b"]) {
+    const v = value[side];
+    if (v === void 0 || v === null) {
+      rect[side] = 0;
+      continue;
+    }
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      throw new OfficeValidationError("validation", `${field}.${side} must be a number`);
+    }
+    if (v < 0 || v > 1) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.${side} must be a fraction within 0..1`
+      );
+    }
+    rect[side] = v;
+  }
+  return { l: rect.l ?? 0, t: rect.t ?? 0, r: rect.r ?? 0, b: rect.b ?? 0 };
+}
+function expectImageDim(value, field) {
+  const v = expectOptionalNumber(value, field);
+  if (v !== void 0 && (!Number.isInteger(v) || v < 1 || v > MAX_IMAGE_DIM_PX)) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field} must be an integer 1..${MAX_IMAGE_DIM_PX}`
+    );
+  }
+  return v;
+}
+function expectImageOffset(value, field) {
+  const v = expectOptionalNumber(value, field);
+  if (v !== void 0 && (!Number.isInteger(v) || Math.abs(v) > MAX_IMAGE_OFFSET_EMU)) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field} must be an integer within \xB1${MAX_IMAGE_OFFSET_EMU} EMU`
+    );
+  }
+  return v;
+}
+function expectEnumString(value, allowed, field) {
+  const s = expectOptionalString(value, field, 20);
+  if (s === void 0) return void 0;
+  if (!allowed.includes(s)) {
+    throw new OfficeValidationError("validation", `${field} must be one of: ${allowed.join(", ")}`);
+  }
+  return s;
+}
+function expectSerializedImage(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  let imageDataUrl = null;
+  if (value.imageDataUrl !== void 0 && value.imageDataUrl !== null) {
+    const s = expectString(value.imageDataUrl, `${field}.imageDataUrl`);
+    if (!IMAGE_DATA_URL_RE.test(s) || s.length > MAX_IMAGE_BASE64_CHARS) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.imageDataUrl must be a data:image/(png|jpeg|gif);base64 URL (max ${MAX_IMAGE_BASE64_CHARS} chars)`
+      );
+    }
+    imageDataUrl = s;
+  }
+  const widthPx = expectImageDim(value.widthPx, `${field}.widthPx`);
+  const heightPx = expectImageDim(value.heightPx, `${field}.heightPx`);
+  if (widthPx === void 0 !== (heightPx === void 0)) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.widthPx and ${field}.heightPx must be present together`
+    );
+  }
+  const crop = value.crop !== void 0 && value.crop !== null ? expectImageRect(value.crop, `${field}.crop`) : void 0;
+  const fillRect = value.fillRect !== void 0 && value.fillRect !== null ? expectImageRect(value.fillRect, `${field}.fillRect`) : void 0;
+  const align = expectEnumString(value.align, IMAGE_ALIGNS, `${field}.align`);
+  const wrap = expectEnumString(value.wrap, IMAGE_WRAPS, `${field}.wrap`);
+  const offsetXEmu = expectImageOffset(value.offsetXEmu, `${field}.offsetXEmu`);
+  const offsetYEmu = expectImageOffset(value.offsetYEmu, `${field}.offsetYEmu`);
+  const posH = expectEnumString(value.posH, IMAGE_POS_H, `${field}.posH`);
+  const posV = expectEnumString(value.posV, IMAGE_POS_V, `${field}.posV`);
+  const posHRel = expectEnumString(value.posHRel, IMAGE_POS_H_RELS, `${field}.posHRel`);
+  const posVRel = expectEnumString(value.posVRel, IMAGE_POS_V_RELS, `${field}.posVRel`);
+  const rotRaw = expectOptionalNumber(value.rotDeg, `${field}.rotDeg`);
+  if (rotRaw !== void 0 && (!Number.isInteger(rotRaw) || rotRaw < 0 || rotRaw > 359)) {
+    throw new OfficeValidationError("validation", `${field}.rotDeg must be an integer 0..359`);
+  }
+  const flipH = expectOptionalBoolean(value.flipH, `${field}.flipH`);
+  const flipV = expectOptionalBoolean(value.flipV, `${field}.flipV`);
+  return {
+    imageDataUrl,
+    ...widthPx !== void 0 ? { widthPx } : {},
+    ...heightPx !== void 0 ? { heightPx } : {},
+    ...crop !== void 0 ? { crop } : {},
+    ...fillRect !== void 0 ? { fillRect } : {},
+    ...align !== void 0 ? { align } : {},
+    ...wrap !== void 0 ? { wrap } : {},
+    ...offsetXEmu !== void 0 ? { offsetXEmu } : {},
+    ...offsetYEmu !== void 0 ? { offsetYEmu } : {},
+    ...posH !== void 0 ? { posH } : {},
+    ...posV !== void 0 ? { posV } : {},
+    ...posHRel !== void 0 ? { posHRel } : {},
+    ...posVRel !== void 0 ? { posVRel } : {},
+    ...rotRaw !== void 0 ? { rotDeg: rotRaw } : {},
+    ...flipH !== void 0 ? { flipH } : {},
+    ...flipV !== void 0 ? { flipV } : {}
+  };
+}
+function expectSerializedNewImage(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const base64 = expectString(value.base64, `${field}.base64`);
+  if (base64.length < 32 || base64.length > MAX_IMAGE_BASE64_CHARS || !IMAGE_BASE64_RE.test(base64)) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.base64 must be standard base64 (32..${MAX_IMAGE_BASE64_CHARS} chars)`
+    );
+  }
+  const mimeRaw = expectString(value.mime, `${field}.mime`);
+  if (!IMAGE_MIMES.includes(mimeRaw)) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.mime must be one of: ${IMAGE_MIMES.join(", ")}`
+    );
+  }
+  const widthPx = expectImageDim(value.widthPx, `${field}.widthPx`);
+  const heightPx = expectImageDim(value.heightPx, `${field}.heightPx`);
+  if (widthPx === void 0 || heightPx === void 0) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.widthPx and ${field}.heightPx are required for a new image`
+    );
+  }
+  const align = expectEnumString(value.align, IMAGE_ALIGNS, `${field}.align`);
+  const wrap = expectEnumString(value.wrap, IMAGE_WRAPS, `${field}.wrap`);
+  const rotRaw = expectOptionalNumber(value.rotDeg, `${field}.rotDeg`);
+  if (rotRaw !== void 0 && (!Number.isInteger(rotRaw) || rotRaw < 0 || rotRaw > 359)) {
+    throw new OfficeValidationError("validation", `${field}.rotDeg must be an integer 0..359`);
+  }
+  const flipH = expectOptionalBoolean(value.flipH, `${field}.flipH`);
+  const flipV = expectOptionalBoolean(value.flipV, `${field}.flipV`);
+  return {
+    base64,
+    mime: mimeRaw,
+    widthPx,
+    heightPx,
+    ...align !== void 0 ? { align } : {},
+    ...wrap !== void 0 ? { wrap } : {},
+    ...rotRaw !== void 0 ? { rotDeg: rotRaw } : {},
+    ...flipH !== void 0 ? { flipH } : {},
+    ...flipV !== void 0 ? { flipV } : {}
+  };
+}
 function expectSerializedBlock(value, index) {
   if (!isRecord(value)) {
     throw new OfficeValidationError("validation", `blocks[${index}] must be an object`);
@@ -41798,12 +42071,46 @@ function expectSerializedBlock(value, index) {
       `blocks[${index}] is an edited table but carries no table payload`
     );
   }
+  let image;
+  if (value.image !== void 0 && value.image !== null) {
+    if (type !== "image") {
+      throw new OfficeValidationError(
+        "validation",
+        `blocks[${index}].image is only allowed on type 'image' blocks`
+      );
+    }
+    image = expectSerializedImage(value.image, `blocks[${index}].image`);
+  }
+  let newImage;
+  if (value.newImage !== void 0 && value.newImage !== null) {
+    if (type !== "image" || docxIndex !== null) {
+      throw new OfficeValidationError(
+        "validation",
+        `blocks[${index}].newImage is only allowed on new image blocks (docxIndex null)`
+      );
+    }
+    newImage = expectSerializedNewImage(value.newImage, `blocks[${index}].newImage`);
+  }
+  if (type === "image" && docxIndex === null && newImage === void 0) {
+    throw new OfficeValidationError(
+      "validation",
+      `blocks[${index}] is a new image block but carries no newImage payload`
+    );
+  }
+  if (type === "image" && value.edited === true && docxIndex !== null && image === void 0) {
+    throw new OfficeValidationError(
+      "validation",
+      `blocks[${index}] is an edited image but carries no image payload`
+    );
+  }
   const block = {
     docxIndex,
     type,
     text,
     ...runs !== void 0 ? { runs } : {},
     ...table !== void 0 ? { table } : {},
+    ...image !== void 0 ? { image } : {},
+    ...newImage !== void 0 ? { newImage } : {},
     ...value.level !== void 0 ? { level: expectNumber(value.level, `blocks[${index}].level`) } : {},
     ...value.listKind !== void 0 ? (() => {
       const k = value.listKind;
@@ -42123,18 +42430,101 @@ function toTableModel(t) {
   if (t.bidiVisual) model.bidiVisual = t.bidiVisual;
   return model;
 }
+function wireWrapOf(block) {
+  return block.imageWrap;
+}
+function serializeImage(block) {
+  if (!block.imageDataUrl) return void 0;
+  return {
+    imageDataUrl: block.imageDataUrl,
+    ...block.imageWidthPx !== void 0 ? { widthPx: block.imageWidthPx } : {},
+    ...block.imageHeightPx !== void 0 ? { heightPx: block.imageHeightPx } : {},
+    ...block.imageCrop ? { crop: { ...block.imageCrop } } : {},
+    ...block.imageFillRect ? { fillRect: { ...block.imageFillRect } } : {},
+    ...block.imageAlign ? { align: block.imageAlign } : {},
+    ...wireWrapOf(block) ? { wrap: wireWrapOf(block) } : {},
+    ...block.imageOffsetXEmu !== void 0 ? { offsetXEmu: block.imageOffsetXEmu } : {},
+    ...block.imageOffsetYEmu !== void 0 ? { offsetYEmu: block.imageOffsetYEmu } : {},
+    ...block.imagePosH ? { posH: block.imagePosH } : {},
+    ...block.imagePosV ? { posV: block.imagePosV } : {},
+    ...block.imagePosHRel ? { posHRel: block.imagePosHRel } : {},
+    ...block.imagePosVRel ? { posVRel: block.imagePosVRel } : {},
+    ...block.imageRotDeg !== void 0 ? { rotDeg: block.imageRotDeg } : {},
+    ...block.imageFlipH ? { flipH: true } : {},
+    ...block.imageFlipV ? { flipV: true } : {}
+  };
+}
+function cropOf(crop) {
+  return { l: crop?.l ?? 0, t: crop?.t ?? 0, r: crop?.r ?? 0, b: crop?.b ?? 0 };
+}
+function cropsEqual(a, b) {
+  return a.l === b.l && a.t === b.t && a.r === b.r && a.b === b.b;
+}
+function imagePatchFromWire(wire, original) {
+  const patch = {};
+  const w = wire.widthPx ?? null;
+  const h = wire.heightPx ?? null;
+  if (w !== null && h !== null && (w !== (original.imageWidthPx ?? null) || h !== (original.imageHeightPx ?? null))) {
+    patch.widthPx = w;
+    patch.heightPx = h;
+  }
+  const align = wire.align ?? null;
+  if (align !== (original.imageAlign ?? null)) patch.align = align;
+  const wrap = wire.wrap === "inline" ? null : wire.wrap;
+  const origWrap = original.imageWrap ?? null;
+  if (wrap !== origWrap) patch.wrap = wrap;
+  const offX = wire.offsetXEmu;
+  if (offX !== void 0 && offX !== (original.imageOffsetXEmu ?? void 0)) {
+    patch.posOffsetX = offX;
+  }
+  const offY = wire.offsetYEmu;
+  if (offY !== void 0 && offY !== (original.imageOffsetYEmu ?? void 0)) {
+    patch.posOffsetY = offY;
+  }
+  const rot = wire.rotDeg ?? 0;
+  if (rot !== (original.imageRotDeg ?? 0)) patch.rotDeg = rot;
+  const flipH = wire.flipH === true;
+  if (flipH !== (original.imageFlipH ?? false)) patch.flipH = flipH;
+  const flipV = wire.flipV === true;
+  if (flipV !== (original.imageFlipV ?? false)) patch.flipV = flipV;
+  const crop = cropOf(wire.crop);
+  if (!cropsEqual(crop, cropOf(original.imageCrop))) patch.crop = crop;
+  const posH = wire.posH ?? null;
+  const posV = wire.posV ?? null;
+  if (posH && posV && (posH !== (original.imagePosH ?? null) || posV !== (original.imagePosV ?? null))) {
+    patch.posH = posH;
+    patch.posV = posV;
+    if (patch.wrap === void 0) patch.wrap = wrap;
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+function toNewImage(n) {
+  return {
+    base64: n.base64,
+    mime: n.mime,
+    widthPx: n.widthPx,
+    heightPx: n.heightPx,
+    ...n.align ? { align: n.align } : {},
+    ...n.wrap && n.wrap !== "inline" ? { wrap: n.wrap } : {},
+    ...n.rotDeg ? { rotDeg: n.rotDeg } : {},
+    ...n.flipH ? { flipH: true } : {},
+    ...n.flipV ? { flipV: true } : {}
+  };
+}
 function serializeBlock(block) {
   const runs = block.runs ?? [];
   const text = runs.map((r) => r.text).join("");
   const type = block.hidden ? "hidden" : block.type === "heading" ? "heading" : block.type === "listItem" ? "listItem" : block.type === "paragraph" ? "paragraph" : block.type === "table" ? "table" : block.type === "image" ? "image" : "passthrough";
   const serializedRuns = runs.length > 0 ? runs.map(serializeRun) : void 0;
   const table = type === "table" && block.table ? serializeTableModel(block.table) : void 0;
+  const image = type === "image" ? serializeImage(block) : void 0;
   return {
     docxIndex: block.docxIndex,
     type,
     text,
     ...serializedRuns ? { runs: serializedRuns } : {},
     ...table ? { table } : {},
+    ...image ? { image } : {},
     level: block.level,
     listKind: block.list?.kind,
     edited: false,
@@ -42179,6 +42569,41 @@ function toSaveBlocks(blocks, parsed) {
         kind: "xml",
         xml: generateTableModelXml(model, original ?? void 0)
       });
+      continue;
+    }
+    if (b.type === "image") {
+      if (b.docxIndex === null) {
+        if (!b.newImage) {
+          throw new OfficeValidationError(
+            "validation",
+            "new image block carries no newImage payload"
+          );
+        }
+        out.push({ kind: "image", image: toNewImage(b.newImage) });
+        continue;
+      }
+      const originalBlock = parsed.blocks[b.docxIndex];
+      if (!originalBlock || originalBlock.type !== "image" || !originalBlock.originalXml) {
+        throw new OfficeValidationError(
+          "validation",
+          `edited image block references docxIndex ${b.docxIndex} which is not an image`
+        );
+      }
+      if (!b.image) {
+        throw new OfficeValidationError("validation", "edited image block carries no image payload");
+      }
+      const patch = imagePatchFromWire(b.image, originalBlock);
+      if (!patch) {
+        out.push({ kind: "original", docxIndex: b.docxIndex });
+        continue;
+      }
+      let xml = patchImageParagraphXml(originalBlock.originalXml, patch);
+      if (patch.wrap !== void 0) {
+        const posOffset = patch.posOffsetX !== void 0 && patch.posOffsetY !== void 0 ? { x: patch.posOffsetX, y: patch.posOffsetY } : void 0;
+        const marginAlign = posOffset === void 0 && patch.posH && patch.posV ? { h: patch.posH, v: patch.posV } : void 0;
+        xml = applyImageWrap(xml, patch.wrap, posOffset, marginAlign);
+      }
+      out.push({ kind: "xml", xml });
       continue;
     }
     const runs = b.runs && b.runs.length > 0 ? b.runs.map((r) => ({

@@ -39,6 +39,12 @@ export interface ImagePatch {
   /** mirror flips; false removes the attribute; undefined keeps */
   flipH?: boolean
   flipV?: boolean
+  /**
+   * Source crop (a:srcRect) as fractions of the source picture per side.
+   * null or an all-zero rect removes the element; undefined keeps as-is.
+   * Rewrites the <a:srcRect> inside the pic's blipFill (after a:blip).
+   */
+  crop?: { l: number; t: number; r: number; b: number } | null
 }
 
 /**
@@ -133,6 +139,25 @@ export function patchImageParagraphXml(xml: string, patch: ImagePatch): string {
       /(<wp:positionV[^>]*>[\s\S]*?)<wp:posOffset>-?\d+<\/wp:posOffset>([\s\S]*?<\/wp:positionV>)/,
       `$1<wp:posOffset>${Math.round(patch.posOffsetY)}</wp:posOffset>$2`,
     )
+  }
+  // Source crop (a:srcRect): rewrite inside the pic's blipFill, right after
+  // a:blip. Fractions are stored in 1000ths of a percent (l="10000" = 10%),
+  // matching rectFrac's parse-side division by 100000.
+  if (patch.crop !== undefined) {
+    const rect = patch.crop
+    const hasCrop = !!rect && !!(rect.l || rect.t || rect.r || rect.b)
+    const tag = hasCrop
+      ? `<a:srcRect l="${Math.round((rect!.l || 0) * 100000)}" t="${Math.round(
+          (rect!.t || 0) * 100000,
+        )}" r="${Math.round((rect!.r || 0) * 100000)}" b="${Math.round((rect!.b || 0) * 100000)}"/>`
+      : ''
+    if (/<a:srcRect\b[^>]*\/>/.test(out)) {
+      out = hasCrop
+        ? out.replace(/<a:srcRect\b[^>]*\/>/, tag)
+        : out.replace(/<a:srcRect\b[^>]*\/>/, '')
+    } else if (hasCrop) {
+      out = out.replace(/(<pic:blipFill>[\s\S]*?<a:blip[^>]*\/>)/, `$1${tag}`)
+    }
   }
   return out
 }

@@ -4778,6 +4778,8 @@ type ImageMeta = Pick<
   | 'imageOffsetYEmu'
   | 'imagePosH'
   | 'imagePosV'
+  | 'imagePosHRel'
+  | 'imagePosVRel'
   | 'imageRotDeg'
   | 'imageFlipH'
   | 'imageFlipV'
@@ -4861,6 +4863,25 @@ function imageMeta(xml: string): ImageMeta {
     // margin-relative wp:align pair = Word position-gallery preset
     const posHFrom = /<wp:positionH[^>]*relativeFrom="([^"]+)"/.exec(xml)?.[1]
     const posVFrom = /<wp:positionV[^>]*relativeFrom="([^"]+)"/.exec(xml)?.[1]
+    // echo the anchor's positioning bases so wire consumers can preserve
+    // floating-position metadata without re-reading the XML
+    if (
+      posHFrom === 'margin' ||
+      posHFrom === 'page' ||
+      posHFrom === 'column' ||
+      posHFrom === 'paragraph' ||
+      posHFrom === 'character'
+    ) {
+      meta.imagePosHRel = posHFrom
+    }
+    if (
+      posVFrom === 'margin' ||
+      posVFrom === 'page' ||
+      posVFrom === 'paragraph' ||
+      posVFrom === 'line'
+    ) {
+      meta.imagePosVRel = posVFrom
+    }
     const alignH = /<wp:align>(left|center|right)<\/wp:align>/.exec(posHBody)?.[1]
     const alignV = /<wp:align>(top|center|bottom)<\/wp:align>/.exec(posVBody)?.[1]
     if (posHFrom === 'margin' && posVFrom === 'margin' && alignH && alignV) {

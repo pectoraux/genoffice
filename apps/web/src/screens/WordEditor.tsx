@@ -7,6 +7,7 @@ import { styles } from '../styles'
 import { openDocument, saveDocument, readFileBytes } from '../api/office-client'
 import type {
   SerializedBlock,
+  SerializedImage,
   SerializedRun,
   SerializedTable,
   OfficeDocumentHandle,
@@ -23,6 +24,7 @@ import {
   DocxTableCell,
   DocxTableHeader,
 } from '../office/tiptap-table-extensions'
+import { DocxImage } from '../office/tiptap-image-extensions'
 import { parseRuns } from '../office/parse-runs'
 import {
   tableToHtml,
@@ -30,6 +32,14 @@ import {
   tableGridFingerprint,
   setTableParseRuns,
 } from '../office/table-conversion'
+import {
+  imageToHtml,
+  imageAttrsFromElement,
+  imageAttrsToWire,
+  imageFingerprint,
+  imageAttrsFingerprint,
+  newImageFromAttrs,
+} from '../office/image-conversion'
 
 // Wire the DOM run parser into the table conversion module (lazy injection
 // avoids a module cycle; parse-runs has no dependencies).
@@ -100,17 +110,32 @@ const TABLE_EDITOR_CSS = `
 .ProseMirror .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: 0; width: 4px; background: #2383e2; }
 `
 
+/** Image editor styles (selection outline, clickable image). */
+const IMAGE_EDITOR_CSS = `
+.ProseMirror img[data-docx-image] { border: 1px solid #c3c9d1; padding: 2px; background: #fff; cursor: pointer; }
+.ProseMirror img[data-docx-image].ProseMirror-selectednode { outline: 2px solid #2383e2; outline-offset: 2px; }
+`
+
 export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
   const [title, setTitle] = useState('Document')
   const [saved, setSaved] = useState(true)
   const [status, setStatus] = useState('Ready')
   const handleRef = useRef<OfficeDocumentHandle | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
   const originalFingerprintsRef = useRef<Map<number, string>>(new Map())
   /** Loaded tables by docxIndex — the echo source for byte-preservation fields
    *  (rawTcPr/borders/colWidths…) and the baseline for grid fingerprints. */
   const loadedTablesRef = useRef<Map<number, SerializedTable>>(new Map())
+  /** Loaded images by docxIndex — the echo source for the unchanged-image
+   *  payload and the baseline for image fingerprints. */
+  const loadedImagesRef = useRef<Map<number, SerializedImage>>(new Map())
   const [inTable, setInTable] = useState(false)
+  /** Selection state of the image node (drives the image toolbar). */
+  const [imageSelection, setImageSelection] = useState<{
+    pos: number
+    attrs: Record<string, unknown>
+  } | null>(null)
 
   const editor = useEditor({
     extensions: [
@@ -131,16 +156,30 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
       DocxTableRow,
       DocxTableCell,
       DocxTableHeader,
+      // Editable images (Phase 3 Increment 8): atomic image node with
+      // schema-backed docxIndex and the canonical image properties.
+      DocxImage,
     ],
     content: '<h1>Untitled document</h1><p>Start writing your document here.</p>',
     onUpdate: () => setSaved(false),
     immediatelyRender: false,
   })
 
-  // Track whether the selection is inside a table (drives the table toolbar).
+  // Track whether the selection is inside a table (drives the table toolbar)
+  // and whether an image node is selected (drives the image toolbar).
   useEffect(() => {
     if (!editor) return
-    const update = () => setInTable(editor.isActive('table'))
+    const update = () => {
+      setInTable(editor.isActive('table'))
+      // NodeSelection on the DocxImage atom: surface its current attributes.
+      const sel = editor.state.selection
+      const selNode = sel.$from.nodeAfter
+      if (selNode && selNode.type.name === 'docxImage') {
+        setImageSelection({ pos: sel.$from.pos, attrs: { ...selNode.attrs } })
+      } else {
+        setImageSelection(null)
+      }
+    }
     editor.on('selectionUpdate', update)
     editor.on('transaction', update)
     update()
@@ -155,6 +194,68 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
       delete w.__genofficeWordEditor
     }
   }, [editor])
+
+  /** Update the selected image node's attributes (image toolbar edits). */
+  const updateSelectedImage = useCallback(
+    (attrs: Record<string, unknown>) => {
+      if (!editor || !imageSelection) return
+      editor
+        .chain()
+        .focus()
+        .command(({ tr }) => {
+          tr.setNodeMarkup(imageSelection.pos, undefined, {
+            ...imageSelection.attrs,
+            ...attrs,
+          })
+          return true
+        })
+        .run()
+    },
+    [editor, imageSelection],
+  )
+
+  /** Read an inserted image file and insert a new DocxImage node. */
+  const handleInsertImageFile = useCallback(
+    async (file: File) => {
+      if (!editor) return
+      if (!/^image\/(png|jpeg|gif)$/.test(file.type)) {
+        setStatus(`Unsupported image type: ${file.type}`)
+        return
+      }
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result))
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(file)
+      }).catch(() => null)
+      if (!dataUrl) {
+        setStatus('Could not read the image file')
+        return
+      }
+      // Natural pixel size from the decoded image (fallback 400×300).
+      const dims = await new Promise<{ w: number; h: number }>((resolve) => {
+        const img = new Image()
+        img.onload = () => resolve({ w: img.naturalWidth || 400, h: img.naturalHeight || 300 })
+        img.onerror = () => resolve({ w: 400, h: 300 })
+        img.src = dataUrl
+      })
+      editor
+        .chain()
+        .focus()
+        .insertDocxImage({
+          src: dataUrl,
+          widthPx: dims.w,
+          heightPx: dims.h,
+          wrap: 'inline',
+          rotDeg: 0,
+          flipH: false,
+          flipV: false,
+        })
+        .run()
+      setSaved(false)
+    },
+    [editor],
+  )
 
   /**
    * Convert Tiptap HTML content into SerializedBlock[] for the API.
@@ -189,6 +290,37 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
           type: 'table',
           text: tableDisplayText(loaded ?? reconstructed),
           table: edited ? reconstructed : loaded,
+          edited,
+        })
+        continue
+      }
+
+      // ── Images: DOM attrs → SerializedImage / newImage ────────────────
+      if (node instanceof HTMLImageElement && node.getAttribute('data-docx-image') === 'true') {
+        const attrs = imageAttrsFromElement(node)
+        if (docxIndex === null) {
+          // Editor-inserted image: embed as a new media part.
+          const newImage = newImageFromAttrs(attrs)
+          if (newImage) {
+            blocks.push({ docxIndex: null, type: 'image', text: '', newImage, edited: true })
+          }
+          // A non-data-URL new image cannot be embedded; drop it rather
+          // than fabricate a docxIndex.
+          continue
+        }
+        // Existing image: fingerprint the browser-editable state against
+        // the loaded original (same dirty model as tables/paragraphs).
+        const loaded = loadedImagesRef.current.get(docxIndex)
+        const edited =
+          loaded === undefined || imageAttrsFingerprint(attrs) !== imageFingerprint(loaded)
+        // Unchanged images echo the loaded payload verbatim (round-trip
+        // stability + server-side diff confirmation); edited images send
+        // the current state for the server to patch canonically.
+        blocks.push({
+          docxIndex,
+          type: 'image',
+          text: '',
+          image: edited ? imageAttrsToWire(attrs) : loaded,
           edited,
         })
         continue
@@ -324,9 +456,17 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
           break
         case 'image':
           flushList()
-          parts.push(
-            `<div${indexAttr} data-passthrough="true" data-passthrough-type="image">${escapeHtml(block.text || '[Image — edit in desktop app]')}</div>`,
-          )
+          if (block.image) {
+            // Editable image: real <img> with the canonical properties as
+            // schema-backed attributes; pixels render from the data URL.
+            parts.push(imageToHtml(block.image, block.docxIndex))
+          } else {
+            // Image with unreadable media (or OLE preview): read-only
+            // byte-preserved passthrough.
+            parts.push(
+              `<div${indexAttr} data-passthrough="true" data-passthrough-type="image">${escapeHtml(block.text || '[Image — edit in desktop app]')}</div>`,
+            )
+          }
           break
         case 'passthrough':
           flushList()
@@ -353,6 +493,7 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
         const fingerprints = originalFingerprintsRef.current
         fingerprints.clear()
         loadedTablesRef.current.clear()
+        loadedImagesRef.current.clear()
         for (const block of res.blocks) {
           if (block.docxIndex !== null) {
             if (block.type === 'table' && block.table) {
@@ -360,6 +501,11 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
               // tracking as paragraphs, over their editable grid surface.
               loadedTablesRef.current.set(block.docxIndex, block.table)
               fingerprints.set(block.docxIndex, tableGridFingerprint(block.table))
+            } else if (block.type === 'image' && block.image) {
+              // Images: fingerprint-based dirty tracking over the
+              // browser-editable image properties (same model as tables).
+              loadedImagesRef.current.set(block.docxIndex, block.image)
+              fingerprints.set(block.docxIndex, imageFingerprint(block.image))
             } else {
               fingerprints.set(block.docxIndex, blockFingerprint(block.runs, block.text))
             }
@@ -439,6 +585,7 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
           () =>
             editor?.chain().focus().insertTable({ rows: 2, cols: 3, withHeaderRow: false }).run(),
         ],
+        ['Image', () => imageInputRef.current?.click()],
         ['Undo', () => editor?.chain().focus().undo().run()],
         ['Redo', () => editor?.chain().focus().redo().run()],
       ] as const,
@@ -461,12 +608,42 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
     [editor],
   )
 
+  /** Current attributes of the selected image (typed view for the toolbar). */
+  const selImage = imageSelection
+    ? {
+        widthPx: Number(imageSelection.attrs['widthPx'] ?? 0) || null,
+        heightPx: Number(imageSelection.attrs['heightPx'] ?? 0) || null,
+        aspect:
+          Number(imageSelection.attrs['widthPx'] ?? 0) /
+          Math.max(1, Number(imageSelection.attrs['heightPx'] ?? 1)),
+        rotDeg: Number(imageSelection.attrs['rotDeg'] ?? 0),
+        flipH: imageSelection.attrs['flipH'] === true,
+        flipV: imageSelection.attrs['flipV'] === true,
+        wrap: String(imageSelection.attrs['wrap'] ?? 'inline'),
+        crop: imageSelection.attrs['crop'] as { l: number; t: number; r: number; b: number } | null,
+      }
+    : null
+
+  /** Resize preserving the aspect ratio (default) or freely. */
+  const resizeSelectedImage = useCallback(
+    (widthPx: number, keepAspect: boolean) => {
+      if (!selImage || !selImage.widthPx || !selImage.heightPx) return
+      const w = Math.max(1, Math.min(10_000, Math.round(widthPx)))
+      const h = keepAspect
+        ? Math.max(1, Math.min(10_000, Math.round(w / selImage.aspect)))
+        : selImage.heightPx
+      updateSelectedImage({ widthPx: w, heightPx: h })
+    },
+    [selImage, updateSelectedImage],
+  )
+
   if (!editor) return null
 
   return (
     <div style={{ minHeight: 'calc(100vh - 64px)', background: '#eef1f5' }}>
-      {/* Table editor styles (borders, header shading, cell selection). */}
+      {/* Table editor styles (borders, header shading, cell selection) + image styles. */}
       <style>{TABLE_EDITOR_CSS}</style>
+      <style>{IMAGE_EDITOR_CSS}</style>
       <header style={{ ...styles.header, position: 'sticky', top: 0, zIndex: 5 }}>
         <button style={styles.button} onClick={() => onRoute('/office')}>
           ← Office
@@ -554,6 +731,140 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
           ))}
         </div>
       )}
+      {selImage && (
+        <div
+          style={{
+            background: '#f6f8fa',
+            borderBottom: '1px solid #d9dee7',
+            padding: '6px 18px',
+            display: 'flex',
+            gap: 6,
+            flexWrap: 'wrap',
+            alignItems: 'center',
+          }}
+          data-testid="image-toolbar"
+        >
+          <span style={{ fontSize: 12, color: '#5b6470', marginRight: 4 }}>Image:</span>
+          {/* Width + height display (resize preserves aspect by default). */}
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+            W×H
+            <input
+              type="number"
+              min={1}
+              max={10000}
+              value={selImage.widthPx ?? ''}
+              style={{ width: 70, ...styles.input, padding: '3px 6px', fontSize: 13 }}
+              data-testid="image-width"
+              onChange={(e) => resizeSelectedImage(Number(e.target.value), true)}
+            />
+            <span style={{ opacity: 0.6 }}>×</span>
+            <span data-testid="image-height" style={{ minWidth: 40 }}>
+              {selImage.heightPx ?? '—'}
+            </span>
+          </label>
+          {/* Alignment. */}
+          {(['left', 'center', 'right'] as const).map((a) => (
+            <button
+              key={`align-${a}`}
+              style={{ ...styles.button, padding: '4px 8px', fontSize: 13 }}
+              onClick={() => updateSelectedImage({ align: a })}
+            >
+              {a === 'left' ? '⯇' : a === 'center' ? '↔' : '⯈'} {a}
+            </button>
+          ))}
+          {/* Rotate 90° / flips. */}
+          <button
+            style={{ ...styles.button, padding: '4px 10px', fontSize: 13 }}
+            data-testid="image-rotate"
+            onClick={() => updateSelectedImage({ rotDeg: (selImage.rotDeg + 90) % 360 })}
+          >
+            Rotate 90°
+          </button>
+          <button
+            style={{ ...styles.button, padding: '4px 10px', fontSize: 13 }}
+            data-testid="image-flip-h"
+            onClick={() => updateSelectedImage({ flipH: !selImage.flipH })}
+          >
+            Flip H
+          </button>
+          <button
+            style={{ ...styles.button, padding: '4px 10px', fontSize: 13 }}
+            data-testid="image-flip-v"
+            onClick={() => updateSelectedImage({ flipV: !selImage.flipV })}
+          >
+            Flip V
+          </button>
+          {/* Wrap mode. */}
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+            Wrap
+            <select
+              value={selImage.wrap}
+              style={{ ...styles.input, padding: '3px 6px', fontSize: 13 }}
+              data-testid="image-wrap"
+              onChange={(e) => updateSelectedImage({ wrap: e.target.value })}
+            >
+              <option value="inline">Inline</option>
+              <option value="square-left">Square left</option>
+              <option value="square-right">Square right</option>
+              <option value="topBottom">Top &amp; bottom</option>
+              <option value="behind">Behind text</option>
+              <option value="front">In front</option>
+            </select>
+          </label>
+          {/* Crop metadata (per-side fractions). */}
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+            Crop L/T/R/B %
+            {(['l', 't', 'r', 'b'] as const).map((side) => (
+              <input
+                key={`crop-${side}`}
+                type="number"
+                min={0}
+                max={100}
+                value={Math.round((selImage.crop?.[side] ?? 0) * 100)}
+                style={{ width: 52, ...styles.input, padding: '3px 4px', fontSize: 13 }}
+                data-testid={`image-crop-${side}`}
+                onChange={(e) => {
+                  const v = Math.max(0, Math.min(100, Number(e.target.value))) / 100
+                  const base = selImage.crop ?? { l: 0, t: 0, r: 0, b: 0 }
+                  updateSelectedImage({ crop: { ...base, [side]: v } })
+                }}
+              />
+            ))}
+          </label>
+          <button
+            style={{ ...styles.button, padding: '4px 10px', fontSize: 13, color: '#b3261e' }}
+            data-testid="image-delete"
+            onClick={() =>
+              editor
+                ?.chain()
+                .focus()
+                .command(({ state, tr }) => {
+                  const sel = state.selection
+                  const node = sel.$from.nodeAfter
+                  if (node && node.type.name === 'docxImage') {
+                    tr.delete(sel.$from.pos, sel.$from.pos + node.nodeSize)
+                    return true
+                  }
+                  return false
+                })
+                .run()
+            }
+          >
+            Delete
+          </button>
+        </div>
+      )}
+      <input
+        ref={imageInputRef}
+        hidden
+        type="file"
+        accept="image/png,image/jpeg,image/gif"
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) void handleInsertImageFile(f)
+          e.target.value = ''
+        }}
+      />
       <main style={{ padding: '32px 20px 80px' }}>
         <div
           style={{

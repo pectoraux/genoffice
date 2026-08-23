@@ -130,12 +130,66 @@ export interface SerializedTable {
   readonly headerRows?: readonly boolean[]
 }
 
+// ── Serialized image (browser mirror of the server wire type) ──────────────
+
+export type SerializedImageWrap =
+  | 'inline'
+  | 'square-left'
+  | 'square-right'
+  | 'tight-left'
+  | 'tight-right'
+  | 'through-left'
+  | 'through-right'
+  | 'topBottom'
+  | 'behind'
+  | 'front'
+
+export interface SerializedImageRect {
+  readonly l: number
+  readonly t: number
+  readonly r: number
+  readonly b: number
+}
+
+export interface SerializedImage {
+  readonly imageDataUrl: string | null
+  readonly widthPx?: number
+  readonly heightPx?: number
+  readonly crop?: SerializedImageRect
+  readonly fillRect?: SerializedImageRect
+  readonly align?: 'left' | 'center' | 'right'
+  readonly wrap?: SerializedImageWrap
+  readonly offsetXEmu?: number
+  readonly offsetYEmu?: number
+  readonly posH?: 'left' | 'center' | 'right'
+  readonly posV?: 'top' | 'center' | 'bottom'
+  readonly posHRel?: 'margin' | 'page' | 'column' | 'paragraph' | 'character'
+  readonly posVRel?: 'margin' | 'page' | 'paragraph' | 'line'
+  readonly rotDeg?: number
+  readonly flipH?: boolean
+  readonly flipV?: boolean
+}
+
+export interface SerializedNewImage {
+  readonly base64: string
+  readonly mime: 'image/png' | 'image/jpeg' | 'image/gif'
+  readonly widthPx: number
+  readonly heightPx: number
+  readonly align?: 'left' | 'center' | 'right'
+  readonly wrap?: SerializedImageWrap
+  readonly rotDeg?: number
+  readonly flipH?: boolean
+  readonly flipV?: boolean
+}
+
 export interface SerializedBlock {
   readonly docxIndex: number | null
   readonly type: SerializedBlockType
   readonly text: string
   readonly runs?: readonly SerializedRun[]
   readonly table?: SerializedTable
+  readonly image?: SerializedImage
+  readonly newImage?: SerializedNewImage
   readonly level?: number
   readonly listKind?: 'bullet' | 'ordered'
   readonly edited?: boolean
@@ -491,10 +545,136 @@ function isSerializedBlock(v: unknown): v is SerializedBlock {
     if (v.type !== 'table') return false
     if (!isSerializedTable(v.table)) return false
   }
+  if (v.image !== undefined) {
+    if (v.type !== 'image') return false
+    if (!isSerializedImage(v.image)) return false
+  }
+  if (v.newImage !== undefined) {
+    if (v.type !== 'image') return false
+    if (v.docxIndex !== null) return false
+    if (!isSerializedNewImage(v.newImage)) return false
+  }
   if (v.level !== undefined && typeof v.level !== 'number') return false
   if (v.listKind !== undefined && v.listKind !== 'bullet' && v.listKind !== 'ordered') return false
   if (v.edited !== undefined && typeof v.edited !== 'boolean') return false
   if (v.hidden !== undefined && typeof v.hidden !== 'boolean') return false
+  return true
+}
+
+// ── Image payload guards (mirror the server-side validation shape) ─────────
+
+const IMAGE_WRAPS = [
+  'inline',
+  'square-left',
+  'square-right',
+  'tight-left',
+  'tight-right',
+  'through-left',
+  'through-right',
+  'topBottom',
+  'behind',
+  'front',
+] as const
+const IMAGE_ALIGNS = ['left', 'center', 'right'] as const
+const IMAGE_POS_H = ['left', 'center', 'right'] as const
+const IMAGE_POS_V = ['top', 'center', 'bottom'] as const
+const IMAGE_POS_H_RELS = ['margin', 'page', 'column', 'paragraph', 'character'] as const
+const IMAGE_POS_V_RELS = ['margin', 'page', 'paragraph', 'line'] as const
+const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif'] as const
+
+function isImageRect(v: unknown): v is SerializedImageRect {
+  if (!isObject(v)) return false
+  for (const side of ['l', 't', 'r', 'b'] as const) {
+    if (v[side] !== undefined && typeof v[side] !== 'number') return false
+  }
+  return true
+}
+
+function isSerializedImage(v: unknown): v is SerializedImage {
+  if (!isObject(v)) return false
+  if (v.imageDataUrl !== undefined && v.imageDataUrl !== null && !isString(v.imageDataUrl)) {
+    return false
+  }
+  if (v.widthPx !== undefined && (typeof v.widthPx !== 'number' || !Number.isInteger(v.widthPx))) {
+    return false
+  }
+  if (
+    v.heightPx !== undefined &&
+    (typeof v.heightPx !== 'number' || !Number.isInteger(v.heightPx))
+  ) {
+    return false
+  }
+  if (v.crop !== undefined && v.crop !== null && !isImageRect(v.crop)) return false
+  if (v.fillRect !== undefined && v.fillRect !== null && !isImageRect(v.fillRect)) return false
+  if (v.align !== undefined && (!isString(v.align) || !IMAGE_ALIGNS.includes(v.align as never))) {
+    return false
+  }
+  if (v.wrap !== undefined && (!isString(v.wrap) || !IMAGE_WRAPS.includes(v.wrap as never))) {
+    return false
+  }
+  if (
+    v.offsetXEmu !== undefined &&
+    (typeof v.offsetXEmu !== 'number' || !Number.isInteger(v.offsetXEmu))
+  ) {
+    return false
+  }
+  if (
+    v.offsetYEmu !== undefined &&
+    (typeof v.offsetYEmu !== 'number' || !Number.isInteger(v.offsetYEmu))
+  ) {
+    return false
+  }
+  if (v.posH !== undefined && (!isString(v.posH) || !IMAGE_POS_H.includes(v.posH as never))) {
+    return false
+  }
+  if (v.posV !== undefined && (!isString(v.posV) || !IMAGE_POS_V.includes(v.posV as never))) {
+    return false
+  }
+  if (
+    v.posHRel !== undefined &&
+    (!isString(v.posHRel) || !IMAGE_POS_H_RELS.includes(v.posHRel as never))
+  ) {
+    return false
+  }
+  if (
+    v.posVRel !== undefined &&
+    (!isString(v.posVRel) || !IMAGE_POS_V_RELS.includes(v.posVRel as never))
+  ) {
+    return false
+  }
+  if (
+    v.rotDeg !== undefined &&
+    (typeof v.rotDeg !== 'number' || !Number.isInteger(v.rotDeg) || v.rotDeg < 0 || v.rotDeg > 359)
+  ) {
+    return false
+  }
+  if (v.flipH !== undefined && typeof v.flipH !== 'boolean') return false
+  if (v.flipV !== undefined && typeof v.flipV !== 'boolean') return false
+  return true
+}
+
+function isSerializedNewImage(v: unknown): v is SerializedNewImage {
+  if (!isObject(v)) return false
+  if (!isString(v.base64) || v.base64.length < 32) return false
+  if (!isString(v.mime) || !IMAGE_MIMES.includes(v.mime as never)) return false
+  if (typeof v.widthPx !== 'number' || !Number.isInteger(v.widthPx) || v.widthPx < 1) return false
+  if (typeof v.heightPx !== 'number' || !Number.isInteger(v.heightPx) || v.heightPx < 1) {
+    return false
+  }
+  if (v.align !== undefined && (!isString(v.align) || !IMAGE_ALIGNS.includes(v.align as never))) {
+    return false
+  }
+  if (v.wrap !== undefined && (!isString(v.wrap) || !IMAGE_WRAPS.includes(v.wrap as never))) {
+    return false
+  }
+  if (
+    v.rotDeg !== undefined &&
+    (typeof v.rotDeg !== 'number' || !Number.isInteger(v.rotDeg) || v.rotDeg < 0 || v.rotDeg > 359)
+  ) {
+    return false
+  }
+  if (v.flipH !== undefined && typeof v.flipH !== 'boolean') return false
+  if (v.flipV !== undefined && typeof v.flipV !== 'boolean') return false
   return true
 }
 

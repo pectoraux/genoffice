@@ -30,12 +30,17 @@ import {
   type WorkbookSnapshot,
 } from '@genoffice/xlsx-gateway'
 import {
+  applyImageWrap,
   generateTableModelXml,
   parseDocx,
+  patchImageParagraphXml,
   saveDocx,
   type Block,
   type CellBorder,
   type CellBorders,
+  type ImagePatch,
+  type ImageWrap,
+  type NewImage,
   type ParsedDocFull,
   type Run,
   type SaveBlock,
@@ -211,6 +216,75 @@ export interface SerializedTable {
   readonly headerRows?: readonly boolean[]
 }
 
+// ── Serialized image (wire mirror of the canonical docx-engine image model) ──
+
+/** Wrap modes of a floating image (wire mirror of the canonical ImageWrap). */
+export type SerializedImageWrap =
+  | 'inline'
+  | 'square-left'
+  | 'square-right'
+  | 'tight-left'
+  | 'tight-right'
+  | 'through-left'
+  | 'through-right'
+  | 'topBottom'
+  | 'behind'
+  | 'front'
+
+/** Source crop / fill placement rect as per-side fractions of the picture. */
+export interface SerializedImageRect {
+  readonly l: number
+  readonly t: number
+  readonly r: number
+  readonly b: number
+}
+
+/**
+ * Editable image payload (type === 'image').
+ *
+ * Wire mirror of the canonical Block image fields. The browser renders pixels
+ * from `imageDataUrl` and edits the typed properties; the server diffs the
+ * edited state against the parsed original block and emits ONLY the canonical
+ * engine patches (patchImageParagraphXml / applyImageWrap) — the browser
+ * never constructs image XML. `posHRel`/`posVRel` and `fillRect` are echo/
+ * display fields for floating-position fidelity.
+ */
+export interface SerializedImage {
+  readonly imageDataUrl: string | null
+  readonly widthPx?: number
+  readonly heightPx?: number
+  readonly crop?: SerializedImageRect
+  readonly fillRect?: SerializedImageRect
+  readonly align?: 'left' | 'center' | 'right'
+  readonly wrap?: SerializedImageWrap
+  readonly offsetXEmu?: number
+  readonly offsetYEmu?: number
+  readonly posH?: 'left' | 'center' | 'right'
+  readonly posV?: 'top' | 'center' | 'bottom'
+  readonly posHRel?: 'margin' | 'page' | 'column' | 'paragraph' | 'character'
+  readonly posVRel?: 'margin' | 'page' | 'paragraph' | 'line'
+  readonly rotDeg?: number
+  readonly flipH?: boolean
+  readonly flipV?: boolean
+}
+
+/**
+ * A NEW image to embed at save time (docxIndex === null image blocks).
+ * Wire mirror of the canonical NewImage: bytes become a word/media part +
+ * relationship + drawing through the engine's embed path.
+ */
+export interface SerializedNewImage {
+  readonly base64: string
+  readonly mime: 'image/png' | 'image/jpeg' | 'image/gif'
+  readonly widthPx: number
+  readonly heightPx: number
+  readonly align?: 'left' | 'center' | 'right'
+  readonly wrap?: SerializedImageWrap
+  readonly rotDeg?: number
+  readonly flipH?: boolean
+  readonly flipV?: boolean
+}
+
 /**
  * Simplified Tiptap-compatible block representation.
  *
@@ -245,6 +319,17 @@ export interface SerializedBlock {
    * shapes in cells) — those stay byte-preserved read-only blocks.
    */
   readonly table?: SerializedTable
+  /**
+   * Editable image payload (type === 'image'). Present when the canonical
+   * image model was extracted (media readable); absent for broken images —
+   * those stay byte-preserved read-only blocks.
+   */
+  readonly image?: SerializedImage
+  /**
+   * New-image embedding spec (type === 'image', docxIndex === null only).
+   * The engine creates the media part + relationship + drawing.
+   */
+  readonly newImage?: SerializedNewImage
   readonly level?: number
   readonly listKind?: 'bullet' | 'ordered'
   /** true when the browser editor modified the block; the server regenerates it. */
@@ -919,6 +1004,219 @@ function expectSerializedTable(value: unknown, field: string): SerializedTable {
   }
 }
 
+// ── Image payload validation (mirrors the table/run validation rigor) ──────
+
+/** Wrap modes the wire accepts (canonical ImageWrap + the inline marker). */
+const IMAGE_WRAPS: readonly SerializedImageWrap[] = [
+  'inline',
+  'square-left',
+  'square-right',
+  'tight-left',
+  'tight-right',
+  'through-left',
+  'through-right',
+  'topBottom',
+  'behind',
+  'front',
+]
+const IMAGE_ALIGNS = ['left', 'center', 'right'] as const
+const IMAGE_POS_H = ['left', 'center', 'right'] as const
+const IMAGE_POS_V = ['top', 'center', 'bottom'] as const
+const IMAGE_POS_H_RELS = ['margin', 'page', 'column', 'paragraph', 'character'] as const
+const IMAGE_POS_V_RELS = ['margin', 'page', 'paragraph', 'line'] as const
+/** display size bounds in CSS px (10k px ≈ 104 in — beyond any Word page) */
+const MAX_IMAGE_DIM_PX = 10_000
+/** posOffset bounds in EMU (±50M EMU ≈ ±54 in) */
+const MAX_IMAGE_OFFSET_EMU = 50_000_000
+/** base64 payload cap for a single image (~8 MB binary) */
+const MAX_IMAGE_BASE64_CHARS = 11_000_000
+const IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|gif);base64,[A-Za-z0-9+/=]*$/
+const IMAGE_BASE64_RE = /^[A-Za-z0-9+/=]+$/
+const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif'] as const
+
+function expectImageRect(value: unknown, field: string): SerializedImageRect {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object {l,t,r,b}`)
+  }
+  const rect: { l?: number; t?: number; r?: number; b?: number } = {}
+  for (const side of ['l', 't', 'r', 'b'] as const) {
+    const v = value[side]
+    if (v === undefined || v === null) {
+      rect[side] = 0
+      continue
+    }
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      throw new OfficeValidationError('validation', `${field}.${side} must be a number`)
+    }
+    if (v < 0 || v > 1) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.${side} must be a fraction within 0..1`,
+      )
+    }
+    rect[side] = v
+  }
+  return { l: rect.l ?? 0, t: rect.t ?? 0, r: rect.r ?? 0, b: rect.b ?? 0 }
+}
+
+function expectImageDim(value: unknown, field: string): number | undefined {
+  const v = expectOptionalNumber(value, field)
+  if (v !== undefined && (!Number.isInteger(v) || v < 1 || v > MAX_IMAGE_DIM_PX)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field} must be an integer 1..${MAX_IMAGE_DIM_PX}`,
+    )
+  }
+  return v
+}
+
+function expectImageOffset(value: unknown, field: string): number | undefined {
+  const v = expectOptionalNumber(value, field)
+  if (v !== undefined && (!Number.isInteger(v) || Math.abs(v) > MAX_IMAGE_OFFSET_EMU)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field} must be an integer within ±${MAX_IMAGE_OFFSET_EMU} EMU`,
+    )
+  }
+  return v
+}
+
+function expectEnumString<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  field: string,
+): T | undefined {
+  const s = expectOptionalString(value, field, 20)
+  if (s === undefined) return undefined
+  if (!allowed.includes(s as T)) {
+    throw new OfficeValidationError('validation', `${field} must be one of: ${allowed.join(', ')}`)
+  }
+  return s as T
+}
+
+/**
+ * Validate a `SerializedImage` from the wire. Malformed images throw
+ * OfficeValidationError → the existing 400 validation error shape.
+ */
+function expectSerializedImage(value: unknown, field: string): SerializedImage {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  let imageDataUrl: string | null = null
+  if (value.imageDataUrl !== undefined && value.imageDataUrl !== null) {
+    const s = expectString(value.imageDataUrl, `${field}.imageDataUrl`)
+    if (!IMAGE_DATA_URL_RE.test(s) || s.length > MAX_IMAGE_BASE64_CHARS) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.imageDataUrl must be a data:image/(png|jpeg|gif);base64 URL (max ${MAX_IMAGE_BASE64_CHARS} chars)`,
+      )
+    }
+    imageDataUrl = s
+  }
+  const widthPx = expectImageDim(value.widthPx, `${field}.widthPx`)
+  const heightPx = expectImageDim(value.heightPx, `${field}.heightPx`)
+  if ((widthPx === undefined) !== (heightPx === undefined)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.widthPx and ${field}.heightPx must be present together`,
+    )
+  }
+  const crop =
+    value.crop !== undefined && value.crop !== null
+      ? expectImageRect(value.crop, `${field}.crop`)
+      : undefined
+  const fillRect =
+    value.fillRect !== undefined && value.fillRect !== null
+      ? expectImageRect(value.fillRect, `${field}.fillRect`)
+      : undefined
+  const align = expectEnumString(value.align, IMAGE_ALIGNS, `${field}.align`)
+  const wrap = expectEnumString(value.wrap, IMAGE_WRAPS, `${field}.wrap`)
+  const offsetXEmu = expectImageOffset(value.offsetXEmu, `${field}.offsetXEmu`)
+  const offsetYEmu = expectImageOffset(value.offsetYEmu, `${field}.offsetYEmu`)
+  const posH = expectEnumString(value.posH, IMAGE_POS_H, `${field}.posH`)
+  const posV = expectEnumString(value.posV, IMAGE_POS_V, `${field}.posV`)
+  const posHRel = expectEnumString(value.posHRel, IMAGE_POS_H_RELS, `${field}.posHRel`)
+  const posVRel = expectEnumString(value.posVRel, IMAGE_POS_V_RELS, `${field}.posVRel`)
+  const rotRaw = expectOptionalNumber(value.rotDeg, `${field}.rotDeg`)
+  if (rotRaw !== undefined && (!Number.isInteger(rotRaw) || rotRaw < 0 || rotRaw > 359)) {
+    throw new OfficeValidationError('validation', `${field}.rotDeg must be an integer 0..359`)
+  }
+  const flipH = expectOptionalBoolean(value.flipH, `${field}.flipH`)
+  const flipV = expectOptionalBoolean(value.flipV, `${field}.flipV`)
+  return {
+    imageDataUrl,
+    ...(widthPx !== undefined ? { widthPx } : {}),
+    ...(heightPx !== undefined ? { heightPx } : {}),
+    ...(crop !== undefined ? { crop } : {}),
+    ...(fillRect !== undefined ? { fillRect } : {}),
+    ...(align !== undefined ? { align } : {}),
+    ...(wrap !== undefined ? { wrap } : {}),
+    ...(offsetXEmu !== undefined ? { offsetXEmu } : {}),
+    ...(offsetYEmu !== undefined ? { offsetYEmu } : {}),
+    ...(posH !== undefined ? { posH } : {}),
+    ...(posV !== undefined ? { posV } : {}),
+    ...(posHRel !== undefined ? { posHRel } : {}),
+    ...(posVRel !== undefined ? { posVRel } : {}),
+    ...(rotRaw !== undefined ? { rotDeg: rotRaw } : {}),
+    ...(flipH !== undefined ? { flipH } : {}),
+    ...(flipV !== undefined ? { flipV } : {}),
+  }
+}
+
+/**
+ * Validate a `SerializedNewImage` (image insertion) from the wire.
+ */
+function expectSerializedNewImage(value: unknown, field: string): SerializedNewImage {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const base64 = expectString(value.base64, `${field}.base64`)
+  if (
+    base64.length < 32 ||
+    base64.length > MAX_IMAGE_BASE64_CHARS ||
+    !IMAGE_BASE64_RE.test(base64)
+  ) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.base64 must be standard base64 (32..${MAX_IMAGE_BASE64_CHARS} chars)`,
+    )
+  }
+  const mimeRaw = expectString(value.mime, `${field}.mime`)
+  if (!IMAGE_MIMES.includes(mimeRaw as (typeof IMAGE_MIMES)[number])) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.mime must be one of: ${IMAGE_MIMES.join(', ')}`,
+    )
+  }
+  const widthPx = expectImageDim(value.widthPx, `${field}.widthPx`)
+  const heightPx = expectImageDim(value.heightPx, `${field}.heightPx`)
+  if (widthPx === undefined || heightPx === undefined) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.widthPx and ${field}.heightPx are required for a new image`,
+    )
+  }
+  const align = expectEnumString(value.align, IMAGE_ALIGNS, `${field}.align`)
+  const wrap = expectEnumString(value.wrap, IMAGE_WRAPS, `${field}.wrap`)
+  const rotRaw = expectOptionalNumber(value.rotDeg, `${field}.rotDeg`)
+  if (rotRaw !== undefined && (!Number.isInteger(rotRaw) || rotRaw < 0 || rotRaw > 359)) {
+    throw new OfficeValidationError('validation', `${field}.rotDeg must be an integer 0..359`)
+  }
+  const flipH = expectOptionalBoolean(value.flipH, `${field}.flipH`)
+  const flipV = expectOptionalBoolean(value.flipV, `${field}.flipV`)
+  return {
+    base64,
+    mime: mimeRaw as SerializedNewImage['mime'],
+    widthPx,
+    heightPx,
+    ...(align !== undefined ? { align } : {}),
+    ...(wrap !== undefined ? { wrap } : {}),
+    ...(rotRaw !== undefined ? { rotDeg: rotRaw } : {}),
+    ...(flipH !== undefined ? { flipH } : {}),
+    ...(flipV !== undefined ? { flipV } : {}),
+  }
+}
+
 /**
  * Validate a `SerializedBlock` from the wire. The browser sends these for
  * the DOCX save route.
@@ -973,12 +1271,50 @@ function expectSerializedBlock(value: unknown, index: number): SerializedBlock {
       `blocks[${index}] is an edited table but carries no table payload`,
     )
   }
+  // Editable image payload. Only valid on image blocks; the payload is the
+  // edited state the server diffs against the parsed original.
+  let image: SerializedImage | undefined
+  if (value.image !== undefined && value.image !== null) {
+    if (type !== 'image') {
+      throw new OfficeValidationError(
+        'validation',
+        `blocks[${index}].image is only allowed on type 'image' blocks`,
+      )
+    }
+    image = expectSerializedImage(value.image, `blocks[${index}].image`)
+  }
+  // New-image embedding spec. Only valid for blocks the editor created
+  // (docxIndex === null) — an original block never re-embeds as new media.
+  let newImage: SerializedNewImage | undefined
+  if (value.newImage !== undefined && value.newImage !== null) {
+    if (type !== 'image' || docxIndex !== null) {
+      throw new OfficeValidationError(
+        'validation',
+        `blocks[${index}].newImage is only allowed on new image blocks (docxIndex null)`,
+      )
+    }
+    newImage = expectSerializedNewImage(value.newImage, `blocks[${index}].newImage`)
+  }
+  if (type === 'image' && docxIndex === null && newImage === undefined) {
+    throw new OfficeValidationError(
+      'validation',
+      `blocks[${index}] is a new image block but carries no newImage payload`,
+    )
+  }
+  if (type === 'image' && value.edited === true && docxIndex !== null && image === undefined) {
+    throw new OfficeValidationError(
+      'validation',
+      `blocks[${index}] is an edited image but carries no image payload`,
+    )
+  }
   const block: SerializedBlock = {
     docxIndex,
     type: type as SerializedBlock['type'],
     text,
     ...(runs !== undefined ? { runs } : {}),
     ...(table !== undefined ? { table } : {}),
+    ...(image !== undefined ? { image } : {}),
+    ...(newImage !== undefined ? { newImage } : {}),
     ...(value.level !== undefined
       ? { level: expectNumber(value.level, `blocks[${index}].level`) }
       : {}),
@@ -1438,12 +1774,141 @@ function toTableModel(t: SerializedTable): TableModel {
   return model
 }
 
+// ── Image model ↔ wire conversion (canonical Block image fields are the source) ──
+
+/** Canonical ImageWrap ↔ wire (canonical model has no 'inline' member: undefined = inline). */
+function wireWrapOf(block: Block): SerializedImageWrap | undefined {
+  return block.imageWrap as SerializedImageWrap | undefined
+}
+
+/** Canonical Block image fields → wire SerializedImage (null when not editable). */
+function serializeImage(block: Block): SerializedImage | undefined {
+  // Only pure-image paragraphs with readable media are editable; broken
+  // images and OLE previews stay byte-preserved read-only blocks.
+  if (!block.imageDataUrl) return undefined
+  return {
+    imageDataUrl: block.imageDataUrl,
+    ...(block.imageWidthPx !== undefined ? { widthPx: block.imageWidthPx } : {}),
+    ...(block.imageHeightPx !== undefined ? { heightPx: block.imageHeightPx } : {}),
+    ...(block.imageCrop ? { crop: { ...block.imageCrop } } : {}),
+    ...(block.imageFillRect ? { fillRect: { ...block.imageFillRect } } : {}),
+    ...(block.imageAlign ? { align: block.imageAlign } : {}),
+    ...(wireWrapOf(block) ? { wrap: wireWrapOf(block) } : {}),
+    ...(block.imageOffsetXEmu !== undefined ? { offsetXEmu: block.imageOffsetXEmu } : {}),
+    ...(block.imageOffsetYEmu !== undefined ? { offsetYEmu: block.imageOffsetYEmu } : {}),
+    ...(block.imagePosH ? { posH: block.imagePosH } : {}),
+    ...(block.imagePosV ? { posV: block.imagePosV } : {}),
+    ...(block.imagePosHRel ? { posHRel: block.imagePosHRel } : {}),
+    ...(block.imagePosVRel ? { posVRel: block.imagePosVRel } : {}),
+    ...(block.imageRotDeg !== undefined ? { rotDeg: block.imageRotDeg } : {}),
+    ...(block.imageFlipH ? { flipH: true } : {}),
+    ...(block.imageFlipV ? { flipV: true } : {}),
+  }
+}
+
+/** Normalize a wire/canonical crop for diffing (undefined → all-zero). */
+function cropOf(crop: { l: number; t: number; r: number; b: number } | undefined | null): {
+  l: number
+  t: number
+  r: number
+  b: number
+} {
+  return { l: crop?.l ?? 0, t: crop?.t ?? 0, r: crop?.r ?? 0, b: crop?.b ?? 0 }
+}
+
+function cropsEqual(
+  a: { l: number; t: number; r: number; b: number },
+  b: { l: number; t: number; r: number; b: number },
+): boolean {
+  return a.l === b.l && a.t === b.t && a.r === b.r && a.b === b.b
+}
+
+/**
+ * Diff the wire's edited image state against the parsed original block and
+ * build the canonical ImagePatch (mirrors the desktop editor's imagePatchOf).
+ * `wrap`/`posH`/`posV` ride along for the applyImageWrap orchestration — the
+ * canonical ImagePatch keeps them out because applyImageWrap is their writer
+ * (same split the desktop editor makes with its ImageBlockPatch).
+ * Returns null when nothing browser-editable changed.
+ */
+interface ImageBlockPatch extends ImagePatch {
+  /** wrap mode change; undefined keeps (written by applyImageWrap) */
+  wrap?: ImageWrap | null
+  /** margin-relative align pair (Word position-gallery presets) */
+  posH?: 'left' | 'center' | 'right'
+  posV?: 'top' | 'center' | 'bottom'
+}
+
+function imagePatchFromWire(wire: SerializedImage, original: Block): ImageBlockPatch | null {
+  const patch: ImageBlockPatch = {}
+  const w = wire.widthPx ?? null
+  const h = wire.heightPx ?? null
+  if (
+    w !== null &&
+    h !== null &&
+    (w !== (original.imageWidthPx ?? null) || h !== (original.imageHeightPx ?? null))
+  ) {
+    patch.widthPx = w
+    patch.heightPx = h
+  }
+  const align = wire.align ?? null
+  if (align !== (original.imageAlign ?? null)) patch.align = align
+  const wrap = (wire.wrap === 'inline' ? null : wire.wrap) as ImageWrap | null
+  const origWrap = (original.imageWrap as ImageWrap | null) ?? null
+  if (wrap !== origWrap) patch.wrap = wrap
+  const offX = wire.offsetXEmu
+  if (offX !== undefined && offX !== (original.imageOffsetXEmu ?? undefined)) {
+    patch.posOffsetX = offX
+  }
+  const offY = wire.offsetYEmu
+  if (offY !== undefined && offY !== (original.imageOffsetYEmu ?? undefined)) {
+    patch.posOffsetY = offY
+  }
+  const rot = wire.rotDeg ?? 0
+  if (rot !== (original.imageRotDeg ?? 0)) patch.rotDeg = rot
+  const flipH = wire.flipH === true
+  if (flipH !== (original.imageFlipH ?? false)) patch.flipH = flipH
+  const flipV = wire.flipV === true
+  if (flipV !== (original.imageFlipV ?? false)) patch.flipV = flipV
+  const crop = cropOf(wire.crop)
+  if (!cropsEqual(crop, cropOf(original.imageCrop))) patch.crop = crop
+  // margin-relative position presets are written by applyImageWrap only when
+  // the patch carries a wrap; force it in when the preset changed
+  const posH = wire.posH ?? null
+  const posV = wire.posV ?? null
+  if (
+    posH &&
+    posV &&
+    (posH !== (original.imagePosH ?? null) || posV !== (original.imagePosV ?? null))
+  ) {
+    patch.posH = posH
+    patch.posV = posV
+    if (patch.wrap === undefined) patch.wrap = wrap
+  }
+  return Object.keys(patch).length > 0 ? patch : null
+}
+
+/** Wire SerializedNewImage → canonical NewImage for the engine embed path. */
+function toNewImage(n: SerializedNewImage): NewImage {
+  return {
+    base64: n.base64,
+    mime: n.mime,
+    widthPx: n.widthPx,
+    heightPx: n.heightPx,
+    ...(n.align ? { align: n.align } : {}),
+    ...(n.wrap && n.wrap !== 'inline' ? { wrap: n.wrap as ImageWrap } : {}),
+    ...(n.rotDeg ? { rotDeg: n.rotDeg } : {}),
+    ...(n.flipH ? { flipH: true } : {}),
+    ...(n.flipV ? { flipV: true } : {}),
+  }
+}
+
 function serializeBlock(block: Block): SerializedBlock {
   const runs = block.runs ?? []
   const text = runs.map((r) => r.text).join('')
   // Collapse docx-engine's rich BlockType into our wire set. Passthrough
-  // covers images/charts/SmartArt/OLE and non-editable tables — the browser
-  // shows their label. Editable tables carry a typed table payload.
+  // covers charts/SmartArt/OLE, broken images and non-editable tables — the
+  // browser shows their label. Editable tables/images carry typed payloads.
   const type: SerializedBlock['type'] = block.hidden
     ? 'hidden'
     : block.type === 'heading'
@@ -1463,12 +1928,16 @@ function serializeBlock(block: Block): SerializedBlock {
   // Editable table payload from the canonical TableModel (absent for tables
   // the browser cannot safely regenerate — those stay read-only passthrough).
   const table = type === 'table' && block.table ? serializeTableModel(block.table) : undefined
+  // Editable image payload from the canonical image fields (absent for
+  // images with unreadable media — those stay read-only passthrough).
+  const image = type === 'image' ? serializeImage(block) : undefined
   return {
     docxIndex: block.docxIndex,
     type,
     text,
     ...(serializedRuns ? { runs: serializedRuns } : {}),
     ...(table ? { table } : {}),
+    ...(image ? { image } : {}),
     level: block.level,
     listKind: block.list?.kind,
     edited: false,
@@ -1545,6 +2014,58 @@ function toSaveBlocks(blocks: readonly SerializedBlock[], parsed: ParsedDocFull)
         kind: 'xml',
         xml: generateTableModelXml(model, original ?? undefined),
       })
+      continue
+    }
+    // ── Images: canonical patch/new-image paths (browser never builds XML) ──
+    if (b.type === 'image') {
+      // New image (editor-inserted): the engine creates the media part +
+      // relationship + drawing from the canonical NewImage.
+      if (b.docxIndex === null) {
+        if (!b.newImage) {
+          // Unreachable: wire validation rejects new image blocks without
+          // a newImage payload.
+          throw new OfficeValidationError(
+            'validation',
+            'new image block carries no newImage payload',
+          )
+        }
+        out.push({ kind: 'image', image: toNewImage(b.newImage) })
+        continue
+      }
+      // Existing image, edited: diff the wire state against the parsed
+      // original and surgically patch only what changed — the untouched
+      // drawing bytes (and any unmodeled properties) survive verbatim.
+      const originalBlock = parsed.blocks[b.docxIndex]
+      if (!originalBlock || originalBlock.type !== 'image' || !originalBlock.originalXml) {
+        throw new OfficeValidationError(
+          'validation',
+          `edited image block references docxIndex ${b.docxIndex} which is not an image`,
+        )
+      }
+      if (!b.image) {
+        // Unreachable: wire validation rejects edited images without payloads.
+        throw new OfficeValidationError('validation', 'edited image block carries no image payload')
+      }
+      const patch = imagePatchFromWire(b.image, originalBlock)
+      if (!patch) {
+        // Nothing actually changed (fingerprint false positive): keep the
+        // original bytes rather than emit a no-op patch.
+        out.push({ kind: 'original', docxIndex: b.docxIndex })
+        continue
+      }
+      let xml = patchImageParagraphXml(originalBlock.originalXml, patch)
+      if (patch.wrap !== undefined) {
+        const posOffset =
+          patch.posOffsetX !== undefined && patch.posOffsetY !== undefined
+            ? { x: patch.posOffsetX, y: patch.posOffsetY }
+            : undefined
+        const marginAlign =
+          posOffset === undefined && patch.posH && patch.posV
+            ? { h: patch.posH, v: patch.posV }
+            : undefined
+        xml = applyImageWrap(xml, patch.wrap, posOffset, marginAlign)
+      }
+      out.push({ kind: 'xml', xml })
       continue
     }
     // Regenerate with run-level formatting (bold, italic, underline, strike, link).
