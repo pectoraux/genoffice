@@ -2,3 +2,4 @@ node_modules
 dist
 tests/e2e/.results
 tests/e2e/.artifacts
+tests/e2e/.results-deployed

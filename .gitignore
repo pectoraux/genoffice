@@ -40,3 +40,4 @@ bun.lock
 # clean checkouts / CI deploys and passes Vercel's `functions` pre-validation.
 # Regenerate with `bun run build:api` after changing web-host/contractor-core.
 # (api/serverless.mjs.map is not generated — sourcemap is off in bundle-api.mjs)
+.env*

@@ -238,10 +238,30 @@ test.describe('Word fidelity part 2 (real HTTP + real engine)', () => {
     const fixture = await buildWordFixture()
     await openWordFixture(page, fixture, 'e2e-new-block.docx', '/tmp/e2e-new-block.docx')
 
-    // ── Create a new paragraph after block 0: click into it, End, Enter ────
+    // ── Create a new paragraph after block 0 ──────────────────────────────
+    // Place the caret deterministically at the end of block 0's text via the
+    // DOM Selection API. A plain element click can race the editor's focus
+    // handling (observed against a production deployment, where the caret
+    // landed at the document end and the new paragraph cloned the LAST
+    // block's docxIndex); an explicit range selection is stable everywhere.
     const para0 = page.locator('.ProseMirror p[data-docx-index="0"]')
-    await para0.click()
-    await page.keyboard.press('End')
+    await para0.waitFor()
+    await page.evaluate(() => {
+      const p = document.querySelector('.ProseMirror p[data-docx-index="0"]')
+      if (!p) throw new Error('block 0 not found')
+      const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT)
+      let last: Text | null = null
+      while (walker.nextNode()) last = walker.currentNode as Text
+      if (!last) throw new Error('block 0 has no text node')
+      const sel = window.getSelection()
+      if (!sel) throw new Error('no selection')
+      const range = document.createRange()
+      range.setStart(last, last.textContent?.length ?? 0)
+      range.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(range)
+      ;(p.closest('.ProseMirror') as HTMLElement).focus()
+    })
     await page.keyboard.press('Enter')
     await page.keyboard.type('Brand new browser paragraph.')
     await expect(page.getByText('● Unsaved')).toBeVisible()
