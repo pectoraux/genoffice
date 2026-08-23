@@ -1,0 +1,660 @@
+     1→/**
+     2→ * ElectronXlsxSidecarEngine — Electron adapter for SpreadsheetEngine (ADR-004).
+     3→ *
+     4→ * Implements the runtime-independent SpreadsheetEngine interface using the
+     5→ * existing Rust `xlsx-sidecar` binary. The adapter:
+     6→ *   - Delegates wire protocol to SidecarProtocolClient (no duplication)
+     7→ *   - Uses WeakMap for opaque handle → session state mapping (no id field)
+     8→ *   - Validates all sidecar responses via runtime validators (no `as` casts)
+     9→ *   - Invalidates ALL sessions on unexpected sidecar exit
+    10→ *   - Cleans up all temp files on close/stop/process-exit
+    11→ *
+    12→ * OPAQUE HANDLE:
+    13→ *   EngineSessionHandle is created as a bare frozen object with NO properties.
+    14→ *   The adapter uses a WeakMap<EngineSessionHandle, SessionState> to look up
+    15→ *   the internal sidecar UUID and temp path. There is no `id` field, no
+    16→ *   `engineSessionId`, no `sidecarSessionId`, and no `path` on the handle.
+    17→ *   Consumers cannot discover the internal state — even with Reflect.ownKeys.
+    18→ */
+    19→
+    20→import { mkdtempSync, mkdirSync, writeFileSync, unlinkSync, existsSync, rmSync, readFileSync } from 'node:fs'
+    21→import { tmpdir } from 'node:os'
+    22→import { join, dirname } from 'node:path'
+    23→import { randomUUID } from 'node:crypto'
+    24→import type {
+    25→  SpreadsheetEngine,
+    26→  EngineSessionHandle,
+    27→  WorkbookMetadata,
+    28→  EngineRangeResult,
+    29→  EngineFormulaCellsResult,
+    30→  EngineRecalcResult,
+    31→  EngineRecalcEdit,
+    32→  EngineRecalcRead,
+    33→  EngineMediaResult,
+    34→  EngineSaveResult,
+    35→  EngineError,
+    36→  WorksheetMetadata,
+    37→} from '@genoffice/runtime-contracts'
+    38→import {
+    39→  EngineError as EngineErrorClass,
+    40→  InvalidSessionError,
+    41→  InvalidInputError,
+    42→  ENGINE_SESSION_HANDLE_BRAND,
+    43→} from '@genoffice/runtime-contracts'
+    44→import type { SavePlan } from '@genoffice/runtime-contracts'
+    45→import type { EntrySource } from '@genoffice/xlsx-gateway'
+    46→import { SidecarProtocolClient, type SidecarProtocolLike } from './sidecar-protocol-client.js'
+    47→import {
+    48→  validateOpenResult,
+    49→  buildWorkbookMetadata,
+    50→  validateRangeResult,
+    51→  validateFormulaCellsResult,
+    52→  validateRecalcResult,
+    53→  validateMediaResult,
+    54→} from './sidecar-validators.js'
+    55→import { translateSavePlan, type EngineArchivePatch } from './save-plan-translator.js'
+    56→
+    57→// ── Internal types ────────────────────────────────────────────────────
+    58→
+    59→interface SessionState {
+    60→  readonly sidecarSessionId: string
+    61→  readonly tempPath: string
+    62→}
+    63→
+    64→/**
+    65→ * Options for adopting an externally-opened sidecar session.
+    66→ *
+    67→ * The engine creates a new opaque handle wrapping the EXISTING sidecar
+    68→ * session — NO wire call is made, NO temp file is created, NO snapshot
+    69→ * is taken. The sidecar session must already be alive in the sidecar
+    70→ * process that this engine's `SidecarProtocolLike` is connected to.
+    71→ *
+    72→ * This is used by the legacy `workbook:select` adoption path: the legacy
+    73→ * `XlsxSidecarClient` opens the workbook (in the SAME sidecar process
+    74→ * the engine uses), then the engine wraps the resulting `sidecarSessionId`
+    75→ * into an opaque `EngineSessionHandle` so the migrated read/recalc/media
+    76→ * path can use the coordinator-backed flow without re-opening the file.
+    77→ */
+    78→export interface AdoptExternalSessionOptions {
+    79→  /** The sidecar's session UUID (returned by the sidecar's `open` command). */
+    80→  readonly sidecarSessionId: string
+    81→  /**
+    82→   * Absolute path to the temp file the sidecar has open. The engine uses
+    83→   * this for `recalc_cells` (which takes a path, not a sessionId) and
+    84→   * for cleanup on close.
+    85→   */
+    86→  readonly tempPath: string
+    87→  /**
+    88→   * sheetId → file sheet name mapping (built from `[sheet.id, sheet.name]`
+    89→   * at open time). Stored on the handle so applySavePlan's translator
+    90→   * can resolve domain sheetIds → file sheet names.
+    91→   */
+    92→  readonly sheetNames: ReadonlyMap<string, string>
+    93→}
+    94→
+    95→// ── Opaque handle ─────────────────────────────────────────────────────
+    96→
+    97→/**
+    98→ * Creates an opaque EngineSessionHandle — a bare frozen object with NO
+    99→ * inspectable properties. The adapter uses a private WeakMap to look up
+   100→ * session state by object identity. There is no `id` field.
+   101→ *
+   102→ * The brand key is a real `Symbol()` (runtime-exported by
+   103→ * @genoffice/runtime-contracts since Increment 5B) — symbol keys are
+   104→ * invisible to `Object.keys()` / `JSON.stringify`, preserving the opacity
+   105→ * invariant. External code cannot construct a handle without the brand
+   106→ * reference (which is not exported beyond the engine's own imports).
+   107→ */
+   108→function createHandle(): EngineSessionHandle {
+   109→  const obj = { [ENGINE_SESSION_HANDLE_BRAND]: ENGINE_SESSION_HANDLE_BRAND }
+   110→  Object.freeze(obj)
+   111→  return obj as EngineSessionHandle
+   112→}
+   113→
+   114→// ── Engine ────────────────────────────────────────────────────────────
+   115→
+   116→export interface ElectronXlsxSidecarEngineConfig {
+   117→  /**
+   118→   * Path to the Rust xlsx-sidecar binary. REQUIRED when `sidecarClient` is
+   119→   * not provided (the engine will construct its own `SidecarProtocolClient`).
+   120→   * OPTIONAL when `sidecarClient` is provided (the engine uses the injected
+   121→   * client and never spawns a process itself).
+   122→   */
+   123→  binaryPath?: string
+   124→  tempDir?: string
+   125→  /**
+   126→   * Optional pre-existing sidecar client. When provided, the engine uses
+   127→   * this client instead of constructing its own `SidecarProtocolClient`,
+   128→   * and does NOT own the client's lifecycle (stop() will not call
+   129→   * client.stop()).
+   130→   *
+   131→   * This is the integration point for the legacy `XlsxSidecarClient`
+   132→   * (apps/sheets/src/main/xlsx-sidecar-client.ts): the legacy client
+   133→   * opens the workbook via `client.open()`, and the engine wraps the
+   134→   * resulting `sidecarSessionId` via `adoptExternalSession()` — sharing
+   135→   * the same sidecar process, eliminating double-spawn.
+   136→   */
+   137→  sidecarClient?: SidecarProtocolLike
+   138→}
+   139→
+   140→export class ElectronXlsxSidecarEngine implements SpreadsheetEngine {
+   141→  private readonly client: SidecarProtocolLike
+   142→  /** True when the engine owns the sidecar client (constructed it itself). */
+   143→  private readonly ownsClient: boolean
+   144→  private readonly sessions = new WeakMap<EngineSessionHandle, SessionState>()
+   145→  /**
+   146→   * Parallel map of handle → sheetNames (sheetId → file sheet name).
+   147→   * Stored at open() time so applySavePlan's translator can resolve
+   148→   * domain sheetIds → file sheet names without the engine having access
+   149→   * to the domain session.
+   150→   */
+   151→  private readonly sessionSheetNames = new WeakMap<EngineSessionHandle, ReadonlyMap<string, string>>()
+   152→  /** Parallel iterable set — enables invalidateAllSessions() to enumerate handles. */
+   153→  private readonly activeHandles = new Set<EngineSessionHandle>()
+   154→  private readonly tempDir: string
+   155→
+   156→  constructor(config: ElectronXlsxSidecarEngineConfig) {
+   157→    this.tempDir = config.tempDir ?? tmpdir()
+   158→    if (config.sidecarClient) {
+   159→      this.client = config.sidecarClient
+   160→      this.ownsClient = false
+   161→    } else {
+   162→      if (!config.binaryPath) {
+   163→        throw new Error(
+   164→          'ElectronXlsxSidecarEngine requires either `sidecarClient` or `binaryPath`',
+   165→        )
+   166→      }
+   167→      this.client = new SidecarProtocolClient(config.binaryPath)
+   168→      this.ownsClient = true
+   169→    }
+   170→    // On unexpected sidecar exit: invalidate ALL sessions + clean temp files
+   171→    this.client.onProcessExit(() => this.invalidateAllSessions())
+   172→  }
+   173→
+   174→  async open(
+   175→    workbook: Uint8Array,
+   176→    locale: string,
+   177→    fileName: string,
+   178→  ): Promise<{ handle: EngineSessionHandle; metadata: WorkbookMetadata }> {
+   179→    const tempDir = mkdtempSync(join(this.tempDir, 'genoffice-engine-'))
+   180→    const tempPath = join(tempDir, fileName || 'workbook.xlsx')
+   181→    writeFileSync(tempPath, workbook)
+   182→
+   183→    try {
+   184→      const raw = await this.client.request({ command: 'open', path: tempPath, locale })
+   185→      const validated = validateOpenResult(raw)
+   186→      const handle = createHandle()
+   187→      this.sessions.set(handle, {
+   188→        sidecarSessionId: validated.sessionId,
+   189→        tempPath,
+   190→      })
+   191→      // Store the sheetNames map (sheetId → file sheet name) for applySavePlan.
+   192→      // Built from [sheet.id, sheet.name] — the stable XLSX sheetId attribute.
+   193→      const sheetNames = new Map<string, string>()
+   194→      for (const sheet of validated.sheets) {
+   195→        sheetNames.set(sheet.id, sheet.name)
+   196→      }
+   197→      this.sessionSheetNames.set(handle, sheetNames)
+   198→      this.activeHandles.add(handle)
+   199→      return { handle, metadata: buildWorkbookMetadata(validated, fileName) }
+   200→    } catch (error) {
+   201→      this.cleanupTempFile(tempPath)
+   202→      throw this.translateError(error)
+   203→    }
+   204→  }
+   205→
+   206→  /**
+   207→   * Adopt an externally-opened sidecar session.
+   208→   *
+   209→   * Wraps an EXISTING sidecar `sessionId` (opened by an external client of
+   210→   * the SAME sidecar process) into a new opaque `EngineSessionHandle`. This
+   211→   * performs NO wire call, spawns NO process, creates NO temp file, and
+   212→   * reads NO workbook bytes — it is a pure in-process handle registration.
+   213→   *
+   214→   * The caller MUST guarantee:
+   215→   *   - The `sidecarSessionId` is currently alive in the sidecar process
+   216→   *     that this engine's `SidecarProtocolLike` is connected to.
+   217→   *   - The `tempPath` is the path that was passed to the sidecar's `open`
+   218→   *     command (the sidecar still has it open for `recalc_cells`).
+   219→   *   - The `sheetNames` map was built from `[sheet.id, sheet.name]` of the
+   220→   *     sidecar's open response (the stable XLSX sheetId attribute).
+   221→   *
+   222→   * After adoption, the returned `EngineSessionHandle` is interchangeable
+   223→   * with one returned by `open()` — all read/recalc/media/save operations
+   224→   * work identically.
+   225→   *
+   226→   * OWNERSHIP: The engine takes ownership of the sidecar session. When
+   227→   * `close(handle)` is called, the engine issues `command: 'close'` to the
+   228→   * sidecar and (if the tempPath was created by the engine) cleans up the
+   229→   * temp file. For adopted sessions, the tempPath was NOT created by the
+   230→   * engine — `close()` will still try to clean it up because the engine
+   231→   * always cleans up `SessionState.tempPath`. The legacy caller must NOT
+   232→   * also clean up the tempPath (adoption transfers ownership).
+   233→   */
+   234→  adoptExternalSession(opts: AdoptExternalSessionOptions): EngineSessionHandle {
+   235→    const handle = createHandle()
+   236→    this.sessions.set(handle, {
+   237→      sidecarSessionId: opts.sidecarSessionId,
+   238→      tempPath: opts.tempPath,
+   239→    })
+   240→    this.sessionSheetNames.set(handle, new Map(opts.sheetNames))
+   241→    this.activeHandles.add(handle)
+   242→    return handle
+   243→  }
+   244→
+   245→  async readRange(
+   246→    handle: EngineSessionHandle,
+   247→    sheetName: string,
+   248→    range: string,
+   249→  ): Promise<EngineRangeResult> {
+   250→    const session = this.resolveSession(handle)
+   251→    // Resolve sheetName → sidecar sheetId. The service passes the file sheet
+   252→    // name (e.g. 'Sheet1'); the sidecar expects the stable XLSX sheetId
+   253→    // attribute (e.g. 'sheet-1'). The engine stored the sheetId→sheetName
+   254→    // map at open() time — invert it here to resolve sheetName→sheetId.
+   255→    const sheetId = this.resolveSheetIdFromName(handle, sheetName)
+   256→    try {
+   257→      const raw = await this.client.request({
+   258→        command: 'read_range',
+   259→        sessionId: session.sidecarSessionId,
+   260→        sheetId,
+   261→        range: this.parseRange(range),
+   262→      })
+   263→      return validateRangeResult(raw)
+   264→    } catch (error) {
+   265→      throw this.translateError(error)
+   266→    }
+   267→  }
+   268→
+   269→  async readFormulaCells(
+   270→    handle: EngineSessionHandle,
+   271→    sheetName: string,
+   272→  ): Promise<EngineFormulaCellsResult> {
+   273→    const session = this.resolveSession(handle)
+   274→    const sheetId = this.resolveSheetIdFromName(handle, sheetName)
+   275→    try {
+   276→      const raw = await this.client.request({
+   277→        command: 'read_formula_cells',
+   278→        sessionId: session.sidecarSessionId,
+   279→        sheetId,
+   280→      })
+   281→      return validateFormulaCellsResult(raw)
+   282→    } catch (error) {
+   283→      throw this.translateError(error)
+   284→    }
+   285→  }
+   286→
+   287→  async recalculate(
+   288→    handle: EngineSessionHandle,
+   289→    edits: EngineRecalcEdit[],
+   290→    reads: EngineRecalcRead[],
+   291→  ): Promise<EngineRecalcResult> {
+   292→    const session = this.resolveSession(handle)
+   293→    try {
+   294→      const raw = await this.client.request(
+   295→        {
+   296→          command: 'recalc_cells',
+   297→          path: session.tempPath,
+   298→          edits: edits.map((e) => ({
+   299→            sheet: e.sheetName,
+   300→            row: e.row,
+   301→            column: e.column,
+   302→            input: e.value,
+   303→          })),
+   304→          reads: reads.map((r) => ({
+   305→            sheet: r.sheetName,
+   306→            range: { startRow: r.row, endRow: r.row, startColumn: r.column, endColumn: r.column },
+   307→          })),
+   308→        },
+   309→        SidecarProtocolClient.ARCHIVE_TIMEOUT_MS,
+   310→      )
+   311→      return validateRecalcResult(raw)
+   312→    } catch (error) {
+   313→      throw this.translateError(error)
+   314→    }
+   315→  }
+   316→
+   317→  async readMedia(
+   318→    handle: EngineSessionHandle,
+   319→    visualId: string,
+   320→  ): Promise<EngineMediaResult> {
+   321→    const session = this.resolveSession(handle)
+   322→    try {
+   323→      const raw = await this.client.request({
+   324→        command: 'read_media',
+   325→        sessionId: session.sidecarSessionId,
+   326→        visualId,
+   327→      })
+   328→      return validateMediaResult(raw)
+   329→    } catch (error) {
+   330→      throw this.translateError(error)
+   331→    }
+   332→  }
+   333→
+   334→  async applySavePlan(
+   335→    handle: EngineSessionHandle,
+   336→    plan: SavePlan,
+   337→  ): Promise<EngineSaveResult> {
+   338→    const session = this.resolveSession(handle)
+   339→    const workDir = mkdtempSync(join(this.tempDir, 'genoffice-save-'))
+   340→    const targetPath = join(workDir, `output-${randomUUID()}.xlsx`)
+   341→    try {
+   342→      // Create a sidecar-backed EntrySource (abstract archive reader).
+   343→      // Mirrors createSidecarEntrySource in apps/sheets/src/gateway/xlsx-package-io.ts.
+   344→      const source = this.createEntrySource(session.tempPath, workDir)
+   345→
+   346→      // The engine stores the sheetNames map at open() time so the translator
+   347→      // can resolve domain sheetIds → file sheet names. The service validates
+   348→      // sheetIds before calling applySavePlan, but the translator needs the
+   349→      // actual sheetNames map to perform the resolution.
+   350→      const sheetNames = this.sessionSheetNames.get(handle)
+   351→      if (sheetNames === undefined) {
+   352→        throw new InvalidSessionError('Session sheetNames not found — was the session closed?')
+   353→      }
+   354→
+   355→      // Translate the domain SavePlan to engine archive patches via the legacy
+   356→      // planCellEditsToXlsx planning logic. The translator:
+   357→      //   1. Resolves sheetIds → sheetNames (fail-closed → InvalidInputError)
+   358→      //   2. Builds gateway-style mutation types (mirrors writeWorkbookTo)
+   359→      //   3. Calls planCellEditsToXlsx with the sidecar-backed EntrySource
+   360→      //   4. Converts MutationPlan → EngineArchivePatch[] + touched/removed/added
+   361→      const translation = await translateSavePlan(plan, sheetNames, source)
+   362→
+   363→      // Write each patch's content to a temp file (the sidecar's save_archive
+   364→      // command expects { name, contentPath } pairs, not inline content).
+   365→      const replacements: { name: string; contentPath: string }[] = []
+   366→      const additions: { name: string; contentPath: string }[] = []
+   367→      const addedSet = new Set(translation.addedEntries)
+   368→      for (const patch of translation.patches) {
+   369→        const contentPath = join(workDir, `patch-${randomUUID()}.bin`)
+   370→        if (typeof patch.content === 'string') {
+   371→          writeFileSync(contentPath, patch.content, 'utf8')
+   372→        } else {
+   373→          writeFileSync(contentPath, patch.content)
+   374→        }
+   375→        if (addedSet.has(patch.entryPath)) {
+   376→          additions.push({ name: patch.entryPath, contentPath })
+   377→        } else {
+   378→          replacements.push({ name: patch.entryPath, contentPath })
+   379→        }
+   380→      }
+   381→
+   382→      await this.client.request(
+   383→        {
+   384→          command: 'save_archive',
+   385→          sourcePath: session.tempPath,
+   386→          targetPath,
+   387→          replacements,
+   388→          removals: translation.removedEntries,
+   389→          additions,
+   390→        },
+   391→        SidecarProtocolClient.ARCHIVE_TIMEOUT_MS,
+   392→      )
+   393→      const bytes = readFileSync(targetPath)
+   394→      return {
+   395→        data: new Uint8Array(bytes),
+   396→        touchedEntries: translation.touchedEntries,
+   397→      }
+   398→    } catch (error) {
+   399→      throw this.translateError(error)
+   400→    } finally {
+   401→      try { rmSync(workDir, { recursive: true, force: true }) } catch { /* */ }
+   402→    }
+   403→  }
+   404→
+   405→  /**
+   406→   * Create a sidecar-backed EntrySource for the save planner.
+   407→   *
+   408→   * Mirrors `createSidecarEntrySource` in apps/sheets/src/gateway/xlsx-package-io.ts.
+   409→   * The EntrySource abstracts archive reading: the planner calls readText/has/
+   410→   * canPatch/containsText, and this implementation backs them with sidecar
+   411→   * wire commands (archive_manifest, read_entries, scan_entries).
+   412→   */
+   413→  private createEntrySource(sourcePath: string, workDir: string): EntrySource {
+   414→    // Fetch the archive manifest up front to know entry sizes.
+   415→    // The sidecar returns { entries: [{ name, crc32, compressedSize, uncompressedSize }] }.
+   416→    const manifestPromise = this.client.request(
+   417→      { command: 'archive_manifest', path: sourcePath },
+   418→      SidecarProtocolClient.ARCHIVE_TIMEOUT_MS,
+   419→    )
+   420→    const cache = new Map<string, string>()
+   421→    let extractionCount = 0
+   422→    const MAX_PATCH_ENTRY_BYTES = 256 * 1024 * 1024
+   423→
+   424→    return {
+   425→      paths: async () => {
+   426→        const manifest = await manifestPromise
+   427→        const entries = (manifest as { entries: Array<{ name: string }> }).entries
+   428→        return entries.map((e) => e.name)
+   429→      },
+   430→      has: async (path: string) => {
+   431→        const manifest = await manifestPromise
+   432→        const entries = (manifest as { entries: Array<{ name: string }> }).entries
+   433→        return entries.some((e) => e.name === path)
+   434→      },
+   435→      canPatch: async (path: string) => {
+   436→        const manifest = await manifestPromise
+   437→        const entries = (manifest as { entries: Array<{ name: string; uncompressedSize: number }> }).entries
+   438→        const entry = entries.find((e) => e.name === path)
+   439→        return (entry?.uncompressedSize ?? 0) <= MAX_PATCH_ENTRY_BYTES
+   440→      },
+   441→      containsText: async (path: string, needle: string) => {
+   442→        const scanned = await this.client.request(
+   443→          { command: 'scan_entries', path: sourcePath, entries: [path], needle },
+   444→          SidecarProtocolClient.ARCHIVE_TIMEOUT_MS,
+   445→        )
+   446→        const matches = (scanned as { matches: string[] }).matches
+   447→        return matches.includes(path)
+   448→      },
+   449→      readText: async (path: string) => {
+   450→        const cached = cache.get(path)
+   451→        if (cached !== undefined) return cached
+   452→        const manifest = await manifestPromise
+   453→        const entries = (manifest as { entries: Array<{ name: string; uncompressedSize: number }> }).entries
+   454→        const entry = entries.find((e) => e.name === path)
+   455→        if (!entry) throw new EngineErrorClass(`Workbook is missing ${path}`, 'PROTOCOL_ERROR')
+   456→        if (entry.uncompressedSize > MAX_PATCH_ENTRY_BYTES) {
+   457→          throw new EngineErrorClass(
+   458→            `${path} is ${entry.uncompressedSize} bytes uncompressed — too large to edit.`,
+   459→            'INTERNAL_ERROR',
+   460→          )
+   461→        }
+   462→        const extractDir = join(workDir, `extract-${extractionCount}`)
+   463→        extractionCount += 1
+   464→        mkdirSync(extractDir, { recursive: true })
+   465→        const extracted = await this.client.request(
+   466→          { command: 'read_entries', path: sourcePath, entries: [path], outputDir: extractDir },
+   467→          SidecarProtocolClient.ARCHIVE_TIMEOUT_MS,
+   468→        )
+   469→        const filePath = (extracted as { entries: Array<{ name: string; path: string }> }).entries[0]?.path
+   470→        if (!filePath) throw new EngineErrorClass(`Sidecar did not extract ${path}`, 'PROTOCOL_ERROR')
+   471→        const content = readFileSync(filePath, 'utf8')
+   472→        cache.set(path, content)
+   473→        return content
+   474→      },
+   475→    }
+   476→  }
+   477→
+   478→  async convertWorkbook(
+   479→    workbook: Uint8Array,
+   480→    fileName: string,
+   481→  ): Promise<{ data: Uint8Array; fileName: string }> {
+   482→    const workDir = mkdtempSync(join(this.tempDir, 'genoffice-convert-'))
+   483→    const inputPath = join(workDir, fileName || 'input.xls')
+   484→    const outputPath = join(workDir, 'converted.xlsx')
+   485→    writeFileSync(inputPath, workbook)
+   486→    try {
+   487→      await this.client.request(
+   488→        { command: 'convert_workbook', path: inputPath, targetPath: outputPath },
+   489→        SidecarProtocolClient.ARCHIVE_TIMEOUT_MS,
+   490→      )
+   491→      const bytes = readFileSync(outputPath)
+   492→      return {
+   493→        data: new Uint8Array(bytes),
+   494→        fileName: (fileName || 'input').replace(/\.[^.]+$/, '') + '.xlsx',
+   495→      }
+   496→    } catch (error) {
+   497→      throw this.translateError(error)
+   498→    } finally {
+   499→      try { rmSync(workDir, { recursive: true, force: true }) } catch { /* */ }
+   500→    }
+   501→  }
+   502→
+   503→  async close(handle: EngineSessionHandle): Promise<void> {
+   504→    const session = this.sessions.get(handle)
+   505→    if (!session) throw new InvalidSessionError('Unknown engine session handle')
+   506→    this.sessions.delete(handle)
+   507→    this.sessionSheetNames.delete(handle)
+   508→    this.activeHandles.delete(handle)
+   509→    try {
+   510→      await this.client.request({ command: 'close', sessionId: session.sidecarSessionId })
+   511→    } catch {
+   512→      // Best-effort close
+   513→    } finally {
+   514→      this.cleanupTempFile(session.tempPath)
+   515→    }
+   516→  }
+   517→
+   518→  async readArchiveEntry(
+   519→    handle: EngineSessionHandle,
+   520→    entryName: string,
+   521→  ): Promise<string> {
+   522→    const session = this.resolveSession(handle)
+   523→    const workDir = mkdtempSync(join(tmpdir(), 'genoffice-archive-read-'))
+   524→    try {
+   525→      const raw = await this.client.request(
+   526→        {
+   527→          command: 'read_entries',
+   528→          path: session.tempPath,
+   529→          entries: [entryName],
+   530→          outputDir: workDir,
+   531→        },
+   532→        SidecarProtocolClient.ARCHIVE_TIMEOUT_MS,
+   533→      )
+   534→      // Runtime-validate the read_entries response — NO raw cast
+   535→      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+   536→        throw new EngineErrorClass('Invalid read_entries response: not an object', 'PROTOCOL_ERROR')
+   537→      }
+   538→      const obj = raw as Record<string, unknown>
+   539→      if (!Array.isArray(obj.entries)) {
+   540→        throw new EngineErrorClass('Invalid read_entries response: missing entries array', 'PROTOCOL_ERROR')
+   541→      }
+   542→      const entries = obj.entries as Array<Record<string, unknown>>
+   543→      if (entries.length === 0 || typeof entries[0]?.path !== 'string') {
+   544→        throw new InvalidInputError(`Archive entry not found: ${entryName}`)
+   545→      }
+   546→      const filePath = entries[0].path
+   547→      const content = readFileSync(filePath, 'utf8')
+   548→      return content
+   549→    } catch (error) {
+   550→      throw this.translateError(error)
+   551→    } finally {
+   552→      try { rmSync(workDir, { recursive: true, force: true }) } catch { /* best effort */ }
+   553→    }
+   554→  }
+   555→
+   556→  async stop(): Promise<void> {
+   557→    this.invalidateAllSessions()
+   558→    if (this.ownsClient) {
+   559→      // Only stop the sidecar process when the engine owns it.
+   560→      // For injected clients (legacy XlsxSidecarClient), the caller owns
+   561→      // the lifecycle and is responsible for stopping.
+   562→      this.client.stop()
+   563→    }
+   564→  }
+   565→
+   566→  start(): void { this.client.start() }
+   567→  getProcessId(): number | null { return this.client.getProcessId() }
+   568→
+   569→  // ── Internal ──────────────────────────────────────────────────────
+   570→
+   571→  private resolveSession(handle: EngineSessionHandle): SessionState {
+   572→    const session = this.sessions.get(handle)
+   573→    if (!session) throw new InvalidSessionError('Unknown engine session handle')
+   574→    return session
+   575→  }
+   576→
+   577→  /**
+   578→   * Resolve a file sheet NAME (e.g. 'Sheet1') back to the stable XLSX sheetId
+   579→   * attribute (e.g. 'sheet-1') that the sidecar expects in `read_range` /
+   580→   * `read_formula_cells` commands.
+   581→   *
+   582→   * The engine stores a `sheetId → sheetName` map per handle at open() /
+   583→   * adoption time. Invert it here for reverse lookup.
+   584→   *
+   585→   * THROWS: InvalidInputError if the sheetName is not in the map (the caller
+   586→   * passed a sheet name that doesn't exist in this workbook).
+   587→   */
+   588→  private resolveSheetIdFromName(handle: EngineSessionHandle, sheetName: string): string {
+   589→    const sheetNames = this.sessionSheetNames.get(handle)
+   590→    if (!sheetNames) {
+   591→      throw new InvalidSessionError('Session sheetNames not found — was the session closed?')
+   592→    }
+   593→    for (const [id, name] of sheetNames) {
+   594→      if (name === sheetName) return id
+   595→    }
+   596→    throw new InvalidInputError(`Unknown sheet name: ${sheetName}`)
+   597→  }
+   598→
+   599→  /**
+   600→   * Invalidate ALL sessions on unexpected sidecar exit.
+   601→   * Iterates activeHandles, deletes WeakMap entries, cleans temp directories,
+   602→   * and clears the Set. After this, all existing handles produce InvalidSessionError.
+   603→   */
+   604→  private invalidateAllSessions(): void {
+   605→    for (const handle of this.activeHandles) {
+   606→      const session = this.sessions.get(handle)
+   607→      if (session) {
+   608→        this.cleanupTempFile(session.tempPath)
+   609→        this.sessions.delete(handle)
+   610→        this.sessionSheetNames.delete(handle)
+   611→      }
+   612→    }
+   613→    this.activeHandles.clear()
+   614→  }
+   615→
+   616→  private cleanupTempFile(path: string): void {
+   617→    try {
+   618→      if (existsSync(path)) unlinkSync(path)
+   619→      try { rmSync(dirname(path), { recursive: false }) } catch { /* */ }
+   620→    } catch { /* */ }
+   621→  }
+   622→
+   623→  private translateError(error: unknown): EngineError {
+   624→    if (error instanceof EngineErrorClass) return error
+   625→    if (error instanceof InvalidSessionError) return error
+   626→    if (error instanceof InvalidInputError) return error
+   627→    if (error instanceof Error) {
+   628→      const msg = error.message
+   629→      if (msg.includes('timed out')) return new EngineErrorClass('Engine operation timed out', 'TIMEOUT')
+   630→      if (msg.includes('stopped') || msg.includes('exited')) return new EngineErrorClass('Engine process unavailable', 'PROCESS_ERROR')
+   631→      if (msg.includes('invalid JSON') || msg.includes('invalid response') || msg.includes('Invalid ')) return new EngineErrorClass('Engine returned invalid data', 'PROTOCOL_ERROR')
+   632→      if (msg.includes('Unknown engine session')) return new InvalidSessionError(msg)
+   633→      if (msg.includes('ENOENT') || msg.includes('EPIPE') || msg.includes('EACCES')) return new EngineErrorClass('Engine filesystem error', 'FS_ERROR')
+   634→      return new EngineErrorClass('Engine operation failed', 'INTERNAL_ERROR')
+   635→    }
+   636→    return new EngineErrorClass('Unknown engine error', 'UNKNOWN')
+   637→  }
+   638→
+   639→  private parseRange(range: string): { startRow: number; endRow: number; startColumn: number; endColumn: number } {
+   640→    const match = range.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/)
+   641→    if (!match) throw new InvalidInputError(`Invalid range: ${range}`)
+   642→    const col1 = match[1] ?? ''
+   643→    const row1 = match[2] ?? '0'
+   644→    const col2 = match[3] ?? ''
+   645→    const row2 = match[4] ?? '0'
+   646→    return {
+   647→      startColumn: this.colToIdx(col1),
+   648→      endColumn: this.colToIdx(col2),
+   649→      startRow: parseInt(row1, 10) - 1,
+   650→      endRow: parseInt(row2, 10) - 1,
+   651→    }
+   652→  }
+   653→
+   654→  private colToIdx(col: string): number {
+   655→    let idx = 0
+   656→    for (const ch of col) idx = idx * 26 + (ch.charCodeAt(0) - 64)
+   657→    return idx - 1
+   658→  }
+   659→}
+   660→
