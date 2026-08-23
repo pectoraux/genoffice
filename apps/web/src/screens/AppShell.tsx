@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import { authApi, type SessionInfo } from '../api/client'
 import { styles } from '../styles'
 import { ProjectsScreen } from './Projects'
@@ -44,7 +44,7 @@ export function AppShell({
   )
 }
 
-function OfficeFrame({ children, session, onRoute, onLogout }: { children: React.ReactNode; session: SessionInfo | null; onRoute: (r: string) => void; onLogout: () => Promise<void> }) {
+function OfficeFrame({ children, session, onRoute, onLogout }: { children: ReactNode; session: SessionInfo | null; onRoute: (r: string) => void; onLogout: () => Promise<void> }) {
   return <div style={{ minHeight: '100vh' }}>
     <header style={styles.header}>
       <h1 style={styles.headerTitle}>GenOffice Office{session?.displayName ? ` — ${session.displayName}` : ''}</h1>
