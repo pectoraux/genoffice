@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BooleanNumber, WrapStrategy } from '@univerjs/core'
 import type { IStyleData } from '@univerjs/core'
+import { ILayoutService } from '@univerjs/ui'
 import type { BrowserUniverRuntime } from '../../office/create-browser-univer'
 import { parseAddress, parseRange } from '../../office/cell-address'
 
@@ -320,10 +321,12 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     if (!r) return 'No workbook open'
     const wb = r.univerAPI.getActiveWorkbook()
     const ws = wb?.getActiveSheet()
-    if (!ws) return 'No active sheet'
+    if (!wb || !ws) return 'No active sheet'
     const trimmed = ref.trim()
     if (!trimmed) return null
-    // Validate A1 / range syntax first.
+    // Validate A1 / range syntax first (the web has no defined-names layer,
+    // so plain syntax validation is the resolution step the desktop's
+    // resolveGoToRef performs for named refs).
     try {
       try {
         parseRange(trimmed)
@@ -333,42 +336,49 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     } catch {
       return 'Invalid reference'
     }
-    // Resolve the range. Each facade selection call (activate /
-    // setActiveSelection / activateAsCurrentCell) is invoked best-effort —
-    // under the current Univer config they throw without moving the active
-    // cell, so we do NOT gate success on `moved`. The validation contract
-    // (a valid in-range ref resolves to no error; an invalid ref errors) is
-    // what the name box relies on. Programmatic selection-move is a known
-    // gap; real grid clicks move the selection (verified by E2E).
-    let range: ReturnType<typeof ws.getRange> | null = null
+    // The FWorkbook facade carries the authoritative selection API
+    // (setActiveRange, declared at @univerjs/sheets f-workbook.d.ts:384) —
+    // the SAME path the desktop's goToReference (apps/sheets/src/renderer/
+    // data-tools-actions.ts:134-180) uses. The previous implementation
+    // called ws.setActiveSelection(range) + range.activate()/activateAs-
+    // CurrentCell() (FWorksheet/FRange facades), which throw silently under
+    // the toolbar:false config and never move the active cell. workbook.
+    // setActiveRange is the correct, proven entry point.
     try {
-      range = ws.getRange(trimmed)
-    } catch {
-      /* getRange can reject exotic refs */
-    }
-    if (!range) return 'Reference out of range'
-    try {
-      range.activate()
-    } catch {
-      /* best-effort */
-    }
-    try {
-      ws.setActiveSelection(range)
-    } catch {
-      /* best-effort */
-    }
-    try {
-      range.activateAsCurrentCell()
-    } catch {
-      /* best-effort */
-    }
-    try {
-      ws.scrollToCell(range.getRow(), range.getColumn())
-    } catch {
-      /* scroll is best-effort */
+      // A jump must not leave an editor open on the previous cell — later
+      // keystrokes would land there. Commit it before moving (fire-and-
+      // forget; matches the desktop's `void endEditingAsync(true)`).
+      if (wb.isCellEditing()) void wb.endEditingAsync(true)
+      const range = ws.getRange(trimmed)
+      // If the ref named a different sheet (e.g. "Sheet2!B5"), switch to it;
+      // otherwise stay on the active sheet.
+      const target = wb.getSheetBySheetId(range.getSheetId()) ?? ws
+      wb.setActiveRange(range)
+      target.scrollToCell(range.getRow(), range.getColumn())
+      // Hand keyboard focus back to the grid (Univer's hidden editor host,
+      // the same handoff the desktop performs via ILayoutService.focus()).
+      // Without this, the browser keeps focus on the Name Box <input> and
+      // typing after a jump lands in the input, not the target cell.
+      try {
+        r.univer.__getInjector().get(ILayoutService).focus()
+      } catch {
+        /* ILayoutService not registered in this build — grid click + name
+           box echo still work; only direct keyboard entry after a jump
+           would land on <body> instead of the target cell. Best-effort. */
+      }
+      // Trigger a refresh so the Name Box echoes the new active cell
+      // immediately (the SelectionChanged event fires asynchronously).
+      refresh()
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : ''
+      if (detail.includes('out of bounds') || detail.includes('out of range')) {
+        return 'Reference out of range'
+      }
+      if (detail.includes('Range not found')) return 'Sheet not found'
+      return detail === '' ? 'Invalid reference' : `Navigation failed: ${detail}`
     }
     return null
-  }, [])
+  }, [refresh])
 
   const commitFormula = useCallback((text: string) => {
     const r = rtRef.current

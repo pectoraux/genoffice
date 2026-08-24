@@ -344,25 +344,19 @@ body {
 
 /* ── Grid container ─────────────────────────────────────────────────── */
 
-/* NB: only `flex: 1; min-height: 0` — the proven-working inline style the
-   pre-shell editor used. Adding position:relative / background here breaks
-   Univer's internal canvas layout (the grid canvas renders at ~27px tall).
-   The dark-mode grid background comes from Univer's ThemeService, not CSS. */
+/* The grid container owns the remaining viewport height (flex:1 + min-height:0).
+   With SheetsCorePreset header:false + formulaBar:false (create-browser-univer.ts),
+   Univer's SpreadsheetHeader plugin is never mounted — the grid canvas is the
+   first child of #genoffice-web-excel and owns the full container height. The
+   custom Name Box + Formula Bar (.excel-formula-row above) are the SOLE name
+   box / formula bar — no duplicate. Do NOT add position:relative / background
+   here: Univer's internal canvas layout is sensitive to container styling and
+   renders the grid at ~27px tall when these are set. The dark-mode grid
+   background comes from Univer's ThemeService, not CSS. */
 .excel-grid {
   flex: 1;
   min-height: 0;
 }
-
-/* Univer's preset header (name box + formula bar) renders inside
-   #genoffice-web-excel (toolbar:false means NO preset ribbon — the custom
-   7-tab Ribbon provides that). The web shell ALSO renders its own custom
-   Name Box + Formula Bar row above the grid. The name-box + formula-bar
-   pair is therefore cosmetically duplicated (Univer's inside the container +
-   the custom row above). This matches the desktop, which has a custom Name
-   Box above Univer's container. Hiding Univer's header via CSS
-   (display:none OR visibility:hidden) breaks grid interactivity (clicks
-   stop moving the active cell), so it is left visible — a known cosmetic
-   gap, not a functional one. */
 
 /* ── Status bar ─────────────────────────────────────────────────────── */
 

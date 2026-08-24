@@ -15,7 +15,7 @@
  * fidelity, and reopen round-trips.
  */
 import { test, expect } from '@playwright/test'
-import { loginAsDemoOwner, gotoHashRoute } from './helpers'
+import { loginAsDemoOwner, gotoHashRoute, waitForGridCanvas } from './helpers'
 import { buildExcelFormatFixture, readZipEntry } from './fixtures'
 import { writeFileSync } from 'node:fs'
 
@@ -68,7 +68,7 @@ test.describe('Excel cell formatting (real HTTP + real engine)', () => {
 
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID_CANVAS_SELECTOR, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFormatFixture()
     writeFileSync('/tmp/e2e-fmt-fixture.xlsx', fixture)
@@ -134,7 +134,7 @@ test.describe('Excel cell formatting (real HTTP + real engine)', () => {
 
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID_CANVAS_SELECTOR, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFormatFixture()
     writeFileSync('/tmp/e2e-fmt-bold.xlsx', fixture)
@@ -224,7 +224,7 @@ test.describe('Excel cell formatting (real HTTP + real engine)', () => {
 
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID_CANVAS_SELECTOR, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFormatFixture()
     writeFileSync('/tmp/e2e-fmt-compose.xlsx', fixture)

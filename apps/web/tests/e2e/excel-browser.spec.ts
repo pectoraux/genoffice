@@ -11,7 +11,7 @@
  * HTTP boundary (network interception) or the real file bytes (zip parsing).
  */
 import { test, expect } from '@playwright/test'
-import { loginAsDemoOwner, gotoHashRoute } from './helpers'
+import { loginAsDemoOwner, gotoHashRoute, waitForGridCanvas } from './helpers'
 import { buildExcelFixture, readZipEntry } from './fixtures'
 import { writeFileSync } from 'node:fs'
 
@@ -26,7 +26,7 @@ test.describe('Excel browser E2E (real HTTP + real engine)', () => {
     // ── 1. Launch browser → navigate /office/excel (real login flow) ──────
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID_CANVAS_SELECTOR, { timeout: 30_000 })
+    await waitForGridCanvas(page)
     await expect(page.getByText('GenOffice Excel').first()).toBeVisible()
 
     // ── 2. Upload fixture.xlsx through the hidden file input ──────────────

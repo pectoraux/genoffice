@@ -216,10 +216,41 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     const rt = createBrowserUniver('genoffice-web-excel')
     runtimeRef.current = rt
     setRuntime(rt)
+    // The blank workbook's sheet MUST carry an explicit `id` (and the full
+    // set of structural defaults) — otherwise Univer auto-generates a sheet
+    // id ('sheet-01') that is NOT registered in the workbook's internal
+    // sheet-id lookup map. That breaks FWorkbook.setActiveRange (the
+    // desktop's proven Name-Box jump path in data-tools-actions.ts:154),
+    // which internally calls workbook.getSheetBySheetId(sheetId) and throws
+    // "No active sheet found" when the lookup returns null. The desktop
+    // never hits this because loadSnapshotIntoUniver always creates sheets
+    // with explicit ids. Matching that shape here makes the blank workbook
+    // navigable (B5, A1:C5) before a real file is opened — same shape
+    // loadSnapshot uses below for opened workbooks.
     rt.univerAPI.createWorkbook({
       id: WORKBOOK_UNIT_ID,
       name: 'Workbook',
-      sheets: { sheet1: { name: 'Sheet1' } },
+      sheetOrder: ['sheet1'],
+      sheets: {
+        sheet1: {
+          id: 'sheet1',
+          name: 'Sheet1',
+          tabColor: '',
+          hidden: 0 as BooleanNumber,
+          freeze: { startRow: -1, startColumn: -1, xSplit: 0, ySplit: 0 },
+          rowCount: 1000,
+          columnCount: 26,
+          zoomRatio: 1,
+          scrollTop: 0,
+          scrollLeft: 0,
+          defaultColumnWidth: 100,
+          defaultRowHeight: 20,
+          rowHeader: { width: 46, hidden: 0 as BooleanNumber },
+          columnHeader: { height: 20, hidden: 0 as BooleanNumber },
+          showGridlines: 1 as BooleanNumber,
+          rightToLeft: 0 as BooleanNumber,
+        },
+      },
     })
     const sub = subscribeToCellMutations(rt, dirtyCellsRef, structuralOpsRef, () =>
       setDirty(true),

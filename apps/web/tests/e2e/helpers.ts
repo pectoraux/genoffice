@@ -33,6 +33,27 @@ export async function gotoHashRoute(page: Page, route: string): Promise<void> {
 }
 
 /**
+ * Wait for a genuinely-sized grid canvas inside the Univer container.
+ *
+ * With SheetsCorePreset header:false + formulaBar:false (create-browser-
+ * univer.ts), Univer does NOT mount the SpreadsheetHeader plugin. The
+ * container still holds multiple canvases (the grid canvas + a 0×0
+ * cell-editor overlay `univer-doc-main-canvas` that is only sized while a
+ * cell is being edited). A plain `page.waitForSelector('#... canvas')`
+ * latches onto the 0×0 overlay and times out. This waits for ANY canvas
+ * with real area — which is the grid.
+ */
+export async function waitForGridCanvas(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () => {
+      const cs = Array.from(document.querySelectorAll('#genoffice-web-excel canvas')) as HTMLCanvasElement[]
+      return cs.some((c) => c.getBoundingClientRect().width > 200 && c.getBoundingClientRect().height > 100)
+    },
+    { timeout: 30_000 },
+  )
+}
+
+/**
  * Upload a file through an editor's hidden file input and wait for the
  * editor to report that the open completed (the status line flips from
  * "Opening…" to "Opened <name>").

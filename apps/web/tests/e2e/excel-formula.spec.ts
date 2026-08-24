@@ -13,7 +13,7 @@
  * through sheet.mutation.set-range-values.
  */
 import { test, expect } from '@playwright/test'
-import { loginAsDemoOwner, gotoHashRoute } from './helpers'
+import { loginAsDemoOwner, gotoHashRoute, waitForGridCanvas } from './helpers'
 import { buildExcelFormulaFixture, readZipEntry } from './fixtures'
 import { writeFileSync } from 'node:fs'
 
@@ -106,7 +106,7 @@ test.describe('Excel formula-bar fidelity (real HTTP + real engine)', () => {
 
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFormulaFixture()
     writeFileSync('/tmp/e2e-formula.xlsx', fixture)
@@ -193,7 +193,7 @@ test.describe('Excel formula-bar fidelity (real HTTP + real engine)', () => {
     test.setTimeout(120_000)
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFormulaFixture()
     writeFileSync('/tmp/e2e-formula-lit.xlsx', fixture)
@@ -245,7 +245,7 @@ test.describe('Excel formula-bar fidelity (real HTTP + real engine)', () => {
     test.setTimeout(120_000)
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFormulaFixture()
     writeFileSync('/tmp/e2e-formula-blank.xlsx', fixture)
@@ -294,7 +294,7 @@ test.describe('Excel formula-bar fidelity (real HTTP + real engine)', () => {
     test.setTimeout(120_000)
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFormulaFixture()
     writeFileSync('/tmp/e2e-formula-x.xlsx', fixture)
@@ -352,7 +352,7 @@ test.describe('Excel formula-bar fidelity (real HTTP + real engine)', () => {
     test.setTimeout(120_000)
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFormulaFixture()
     writeFileSync('/tmp/e2e-formula-bs.xlsx', fixture)
@@ -407,7 +407,7 @@ test.describe('Excel formula-bar fidelity (real HTTP + real engine)', () => {
     test.setTimeout(120_000)
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFormulaFixture()
     writeFileSync('/tmp/e2e-formula-keep.xlsx', fixture)
@@ -459,7 +459,7 @@ test.describe('Excel formula-bar fidelity (real HTTP + real engine)', () => {
     test.setTimeout(120_000)
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFormulaFixture()
     writeFileSync('/tmp/e2e-formula-str.xlsx', fixture)

@@ -107,7 +107,29 @@ export function createBrowserUniver(container: string): BrowserUniverRuntime {
     locales: { [LocaleType.EN_US]: EN_US_LOCALES },
   })
   const presets: BrowserPreset[] = [
-    // SheetsCore preset — Phase D parity with the desktop (App.tsx:1245-1264):
+    // SheetsCore preset — Phase 4 §D parity with the desktop (App.tsx:1245-1264):
+    //   header: false  → do NOT mount Univer's SpreadsheetHeader plugin. The
+    //                    web shell renders its OWN Name Box + Formula Bar row
+    //                    (.excel-formula-row in ExcelEditor.tsx). Leaving
+    //                    header:true would mount Univer's internal name box +
+    //                    formula bar INSIDE the container, duplicating the
+    //                    custom chrome (two Name Boxes + two Formula Bars).
+    //                    This is a STRUCTURAL fix, not a CSS hack: the prior
+    //                    attempt used display:none/visibility:hidden on the
+    //                    mounted header, which left the plugin MOUNTED with a
+    //                    zero-sized DOM and confused Univer's layout offset
+    //                    calculations (click coordinates were misaligned,
+    //                    breaking grid interactivity). header:false at config
+    //                    time means the header plugin is never instantiated
+    //                    — the grid canvas is the first child of the
+    //                    container and owns the full height. No offset
+    //                    miscalculation, no duplicate, no broken clicks.
+    //   formulaBar: false → the formula bar is a child of the header; with
+    //                       header:false it is also absent. The custom
+    //                       FormulaBar component (which commits through the
+    //                       existing FRange.setValueForCell → set-range-values
+    //                       → cell-mutation-merge pipeline) is the sole
+    //                       formula bar. Set explicitly for clarity.
     //   toolbar: false  → hide Univer's preset ribbon; the web shell renders
     //                     its own 7-tab Ribbon so the chrome matches Electron
     //                     (no duplicate ribbon).
@@ -121,18 +143,13 @@ export function createBrowserUniver(container: string): BrowserUniverRuntime {
     //   double-invokes effects in dev, which leaves the grid canvas unsized).
     //   main.tsx therefore omits <StrictMode> — this is dev-only (StrictMode
     //   has no effect on the production build) and the deployed app is
-    //   unaffected. The custom Name Box + Formula Bar row render above the
-    //   grid; Univer's preset header (name box + formula bar) is also
-    //   visible inside the container — that pair is a known cosmetic
-    //   duplicate (the desktop has the same: custom name box + Univer's
-    //   formula bar). Hiding Univer's header via CSS breaks grid
-    //   interactivity, so it is left visible.
+    //   unaffected.
     UniverSheetsCorePreset({
       container,
-      header: true,
+      header: false,
       toolbar: false,
       contextMenu: true,
-      formulaBar: true,
+      formulaBar: false,
       footer: { sheetBar: true, statisticBar: true, menus: true, zoomSlider: false },
       statusBarStatistic: true,
       sheets: { isRowStylePrecedeColumnStyle: true },

@@ -15,7 +15,7 @@
  * through the exposed runtime exercises the identical mutation pipeline.
  */
 import { test, expect } from '@playwright/test'
-import { loginAsDemoOwner, gotoHashRoute } from './helpers'
+import { loginAsDemoOwner, gotoHashRoute, waitForGridCanvas } from './helpers'
 import { buildExcelFixture, readZipEntry } from './fixtures'
 import { writeFileSync } from 'node:fs'
 
@@ -103,7 +103,7 @@ test.describe('Excel structural operations (real HTTP + real engine)', () => {
 
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID_CANVAS_SELECTOR, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFixture()
     writeFileSync('/tmp/e2e-struct-insert.xlsx', fixture)
@@ -186,7 +186,7 @@ test.describe('Excel structural operations (real HTTP + real engine)', () => {
 
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
-    await page.waitForSelector(GRID_CANVAS_SELECTOR, { timeout: 30_000 })
+    await waitForGridCanvas(page)
 
     const fixture = await buildExcelFixture()
     writeFileSync('/tmp/e2e-struct-delete.xlsx', fixture)
