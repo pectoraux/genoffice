@@ -39,7 +39,12 @@ import {
   waitForGridCanvas,
   clickSaveAndCaptureDownload,
 } from './helpers'
-import { buildExcelFixture, buildExcelSortFixture, readZipEntry } from './fixtures'
+import {
+  buildExcelFixture,
+  buildExcelSortFixture,
+  buildExcelSortFormulaFixture,
+  readZipEntry,
+} from './fixtures'
 
 test.describe('Data tab — Sort persists, Filter disabled', () => {
   test('Sort descending persists through save/reopen', async ({ page }) => {
@@ -498,6 +503,266 @@ test.describe('Data tab — Sort persists, Filter disabled', () => {
     expect(styles!['A4']?.italic, 'A4 has no italic (Cherry was regular)').not.toBe(true)
     // C column cells carry the currency numfmt.
     expect(styles!['C2']?.numberFormat, 'C2 carries currency numfmt after reopen').toMatch(/\$/)
+
+    expect(pageErrors).toEqual([])
+  })
+
+  // ── Formula-semantics sort gate (architect review requirement) ─────────
+  //
+  // The canonical sort splits formula responsibility across the pipeline:
+  //   1. UNIVER (browser): FormulaReorderController rewrites RELATIVE
+  //      references by the row delta (=A3*10 moving up one row becomes
+  //      =A2*10) and leaves ABSOLUTE references ($D$1) untouched; the
+  //      rewrites are journaled as formula CellEdits.
+  //   2. GATEWAY (server): reorder-rows permutes <row> blocks WITHOUT
+  //      touching formula text — the journaled formula edits then overwrite
+  //      the verbatim text with the rewritten form.
+  //
+  // This test proves the two stay synchronized, using the architect's exact
+  // scenario (sort A2:B3-style range descending, formulas =A{row}*10) plus
+  // the absolute-reference probe =A{row}+$D$1 with D1 OUTSIDE the sort range:
+  //
+  //   Pre-sort:  A2=10  B2==A2*10(100)   C2==A2+$D$1(15)
+  //              A3=30  B3==A3*10(300)   C3==A3+$D$1(35)   D1=5
+  //   Sort A2:C3 descending → rows swap (30 first).
+  //   Post-sort: A2=30  B2==A2*10(300)   C2==A2+$D$1(35)
+  //              A3=10  B3==A3*10(100)   C3==A3+$D$1(15)   D1=5 (untouched)
+  //
+  // Failure modes caught:
+  //   - Browser rewrite dropped → B2 keeps verbatim =A3*10 → recalcs to
+  //     10*10=100 (wrong; expected 300) and the reopened formula is "=A3*10".
+  //   - Gateway rewriting formulas (overstepping) or dropping the structural
+  //     op → wrong text or unmoved values in the saved XML.
+  //   - Absolute ref shifted → C2 becomes =A2+$D$2 (or similar) ≠ =A2+$D$1.
+  test('Sort formula semantics: relative refs rewrite, absolute refs untouched (architect gate)', async ({
+    page,
+  }) => {
+    test.setTimeout(180_000)
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    const fixture = await buildExcelSortFormulaFixture()
+    writeFileSync('/tmp/e2e-ribbon-sort-fx.xlsx', fixture)
+    await page.setInputFiles('input[type="file"]', '/tmp/e2e-ribbon-sort-fx.xlsx')
+    await expect(page.getByText('Opened e2e-ribbon-sort-fx.xlsx')).toBeVisible({
+      timeout: 30_000,
+    })
+    await page.waitForTimeout(1500)
+
+    // Select the data range A2:C3 (D1 stays outside in both axes).
+    const box = page.locator('[data-testid="excel-name-box"]')
+    await box.click()
+    await box.fill('A2:C3')
+    await box.press('Enter')
+    await page.waitForTimeout(400)
+
+    // Sort DESCENDING by the range's first column (A): 30 before 10 → the
+    // data rows actually SWAP (old row 3 → new row 2, old row 2 → new row 3).
+    await page
+      .locator('[data-testid="excel-ribbon"] .excel-ribbon-tab', { hasText: 'Data' })
+      .click()
+    await page.waitForTimeout(200)
+    await page.getByRole('button', { name: 'Sort Desc' }).click()
+    await page.waitForTimeout(1000)
+    await expect(page.getByText('● Unsaved changes')).toBeVisible({ timeout: 10_000 })
+
+    // ── In-session proof: the LIVE recalculated values distinguish a
+    //    rewritten formula from a verbatim one. If B2 kept the verbatim
+    //    =A3*10, it would recalculate to 10*10=100; the rewritten =A2*10
+    //    gives 30*10=300. Likewise C2: verbatim =A3+$D$1 → 10+5=15;
+    //    rewritten =A2+$D$1 → 30+5=35.
+    const live = await page.evaluate(() => {
+      const rt = (
+        window as {
+          __genofficeExcelRuntime?: {
+            univerAPI: {
+              getActiveWorkbook: () => {
+                getActiveSheet: () => {
+                  getRange: (
+                    r: number,
+                    c: number,
+                  ) => { getCellData: () => Record<string, unknown> | null }
+                }
+              }
+            }
+          }
+        }
+      ).__genofficeExcelRuntime
+      const ws = rt?.univerAPI?.getActiveWorkbook?.()?.getActiveSheet?.()
+      const cell = (row: number, col: number) => ws?.getRange?.(row, col)?.getCellData?.() ?? null
+      return {
+        a2: cell(1, 0),
+        b2: cell(1, 1),
+        c2: cell(1, 2),
+        a3: cell(2, 0),
+        b3: cell(2, 1),
+        c3: cell(2, 2),
+        d1: cell(0, 3),
+      }
+    })
+    expect(live.a2?.v, 'A2 = 30 after desc sort').toBe(30)
+    expect(live.a3?.v, 'A3 = 10 after desc sort').toBe(10)
+    expect(live.d1?.v, 'D1 = 5 untouched (outside sort range)').toBe(5)
+    // The formula-rewrite proof: rewritten text + recalculated value.
+    expect(String(live.b2?.f).replace(/\s+/g, ''), 'B2 formula REWRITTEN to =A2*10').toBe('=A2*10')
+    expect(
+      live.b2?.v,
+      'B2 recalculates to 300 (=A2*10 with A2=30; verbatim =A3*10 would give 100)',
+    ).toBe(300)
+    expect(
+      String(live.c2?.f).replace(/\s+/g, ''),
+      'C2 formula REWRITTEN to =A2+$D$1 (absolute untouched)',
+    ).toBe('=A2+$D$1')
+    expect(live.c2?.v, 'C2 recalculates to 35 (=A2+$D$1 → 30+5; verbatim would give 15)').toBe(35)
+    expect(String(live.b3?.f).replace(/\s+/g, ''), 'B3 formula REWRITTEN to =A3*10').toBe('=A3*10')
+    expect(live.b3?.v, 'B3 recalculates to 100').toBe(100)
+    expect(String(live.c3?.f).replace(/\s+/g, ''), 'C3 formula REWRITTEN to =A3+$D$1').toBe(
+      '=A3+$D$1',
+    )
+    expect(live.c3?.v, 'C3 recalculates to 15').toBe(15)
+
+    // ── Save: the wire plan must carry BOTH halves of the split —
+    //    the reorder-rows structural op AND the rewritten formula edits.
+    const sortReq = page.waitForRequest(
+      (r) => r.url().includes('/api/office/workbooks/save') && r.method() === 'POST',
+    )
+    const saved = await clickSaveAndCaptureDownload(page, 'Save')
+    const req = await sortReq
+    const saveBody = JSON.parse(req.postData() ?? '{}') as {
+      savePlan: {
+        edits: Array<{
+          sheetName: string
+          row: number
+          column: number
+          cell?: { formula?: string; value?: unknown }
+        }>
+        structuralOps?: Array<{
+          sheetName: string
+          ops: Array<{
+            kind: string
+            order?: Record<string, number>
+          }>
+        }>
+      }
+    }
+    const sortSheet = saveBody.savePlan.structuralOps?.find((s) => s.sheetName === 'SortFx')
+    expect(sortSheet, 'structural op present for SortFx').toBeDefined()
+    const reorderOp = sortSheet!.ops.find((op) => op.kind === 'reorder-rows')
+    expect(reorderOp, 'reorder-rows op present').toBeDefined()
+    // Descending sort of [10, 30] over 0-based rows 1..2: NEW[1]=OLD[2],
+    // NEW[2]=OLD[1] → Univer's DEST→SRC map is exactly {1: 2, 2: 1}.
+    expect(reorderOp!.order, 'exact permutation map (DEST→SRC)').toEqual({ 1: 2, 2: 1 })
+    // The journaled formula edits carry the REWRITTEN text (wire format
+    // strips the leading '='; XLSX <f> elements have no '=').
+    const formulaEdit = (row: number, column: number) =>
+      saveBody.savePlan.edits.find(
+        (e) => e.sheetName === 'SortFx' && e.row === row && e.column === column,
+      )
+    expect(formulaEdit(1, 1)?.cell?.formula, 'B2 edit carries rewritten formula A2*10').toBe(
+      'A2*10',
+    )
+    expect(
+      formulaEdit(1, 2)?.cell?.formula,
+      'C2 edit carries rewritten formula A2+$D$1 (absolute untouched)',
+    ).toBe('A2+$D$1')
+    expect(formulaEdit(2, 1)?.cell?.formula, 'B3 edit carries rewritten formula A3*10').toBe(
+      'A3*10',
+    )
+    expect(formulaEdit(2, 2)?.cell?.formula, 'C3 edit carries rewritten formula A3+$D$1').toBe(
+      'A3+$D$1',
+    )
+
+    // ── Saved XML: the composed result — the structural op moved the rows
+    //    (verbatim formulas), then the formula edits overwrote the text with
+    //    the rewritten forms. Whitespace-normalized comparisons guard against
+    //    engine token-serialization spacing.
+    const sheet1 = await readZipEntry(saved, 'xl/worksheets/sheet1.xml')
+    const formulaOf = (xml: string, cell: string): string | null => {
+      const m = new RegExp(`<c r="${cell}"[^>]*>(?:<f>([\\s\\S]*?)</f>)`).exec(xml)
+      return m ? m[1]!.replace(/\s+/g, '') : null
+    }
+    expect(
+      formulaOf(sheet1, 'B2'),
+      'saved XML B2 formula = A2*10 (rewritten, NOT verbatim A3*10)',
+    ).toBe('A2*10')
+    expect(formulaOf(sheet1, 'B3'), 'saved XML B3 formula = A3*10').toBe('A3*10')
+    expect(
+      formulaOf(sheet1, 'C2'),
+      'saved XML C2 formula = A2+$D$1 (relative shifted, ABSOLUTE untouched)',
+    ).toBe('A2+$D$1')
+    expect(formulaOf(sheet1, 'C3'), 'saved XML C3 formula = A3+$D$1').toBe('A3+$D$1')
+    expect(sheet1, 'A2 = 30 (row moved)').toMatch(/<c r="A2"[^>]*><v>30<\/v>/)
+    expect(sheet1, 'A3 = 10 (row moved)').toMatch(/<c r="A3"[^>]*><v>10<\/v>/)
+    expect(sheet1, 'D1 = 5 untouched (outside the sort range)').toMatch(/<c r="D1"[^>]*><v>5<\/v>/)
+
+    // ── Reopen: the saved bytes parse back with the rewritten formulas.
+    writeFileSync('/tmp/e2e-ribbon-sort-fx-saved.xlsx', saved)
+    const reopenResponsePromise = page.waitForResponse(
+      (r) => r.url().includes('/api/office/workbooks/open') && r.request().method() === 'POST',
+    )
+    await page.setInputFiles('input[type="file"]', '/tmp/e2e-ribbon-sort-fx-saved.xlsx')
+    await expect(page.getByText('Opened e2e-ribbon-sort-fx-saved.xlsx')).toBeVisible({
+      timeout: 30_000,
+    })
+    const reopenResponse = await reopenResponsePromise
+    expect(reopenResponse.status()).toBe(200)
+    const reopened = (await reopenResponse.json()).snapshot.sheets as Array<{
+      name: string
+      cells: Record<string, { value: unknown; formula?: string }>
+    }>
+    expect(reopened[0].name, 'sheet name preserved').toBe('SortFx')
+    const cells = reopened[0].cells
+    expect(cells.A2?.value, 'reopen A2 = 30').toBe(30)
+    expect(cells.A3?.value, 'reopen A3 = 10').toBe(10)
+    expect(cells.D1?.value, 'reopen D1 = 5 (outside range, untouched)').toBe(5)
+    expect(cells.B2?.formula?.replace(/\s+/g, ''), 'reopen B2 formula = =A2*10').toBe('=A2*10')
+    expect(cells.B3?.formula?.replace(/\s+/g, ''), 'reopen B3 formula = =A3*10').toBe('=A3*10')
+    expect(
+      cells.C2?.formula?.replace(/\s+/g, ''),
+      'reopen C2 formula = =A2+$D$1 (absolute preserved)',
+    ).toBe('=A2+$D$1')
+    expect(cells.C3?.formula?.replace(/\s+/g, ''), 'reopen C3 formula = =A3+$D$1').toBe('=A3+$D$1')
+
+    // ── Post-reopen recalculation: the reopened live workbook computes the
+    //    SAME values as before the save — the full round-trip is
+    //    semantically lossless for both reference classes.
+    await page.waitForTimeout(1500)
+    const recalc = await page.evaluate(() => {
+      const rt = (
+        window as {
+          __genofficeExcelRuntime?: {
+            univerAPI: {
+              getActiveWorkbook: () => {
+                getActiveSheet: () => {
+                  getRange: (r: number, c: number) => { getCellData: () => { v?: unknown } | null }
+                }
+              }
+            }
+          }
+        }
+      ).__genofficeExcelRuntime
+      const ws = rt?.univerAPI?.getActiveWorkbook?.()?.getActiveSheet?.()
+      return {
+        b2: ws?.getRange?.(1, 1)?.getCellData?.()?.v ?? null,
+        c2: ws?.getRange?.(1, 2)?.getCellData?.()?.v ?? null,
+        b3: ws?.getRange?.(2, 1)?.getCellData?.()?.v ?? null,
+        c3: ws?.getRange?.(2, 2)?.getCellData?.()?.v ?? null,
+      }
+    })
+    expect(
+      recalc.b2,
+      'post-reopen B2 recalculates to 300 (same-row relationship survived the round-trip)',
+    ).toBe(300)
+    expect(
+      recalc.c2,
+      'post-reopen C2 recalculates to 35 (absolute $D$1 still points at D1=5)',
+    ).toBe(35)
+    expect(recalc.b3, 'post-reopen B3 recalculates to 100').toBe(100)
+    expect(recalc.c3, 'post-reopen C3 recalculates to 15').toBe(15)
 
     expect(pageErrors).toEqual([])
   })

@@ -679,6 +679,147 @@ export async function buildExcelSortFixture(): Promise<Buffer> {
   return toBytes(zip)
 }
 
+// ── Excel sort formula-semantics fixture (ribbon-data E2E) ──────────────────
+
+/**
+ * Deterministic XLSX for the sort formula-semantics regression gate — the
+ * architect-mandated proof that Univer's in-browser formula rewrite and the
+ * gateway's verbatim row permutation stay synchronized:
+ *
+ *   Sheet "SortFx" (visible):
+ *     Row 1 — header: A1="Qty", B1="Calc", C1="Plus" (bold, xf 1)
+ *             D1 = 5 (constant, OUTSIDE the sort range in both axes)
+ *     Row 2 — A2=10,  B2==A2*10   (cached v=100),  C2==A2+$D$1 (cached v=15)
+ *     Row 3 — A3=30,  B3==A3*10   (cached v=300),  C3==A3+$D$1 (cached v=35)
+ *
+ *   Sort A2:C3 DESCENDING by column A (30 before 10) swaps the data rows:
+ *     NEW row 2 = OLD row 3: A2=30, B2 must be =A2*10   (rewritten from =A3*10)
+ *                                  C2 must be =A2+$D$1 (rewritten from =A3+$D$1 —
+ *                                  relative A3→A2 shifted; $D$1 ABSOLUTE untouched)
+ *     NEW row 3 = OLD row 2: A3=10, B3 must be =A3*10,  C3 must be =A3+$D$1
+ *
+ * The two reference classes prove the split responsibility:
+ *   - RELATIVE refs to cells that MOVE WITH the sorted row: Univer's
+ *     FormulaReorderController rewrites them by the row delta in the browser
+ *     (journaled as formula CellEdits), so the same-row relationship survives
+ *     — B2 recalculates to 30*10=300, NOT 10*10=100 (the verbatim-text trap).
+ *   - ABSOLUTE refs ($D$1) pointing OUTSIDE the sort range: moveFormulaRefOffset
+ *     skips AbsoluteRefType.ALL references, and the gateway's reorder-rows
+ *     never rewrites formulas at all — the reference stays $D$1 verbatim.
+ *
+ * If either side regressed (browser rewrite dropped, or gateway started
+ * rewriting), B2/C2 would carry the verbatim old text (=A3*10 / =A3+$D$1)
+ * and recalculate to the WRONG values (100 / 15) — the assertions catch it.
+ */
+export async function buildExcelSortFormulaFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="SortFx" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  // Shared strings: header labels only (the data rows are numbers + formulas).
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="3" uniqueCount="3">
+  <si><t>Qty</t></si>
+  <si><t>Calc</t></si>
+  <si><t>Plus</t></si>
+</sst>`,
+  )
+
+  // xf 1 = bold header font.
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="1"><fill/></fills>
+  <borders count="1"><border/></borders>
+  <cellStyleXfs count="1"><xf/></cellStyleXfs>
+  <cellXfs count="2"><xf/><xf fontId="1" applyFont="1"/></cellXfs>
+</styleSheet>`,
+  )
+
+  // D1=5 sits OUTSIDE the sort range (A2:C3) in both axes: row 1 is above
+  // the sorted rows AND column D is right of the sorted columns. $D$1 is the
+  // absolute-reference probe; the D1 cell itself must never move.
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s" s="1"><v>0</v></c>
+      <c r="B1" t="s" s="1"><v>1</v></c>
+      <c r="C1" t="s" s="1"><v>2</v></c>
+      <c r="D1"><v>5</v></c>
+    </row>
+    <row r="2">
+      <c r="A2"><v>10</v></c>
+      <c r="B2"><f>A2*10</f><v>100</v></c>
+      <c r="C2"><f>A2+$D$1</f><v>15</v></c>
+    </row>
+    <row r="3">
+      <c r="A3"><v>30</v></c>
+      <c r="B3"><f>A3*10</f><v>300</v></c>
+      <c r="C3"><f>A3+$D$1</f><v>35</v></c>
+    </row>
+  </sheetData>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}
+
 // ── DOCX fixture ────────────────────────────────────────────────────────────
 
 /**
