@@ -116,27 +116,35 @@ function cellEditFromMutation(
   }
   if (typeof cell !== 'object') return null
   const data = cell as { v?: unknown; f?: unknown; s?: unknown }
-  const formulaRaw = typeof data.f === 'string' ? data.f : undefined
-  const formula = formulaRaw
-    ? formulaRaw.startsWith('=')
-      ? formulaRaw
-      : `=${formulaRaw}`
-    : undefined
   const style = styleDeltaFromUniver(data.s)
-  if (formula) {
+  // Formula handling — Univer emits three distinct formula-related payload
+  // shapes (verified by the Phase A forensic audit):
+  //   ① formula edit:  { f: "=SUM(A1:A2)*2", v: null }  (leading = present)
+  //   ② recalc echo:   { v: 20, t: 2 } — Univer's formula engine writes the
+  //      recalculated cached value as a SEPARATE set-range-values mutation,
+  //      with NO f field. This must NOT overwrite the formula edit with a
+  //      literal value; the engine drops the cached <v> on formula writes
+  //      anyway and Excel recalculates on open.
+  //   ③ formula clear: { f: null, v: 30 } — an explicit f:null replaces the
+  //      formula with the literal value.
+  const formulaRaw = data.f
+  if (typeof formulaRaw === 'string' && formulaRaw.length > 0) {
+    const formula = formulaRaw.startsWith('=') ? formulaRaw.slice(1) : formulaRaw
     return {
       sheetName,
       row,
       column,
       writeValue: true,
-      cell: { value: '', formula: formula.slice(1) },
+      cell: { value: '', formula },
       ...(style ? { style } : {}),
     }
   }
   const v = data.v
   if (v === undefined) {
-    // Style-only mutation (Univer's formatting commands rewrite cell styles
-    // through set-range-values with just an `s` payload).
+    // No formula and no value in the payload: a style-only mutation
+    // (formatting commands rewrite cell styles through set-range-values
+    // with just an `s` payload), or an f:null cleanup echo. A cleanup echo
+    // with si:null but no style carries no editable state — ignore it.
     if (!style) return null
     return {
       sheetName,
@@ -148,6 +156,14 @@ function cellEditFromMutation(
     }
   }
   if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+    // f:null + v:30 → literal replaces formula (the engine writes no <f>).
+    // f absent + v present → either a plain value edit OR the recalc echo.
+    // For the recalc echo (a formula cell getting its cached result), the
+    // payload arrives AFTER the formula edit on the same cell — the dirty
+    // map's merge keeps the formula because the formula edit was already
+    // journaled, and the latest-wins merge takes v only when the journaled
+    // entry has no formula. The merge in subscribeToCellMutations handles
+    // this: writeValue from the formula edit wins over the value echo.
     const cellState: CellState = { value: v }
     return {
       sheetName,
@@ -747,15 +763,33 @@ function subscribeToCellMutations(
         // same cell compose into ONE CellEdit (writeValue + cell + style) so
         // the engine applies both in a single patch. Later deltas win per
         // field (bold-then-fill → {bold, fill}).
+        //
+        // Formula-priority rule: when the journaled entry carries a formula
+        // and the incoming edit is a value-only edit (no formula — Univer's
+        // recalc echo writing the cached result), the FORMULA WINS: the
+        // engine's formula write drops the cached <v> anyway, and a literal
+        // value would destroy the formula the user just typed. Only an
+        // incoming edit that explicitly carries a formula (or a value edit
+        // on a cell with no journaled formula) replaces the cell state.
         const key = dirtyKey(sheetName, row, column)
         const existing = dirtyRef.current.get(key)
         if (existing && existing !== edit) {
+          // Merge rules (formula-priority):
+          //   1. A formula edit always wins the cell state (formula + value).
+          //   2. A value edit (writeValue: true, no formula) wins the cell
+          //      state over a style-only edit (writeValue: false).
+          //   3. A style-only edit never overwrites the cell state but always
+          //      merges its style fields.
+          const existingHasFormula = !!existing.cell.formula
+          const incomingHasFormula = !!edit.cell.formula
+          const incomingIsValueEdit = edit.writeValue
+          const cellWins = incomingHasFormula || (!existingHasFormula && incomingIsValueEdit)
           dirtyRef.current.set(key, {
             sheetName,
             row,
             column,
-            writeValue: edit.writeValue || existing.writeValue,
-            cell: edit.writeValue ? edit.cell : existing.cell,
+            writeValue: cellWins ? edit.writeValue : existing.writeValue,
+            cell: cellWins ? edit.cell : existing.cell,
             ...(edit.style || existing.style
               ? { style: { ...(existing.style ?? {}), ...(edit.style ?? {}) } }
               : {}),

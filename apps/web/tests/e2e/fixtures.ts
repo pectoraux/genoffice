@@ -215,6 +215,154 @@ export async function buildExcelFormatFixture(): Promise<Buffer> {
   return toBytes(zip)
 }
 
+// ── Excel formula fixture (formula-bar fidelity E2E) ──────────────────────────
+
+/**
+ * Deterministic XLSX exercising the formula-editing surfaces:
+ *
+ *   Sheet1 (visible):
+ *     A1 = 10, A2 = 20, A3 = SUM(A1:A2)          (styled: bold, fill FFF2CC)
+ *     B1 = 5, B2 = 7, B3 = B1*B2
+ *     C1 = "static", C2 = "Hello " & C1
+ *     merge A5:B5, row 5 height 30pt, col A width 24
+ *   Sheet2 (visible):
+ *     A1 = 100, A2 = Sheet1!A3 + 1               (cross-sheet reference)
+ */
+export async function buildExcelFormulaFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+    <sheet name="Sheet2" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2">
+  <si><t>static</t></si>
+  <si><t>Merged Header</t></si>
+</sst>`,
+  )
+
+  // xf 1 = bold + fill FFF2CC (the styled formula cell A3)
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="2">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <cols>
+    <col min="1" max="1" width="24" customWidth="1"/>
+  </cols>
+  <sheetData>
+    <row r="1">
+      <c r="A1"><v>10</v></c>
+      <c r="B1"><v>5</v></c>
+      <c r="C1" t="s"><v>0</v></c>
+    </row>
+    <row r="2">
+      <c r="A2"><v>20</v></c>
+      <c r="B2"><v>7</v></c>
+      <c r="C2"><f>"Hello " &amp; C1</f><v>Hello static</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" s="1"><f>SUM(A1:A2)</f><v>30</v></c>
+      <c r="B3"><f>B1*B2</f><v>35</v></c>
+    </row>
+    <row r="5" ht="30" customHeight="1">
+      <c r="A5" t="s"><v>1</v></c>
+      <c r="B5" s="1"/>
+    </row>
+  </sheetData>
+  <mergeCells count="1">
+    <mergeCell ref="A5:B5"/>
+  </mergeCells>
+</worksheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet2.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1"><v>100</v></c></row>
+    <row r="2"><c r="A2"><f>Sheet1!A3 + 1</f><v>31</v></c></row>
+  </sheetData>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}
+
 export async function buildExcelFixture(): Promise<Buffer> {
   const zip = new JSZip()
 
