@@ -28,8 +28,6 @@ interface WireSheet {
   colWidths?: Record<string, number>
 }
 
-const GRID_CANVAS_SELECTOR = '#genoffice-web-excel canvas'
-
 /**
  * Execute insertRows on the named sheet through the real Univer facade
  * (fires sheet.mutation.insert-row → the editor's journaling handler).
