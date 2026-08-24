@@ -20823,6 +20823,8 @@ function escapeXmlAttribute6(input) {
 // packages/xlsx-gateway/src/gateway/xlsx-dv.ts
 var DvEditError = class extends Error {
 };
+var DvReadError = class extends Error {
+};
 var DV_TYPES = /* @__PURE__ */ new Set(["whole", "decimal", "list", "date", "time", "textLength", "custom"]);
 var DV_OPERATORS = /* @__PURE__ */ new Set([
   "between",
@@ -20839,6 +20841,12 @@ var DV_ERROR_STYLE_NAMES = {
   1: void 0,
   2: "warning"
 };
+var DV_ERROR_STYLE_NUMBERS = {
+  information: 0,
+  warning: 2
+};
+var DV_MAX_RULES = 500;
+var DV_MAX_RANGES_PER_RULE = 100;
 function applyDvRules(worksheetXml, rules) {
   if (/<x14:dataValidation\b/.test(worksheetXml)) {
     throw new DvEditError(
@@ -20861,6 +20869,126 @@ function applyDvRules(worksheetXml, rules) {
   const end = xml.lastIndexOf("</worksheet>");
   if (end === -1) throw new DvEditError("Worksheet has no closing element.");
   return xml.slice(0, end) + section + xml.slice(end);
+}
+function parseDataValidations(worksheetXml) {
+  const section = /<dataValidations\b[^>]*>[\s\S]*?<\/dataValidations>|<dataValidations\b[^>]*\/>/.exec(
+    worksheetXml
+  );
+  if (!section) return [];
+  if (/<x14:dataValidation\b/.test(worksheetXml)) {
+    throw new DvReadError(
+      "This sheet has extended (x14) data validation \u2014 it cannot be represented yet."
+    );
+  }
+  const inner = section[0].includes("</dataValidations>") ? section[0].slice(section[0].indexOf(">") + 1, section[0].length - "</dataValidations>".length) : "";
+  const rules = [];
+  for (const match of inner.matchAll(
+    /<dataValidation\b([^>]*)\/>|<dataValidation\b([^>]*)>([\s\S]*?)<\/dataValidation>/g
+  )) {
+    const attributes2 = (match[1] ?? match[2] ?? "").trim();
+    const body = match[3] ?? "";
+    rules.push(parseRule(attributes2, body));
+    if (rules.length > DV_MAX_RULES) {
+      throw new DvReadError(`Worksheet carries more than ${DV_MAX_RULES} validation rules.`);
+    }
+  }
+  return rules;
+}
+function parseRule(attributes2, body) {
+  const attr = (name) => new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attributes2)?.[1];
+  const sqref = attr("sqref");
+  if (sqref === void 0 || sqref.trim() === "") {
+    throw new DvReadError("dataValidation has no sqref attribute.");
+  }
+  const ranges = [];
+  for (const ref of sqref.split(/\s+/)) {
+    if (ref === "") continue;
+    const area = parseSqrefPart(ref);
+    if (area === null) {
+      throw new DvReadError(`dataValidation sqref "${ref}" is not a readable range.`);
+    }
+    ranges.push(area);
+  }
+  if (ranges.length === 0 || ranges.length > DV_MAX_RANGES_PER_RULE) {
+    throw new DvReadError(`dataValidation sqref must carry 1..${DV_MAX_RANGES_PER_RULE} ranges.`);
+  }
+  const rawType = attr("type");
+  let type;
+  if (rawType === void 0 || rawType === "none") {
+    type = "any";
+  } else {
+    if (!DV_TYPES.has(rawType)) {
+      throw new DvReadError(`Unsupported data-validation type "${rawType}".`);
+    }
+    type = rawType;
+  }
+  const rawOperator = attr("operator");
+  let operator;
+  if (rawOperator !== void 0) {
+    if (!DV_OPERATORS.has(rawOperator)) {
+      throw new DvReadError(`Unsupported data-validation operator "${rawOperator}".`);
+    }
+    operator = rawOperator;
+  } else if (type !== "any" && type !== "list" && type !== "custom") {
+    operator = "between";
+  }
+  const errorStyleName2 = attr("errorStyle");
+  let errorStyle;
+  if (errorStyleName2 !== void 0) {
+    const mapped = DV_ERROR_STYLE_NUMBERS[errorStyleName2];
+    if (mapped === void 0) {
+      throw new DvReadError(`Unsupported data-validation error style "${errorStyleName2}".`);
+    }
+    errorStyle = mapped;
+  }
+  const rule = { type };
+  const formula1 = extractFormula(body, "formula1");
+  const formula2 = extractFormula(body, "formula2");
+  if (attr("allowBlank") === "1") rule.allowBlank = true;
+  const rawShowDropDown = attr("showDropDown");
+  if (rawShowDropDown !== void 0) rule.showDropDown = rawShowDropDown !== "1";
+  if (attr("showInputMessage") === "1") rule.showInputMessage = true;
+  if (attr("showErrorMessage") === "1") rule.showErrorMessage = true;
+  if (operator !== void 0) rule.operator = operator;
+  if (formula1 !== void 0) rule.formula1 = formula1;
+  if (formula2 !== void 0) rule.formula2 = formula2;
+  if (errorStyle !== void 0) rule.errorStyle = errorStyle;
+  for (const key of ["errorTitle", "error", "promptTitle", "prompt"]) {
+    const value = attr(key);
+    if (value !== void 0 && value !== "") rule[key] = decodeXmlText2(value);
+  }
+  return { ranges, rule };
+}
+function parseSqrefPart(ref) {
+  const [startRef, endRef] = ref.split(":");
+  const start = parseA13(startRef ?? "");
+  if (!start) return null;
+  const end = endRef === void 0 ? start : parseA13(endRef);
+  if (!end) return null;
+  const area = {
+    startRow: Math.min(start.row, end.row),
+    endRow: Math.max(start.row, end.row),
+    startColumn: Math.min(start.column, end.column),
+    endColumn: Math.max(start.column, end.column)
+  };
+  if (area.startRow < 0 || area.startColumn < 0 || area.endRow > 1048575 || area.endColumn > 16383) {
+    return null;
+  }
+  return area;
+}
+function parseA13(address) {
+  const match = /^\$?([A-Z]{1,3})\$?([0-9]+)$/.exec(address);
+  if (!match) return null;
+  return { column: lettersToColumn3(match[1]), row: Number(match[2]) - 1 };
+}
+function extractFormula(body, tag) {
+  const match = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(body);
+  if (!match) return void 0;
+  const text = decodeXmlText2(match[1] ?? "");
+  return text === "" ? void 0 : text;
+}
+function decodeXmlText2(input) {
+  return input.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&#10;", "\n").replaceAll("&amp;", "&");
 }
 function serializeRule2(wireRule) {
   if (wireRule.ranges.length === 0) {
@@ -20939,7 +21067,17 @@ function formulaText(type, raw) {
   const text = String(raw);
   if (text === "") return void 0;
   if (type === "list") {
-    return text.startsWith("=") ? text.slice(1) : `"${text}"`;
+    if (text.startsWith("=")) return text.slice(1);
+    if (text.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed) && parsed.every((v) => typeof v === "string")) {
+          return `"${parsed.join(",")}"`;
+        }
+      } catch {
+      }
+    }
+    return `"${text}"`;
   }
   if (type === "custom") {
     return text.startsWith("=") ? text.slice(1) : text;
@@ -20983,6 +21121,13 @@ function columnToLetters4(column) {
     remaining = Math.floor(remaining / 26);
   }
   return letters;
+}
+function lettersToColumn3(letters) {
+  let column = 0;
+  for (const character of letters) {
+    column = column * 26 + character.charCodeAt(0) - 64;
+  }
+  return column - 1;
 }
 function escapeXmlText7(input) {
   return input.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -22353,7 +22498,7 @@ var StylesheetReader = class {
     for (const entry of numFmtEntries) {
       const id = Number(readAttribute2(entry, "numFmtId") ?? "NaN");
       const code = readAttribute2(entry, "formatCode");
-      if (Number.isInteger(id) && code) byCode.set(id, decodeXmlText2(code));
+      if (Number.isInteger(id) && code) byCode.set(id, decodeXmlText3(code));
     }
     this.numFmtByCode = byCode;
   }
@@ -22391,7 +22536,7 @@ var StylesheetReader = class {
     const sz = Number(readAttribute2(/<sz\b[^>]*\/?>/.exec(font)?.[0] ?? "", "val"));
     if (Number.isFinite(sz) && sz > 0) format.fontSize = sz;
     const name = readAttribute2(/<name\b[^>]*\/?>/.exec(font)?.[0] ?? "", "val");
-    if (name) format.fontFamily = decodeXmlText2(name);
+    if (name) format.fontFamily = decodeXmlText3(name);
     const fontColor = argbToRgb(
       readAttribute2(/<color\b[^>]*\/?>/.exec(font)?.[0] ?? "", "rgb") ?? ""
     );
@@ -22418,7 +22563,7 @@ var StylesheetReader = class {
     return Object.keys(format).length > 0 ? format : void 0;
   }
 };
-function decodeXmlText2(input) {
+function decodeXmlText3(input) {
   return input.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_m, code) => String.fromCodePoint(Number(code))).replace(/&amp;/g, "&");
 }
 
@@ -22565,7 +22710,7 @@ async function readBasicWorkbook(buffer) {
     const name = readXmlAttribute(attributes2, "name");
     const sheetNumber = readXmlAttribute(attributes2, "sheetId");
     if (!name || !sheetNumber) continue;
-    const decodedName = decodeXmlText3(name);
+    const decodedName = decodeXmlText4(name);
     const id = `sheet-${sheetNumber}`;
     const worksheetPath = await resolveWorksheetPath(zip, decodedName);
     const worksheetXml = await zip.readText(worksheetPath);
@@ -22577,6 +22722,13 @@ async function readBasicWorkbook(buffer) {
     } catch (error) {
       if (!(error instanceof FilterReadError)) throw error;
     }
+    let dvRules;
+    try {
+      const parsed = parseDataValidations(worksheetXml);
+      if (parsed.length > 0) dvRules = parsed;
+    } catch (error) {
+      if (!(error instanceof DvReadError)) throw error;
+    }
     sheets.push({
       id,
       name: decodedName,
@@ -22586,7 +22738,8 @@ async function readBasicWorkbook(buffer) {
       ...presentation.rowHeights && Object.keys(presentation.rowHeights).length > 0 ? { rowHeights: presentation.rowHeights } : {},
       ...presentation.colWidths && Object.keys(presentation.colWidths).length > 0 ? { colWidths: presentation.colWidths } : {},
       ...presentation.freeze ? { freeze: presentation.freeze } : {},
-      ...filterState ? { filterState } : {}
+      ...filterState ? { filterState } : {},
+      ...dvRules ? { dvRules } : {}
     });
     sheetNamesById[id] = decodedName;
   }
@@ -23507,7 +23660,7 @@ function insertCellInColumnOrder(rowBody, cellXml, targetColumn) {
   const siblingPattern = /<c\b[^>]*?\br="([A-Z]{1,3})[1-9][0-9]*"/g;
   let match;
   while ((match = siblingPattern.exec(rowBody)) !== null) {
-    if (lettersToColumn3(match[1] ?? "") > targetColumn) {
+    if (lettersToColumn4(match[1] ?? "") > targetColumn) {
       return rowBody.slice(0, match.index) + cellXml + rowBody.slice(match.index);
     }
   }
@@ -23539,7 +23692,7 @@ function expandWorksheetDimensionToCells(worksheetXml) {
     const cell = /^([A-Z]{1,3})([1-9][0-9]*)$/.exec(cleaned);
     if (!cell?.[1] || !cell[2]) return;
     const row = Number(cell[2]);
-    const column = lettersToColumn3(cell[1]);
+    const column = lettersToColumn4(cell[1]);
     maximumRow = Math.max(maximumRow, row);
     maximumColumn = Math.max(maximumColumn, column);
   };
@@ -23613,9 +23766,9 @@ function ensureFullCalcOnLoad(workbookXml) {
 function parseA1Column(address) {
   const letters = /^[A-Z]{1,3}/.exec(address)?.[0];
   if (!letters) throw new Error(`Invalid cell address: ${address}`);
-  return lettersToColumn3(letters);
+  return lettersToColumn4(letters);
 }
-function lettersToColumn3(letters) {
+function lettersToColumn4(letters) {
   let column = 0;
   for (const character of letters) {
     column = column * 26 + character.charCodeAt(0) - 64;
@@ -23633,12 +23786,12 @@ function parseWorksheetCells(worksheetXml, sharedStrings) {
     const body = match[2] ?? "";
     const formula = /<f(?:\s[^>]*[^/>])?>([\s\S]*?)<\/f>/.exec(body)?.[1];
     if (formula !== void 0) {
-      cells[address] = { value: null, formula: `=${decodeXmlText3(formula)}` };
+      cells[address] = { value: null, formula: `=${decodeXmlText4(formula)}` };
       continue;
     }
     const type = readXmlAttribute(attributes2, "t");
     if (type === "inlineStr") {
-      const text = [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText3(textMatch[1] ?? "")).join("");
+      const text = [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText4(textMatch[1] ?? "")).join("");
       cells[address] = { value: text };
       continue;
     }
@@ -23651,11 +23804,11 @@ function parseWorksheetCells(worksheetXml, sharedStrings) {
     } else if (type === "b") {
       cells[address] = { value: rawValue === "1" };
     } else if (type === "str") {
-      cells[address] = { value: decodeXmlText3(rawValue) };
+      cells[address] = { value: decodeXmlText4(rawValue) };
     } else {
       const numericValue = Number(rawValue);
       cells[address] = {
-        value: Number.isFinite(numericValue) ? numericValue : decodeXmlText3(rawValue)
+        value: Number.isFinite(numericValue) ? numericValue : decodeXmlText4(rawValue)
       };
     }
   }
@@ -23665,7 +23818,7 @@ async function readSharedStrings(source) {
   if (!await source.has("xl/sharedStrings.xml")) return [];
   const xml = await source.readText("xl/sharedStrings.xml");
   return [...xml.matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map(
-    (itemMatch) => [...(itemMatch[1] ?? "").matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText3(textMatch[1] ?? "")).join("")
+    (itemMatch) => [...(itemMatch[1] ?? "").matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText4(textMatch[1] ?? "")).join("")
   );
 }
 function escapeXmlText8(input) {
@@ -23678,7 +23831,7 @@ var XML_NAMED_ENTITIES = {
   gt: ">",
   amp: "&"
 };
-function decodeXmlText3(input) {
+function decodeXmlText4(input) {
   return input.replace(
     /&(?:#x([0-9A-Fa-f]+)|#([0-9]+)|(quot|apos|lt|gt|amp));/g,
     (match, hex, dec, named) => {
@@ -43173,6 +43326,187 @@ function expectFilterColumn(value, field) {
   }
   return out;
 }
+var DV_TYPES2 = /* @__PURE__ */ new Set([
+  "whole",
+  "decimal",
+  "list",
+  "date",
+  "time",
+  "textLength",
+  "custom",
+  "any",
+  "none"
+]);
+var DV_OPERATORS2 = /* @__PURE__ */ new Set([
+  "between",
+  "notBetween",
+  "equal",
+  "notEqual",
+  "greaterThan",
+  "greaterThanOrEqual",
+  "lessThan",
+  "lessThanOrEqual"
+]);
+var DV_ERROR_STYLES = /* @__PURE__ */ new Set([0, 1, 2]);
+var MAX_DV_STATES = 1e3;
+var MAX_DV_RULES_PER_SHEET = 500;
+var MAX_DV_RANGES_PER_RULE = 100;
+var MAX_DV_MESSAGE_LENGTH = 255;
+var MAX_DV_ROW = 1048575;
+var MAX_DV_COLUMN = 16383;
+function expectSheetDvState(value, index) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `dvStates[${index}] must be an object`);
+  }
+  const sheetName = expectString(value.sheetName, `dvStates[${index}].sheetName`);
+  const rules = expectArray(
+    value.rules,
+    `dvStates[${index}].rules`,
+    (rule, i) => expectDvWireRule(rule, `dvStates[${index}].rules[${i}]`)
+  );
+  if (rules.length > MAX_DV_RULES_PER_SHEET) {
+    throw new OfficeValidationError(
+      "validation",
+      `dvStates[${index}].rules exceeds ${MAX_DV_RULES_PER_SHEET} entries`
+    );
+  }
+  return { sheetName, rules };
+}
+function expectDvWireRule(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const ranges = expectArray(value.ranges, `${field}.ranges`, (area, i) => {
+    if (!isRecord(area)) {
+      throw new OfficeValidationError("validation", `${field}.ranges[${i}] must be an object`);
+    }
+    return expectDvArea(area, `${field}.ranges[${i}]`);
+  });
+  if (ranges.length === 0 || ranges.length > MAX_DV_RANGES_PER_RULE) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.ranges must carry 1..${MAX_DV_RANGES_PER_RULE} areas`
+    );
+  }
+  if (!isRecord(value.rule)) {
+    throw new OfficeValidationError("validation", `${field}.rule must be an object`);
+  }
+  const rule = expectDvRule(value.rule, `${field}.rule`);
+  return { ranges, rule };
+}
+function expectDvArea(value, field) {
+  const startRow = expectNumber(value.startRow, `${field}.startRow`);
+  const endRow = expectNumber(value.endRow, `${field}.endRow`);
+  const startColumn = expectNumber(value.startColumn, `${field}.startColumn`);
+  const endColumn = expectNumber(value.endColumn, `${field}.endColumn`);
+  for (const [n, label] of [
+    [startRow, `${field}.startRow`],
+    [endRow, `${field}.endRow`],
+    [startColumn, `${field}.startColumn`],
+    [endColumn, `${field}.endColumn`]
+  ]) {
+    if (!Number.isInteger(n) || n < 0) {
+      throw new OfficeValidationError("validation", `${label} must be a non-negative integer`);
+    }
+  }
+  if (endRow < startRow || endColumn < startColumn) {
+    throw new OfficeValidationError("validation", `${field} end must be >= start`);
+  }
+  if (endRow > MAX_DV_ROW || endColumn > MAX_DV_COLUMN) {
+    throw new OfficeValidationError("validation", `${field} exceeds Excel's sheet dimensions`);
+  }
+  return { startRow, endRow, startColumn, endColumn };
+}
+function expectDvRule(value, field) {
+  const type = value.type;
+  if (typeof type !== "string" || !DV_TYPES2.has(type)) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.type "${String(type)}" is not a supported data-validation type`
+    );
+  }
+  const out = { type };
+  if (value.operator !== void 0 && value.operator !== null) {
+    if (typeof value.operator !== "string" || !DV_OPERATORS2.has(value.operator)) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.operator "${String(value.operator)}" is not a supported data-validation operator`
+      );
+    }
+    out.operator = value.operator;
+  }
+  for (const key of ["formula1", "formula2"]) {
+    const v = value[key];
+    if (v === void 0 || v === null) continue;
+    if (typeof v !== "string" && typeof v !== "number") {
+      throw new OfficeValidationError("validation", `${field}.${key} must be a string or number`);
+    }
+    const text = String(v);
+    if (text.length > 1e3) {
+      throw new OfficeValidationError("validation", `${field}.${key} exceeds 1000 characters`);
+    }
+    out[key] = text;
+  }
+  if (value.allowBlank !== void 0) {
+    if (typeof value.allowBlank !== "boolean") {
+      throw new OfficeValidationError("validation", `${field}.allowBlank must be a boolean`);
+    }
+    out.allowBlank = value.allowBlank;
+  }
+  for (const key of ["showDropDown", "showInputMessage", "showErrorMessage"]) {
+    if (value[key] === void 0) continue;
+    if (typeof value[key] !== "boolean") {
+      throw new OfficeValidationError("validation", `${field}.${key} must be a boolean`);
+    }
+    out[key] = value[key];
+  }
+  if (value.errorStyle !== void 0 && value.errorStyle !== null) {
+    const style = value.errorStyle;
+    if (typeof style !== "number" || !Number.isInteger(style) || !DV_ERROR_STYLES.has(style)) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.errorStyle "${String(style)}" is not a supported error style`
+      );
+    }
+    out.errorStyle = style;
+  }
+  for (const key of ["errorTitle", "error", "promptTitle", "prompt"]) {
+    const v = value[key];
+    if (v === void 0 || v === null) continue;
+    if (typeof v !== "string") {
+      throw new OfficeValidationError("validation", `${field}.${key} must be a string`);
+    }
+    if (v.length > MAX_DV_MESSAGE_LENGTH) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.${key} exceeds ${MAX_DV_MESSAGE_LENGTH} characters`
+      );
+    }
+    out[key] = v;
+  }
+  for (const key of Object.keys(value)) {
+    if (![
+      "type",
+      "operator",
+      "formula1",
+      "formula2",
+      "allowBlank",
+      "showDropDown",
+      "showInputMessage",
+      "showErrorMessage",
+      "errorStyle",
+      "errorTitle",
+      "error",
+      "promptTitle",
+      "prompt",
+      "uid",
+      "renderMode"
+    ].includes(key)) {
+      throw new OfficeValidationError("validation", `${field} carries an unknown field "${key}"`);
+    }
+  }
+  return out;
+}
 function parseSaveWorkbookRequest(body, codec) {
   if (!isRecord(body)) {
     throw new OfficeValidationError("validation", "Request body must be a JSON object");
@@ -43201,6 +43535,13 @@ function parseSaveWorkbookRequest(body, codec) {
         `savePlan.filterStates exceeds ${MAX_FILTER_STATES} entries`
       );
     }
+    const dvStates = body.savePlan.dvStates !== void 0 && body.savePlan.dvStates !== null ? expectArray(body.savePlan.dvStates, "savePlan.dvStates", expectSheetDvState) : void 0;
+    if (dvStates !== void 0 && dvStates.length > MAX_DV_STATES) {
+      throw new OfficeValidationError(
+        "validation",
+        `savePlan.dvStates exceeds ${MAX_DV_STATES} entries`
+      );
+    }
     return {
       fileName,
       fileBytes,
@@ -43208,7 +43549,8 @@ function parseSaveWorkbookRequest(body, codec) {
         edits,
         ...structuralOps ? { structuralOps } : {},
         ...pageSetupStates ? { pageSetupStates } : {},
-        ...filterStates ? { filterStates } : {}
+        ...filterStates ? { filterStates } : {},
+        ...dvStates ? { dvStates } : {}
       }
     };
   }
@@ -43259,6 +43601,7 @@ async function handleSaveWorkbook(body, codec) {
   const structuralOps = req.savePlan.structuralOps ?? [];
   const pageSetupStates = req.savePlan.pageSetupStates ?? [];
   const filterStates = req.savePlan.filterStates ?? [];
+  const dvStates = req.savePlan.dvStates ?? [];
   let mutation;
   try {
     mutation = await applyCellEditsToXlsx(
@@ -43270,7 +43613,7 @@ async function handleSaveWorkbook(body, codec) {
       filterStates,
       [],
       [],
-      [],
+      dvStates,
       [],
       null,
       pageSetupStates
