@@ -129,6 +129,55 @@ describe('architecture: apps/web has zero Electron / Node API imports', () => {
     })
     expect(violations.map((v) => v.rel)).toEqual([])
   })
+
+  // Phase 4 Increment 4 (Data → Filter): the browser is a thin typed client.
+  // It must NEVER parse or serialize OOXML itself — the canonical
+  // xlsx-gateway owns all XML work, and the browser only exchanges typed
+  // SheetFilterState / CellEdit / structural-op payloads.
+  it('apps/web/src does NOT import JSZip (no browser-side archive handling)', () => {
+    const webFiles = readFiles(join(WEB_ROOT, 'src'))
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => /from\s+['"]jszip['"]/.test(line))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('apps/web/src does NOT do raw OOXML work (no XML parsing/serialization of sheet parts)', () => {
+    const webFiles = readFiles(join(WEB_ROOT, 'src'))
+    // Patterns that indicate hand-rolled OOXML handling in the browser:
+    // XML-mode DOM parsing, sheet-part tags, or building worksheet XML
+    // strings. (HTML-mode DOMParser is the Word editor's block pipeline and
+    // is not OOXML work.)
+    const ooxmlPatterns = [
+      /new\s+DOMParser\s*\(\s*\)\s*\.\s*parseFromString\s*\([^)]*['"](?:application|text)\/xml['"]/,
+      /\bXMLSerializer\b/,
+      /<autoFilter\b/,
+      /<sheetData\b/,
+      /<worksheet\b/,
+      /<mergeCells\b/,
+      /<customFilters\b/,
+      /<filterColumn\b/,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => ooxmlPatterns.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('apps/web/src filter surfaces use ONLY the canonical typed SheetFilterState', () => {
+    // The filter journal/save code must reference the canonical gateway type,
+    // not a locally-declared duplicate of the filter model.
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    expect(existsSync(editorPath), `${editorPath} should exist`).toBe(true)
+    const content = readFileSync(editorPath, 'utf8')
+    expect(content).toContain('SheetFilterState')
+    // ...and must import it from the canonical package, not declare it.
+    expect(
+      /import type \{[^}]*SheetFilterState[^}]*\} from '@genoffice\/xlsx-gateway'/.test(content),
+    ).toBe(true)
+  })
 })
 
 // ── Office API client purity ────────────────────────────────────────────────

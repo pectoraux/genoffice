@@ -5,6 +5,7 @@ import type {
   StructuralOperation,
 } from './workbook-dsl'
 import type { SheetVisual } from './chart-visual'
+import type { SheetFilterState } from '../gateway/xlsx-filter'
 
 export type CellScalar = string | number | boolean | null
 
@@ -56,6 +57,18 @@ export interface WorksheetState {
    */
   readonly freeze?:
     Readonly<{ readonly frozenRows: number; readonly frozenColumns: number }> | undefined
+  /**
+   * AutoFilter state parsed from the worksheet's <autoFilter> element plus
+   * the row-visibility it implies. Absent means no parseable filter —
+   * including when the element carries criteria the canonical model cannot
+   * represent (top10, dynamicFilter, iconFilter, dateGroup, colorFilters),
+   * which fail closed: the browser never renders such a filter and a no-op
+   * save preserves the file's XML byte-for-byte. The web Sheets shell
+   * (Data → Filter) journals filter changes through the canonical
+   * `SheetFilterState` save family and reads it back via this field on
+   * reopen, so filter range + criteria + hidden rows survive round-trip.
+   */
+  readonly filterState?: Readonly<SheetFilterState> | undefined
 }
 
 export interface WorkbookSnapshot {

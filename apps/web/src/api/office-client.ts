@@ -19,7 +19,7 @@
 // Type-only imports — erased at build time. The browser never bundles the
 // engine packages; these types exist purely so the client's wire shapes line
 // up with the server-side route handlers.
-import type { CellEdit, WorkbookSnapshot } from '@genoffice/xlsx-gateway'
+import type { CellEdit, SheetFilterState, WorkbookSnapshot } from '@genoffice/xlsx-gateway'
 
 // ── Wire types (mirror the @contractor/core/api office-routes module) ────────
 
@@ -100,6 +100,17 @@ export interface BrowserWorkbookSavePlan {
    * emitted by the web shell today.
    */
   readonly pageSetupStates?: readonly BrowserSheetPageSetupState[]
+  /**
+   * Per-sheet AutoFilter states (Data → Filter). Replayed by the engine
+   * AFTER structural ops and cell edits, so their coordinates and row
+   * set match the sheet's final content. Each entry is the canonical
+   * `SheetFilterState` from @genoffice/xlsx-gateway — the browser only
+   * ever sends typed states snapshotted from Univer's live filter model
+   * (never XML, never reconstructed OOXML). `filter: null` means the
+   * filter was cleared (the engine removes `<autoFilter>` and unhides
+   * the visibility span's rows).
+   */
+  readonly filterStates?: readonly SheetFilterState[]
   readonly [key: string]: unknown
 }
 

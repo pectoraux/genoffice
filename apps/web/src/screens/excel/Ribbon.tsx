@@ -510,14 +510,22 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
                 disabled={disabled}
                 onClick={() => api?.sortRange(false)}
               />
-              {/* Disabled: the wire save plan does not expose filterStates.
-                  applyCellEditsToXlsx accepts it, but routeOffice does not
-                  pass it through — a filter applied in-session would NOT
-                  survive save/reopen. */}
+              {/* Data → Filter: toggles the AutoFilter through the REAL
+                  Univer command (smart-toggle-filter). Persistence chain
+                  (Phase 4 Increment 4): filter mutations mark the sheet
+                  filter-dirty → on save, the live filter model is snapshotted
+                  as canonical SheetFilterState → /api/office/workbooks/save
+                  → xlsx-gateway applyFilterState writes the autoFilter
+                  element + row visibility → reopen parses it back
+                  (ribbon-filter.spec.ts proves the round-trip). Value
+                  filters, blank filtering, and the six supported custom
+                  operators round-trip; color filters fail closed at save
+                  with an explicit error. */}
               <RibbonButton
                 label="Filter"
-                title="Filter — disabled: the web save plan does not yet expose the filterStates family"
-                disabled
+                title="Toggle the AutoFilter on the active sheet (Data → Filter)"
+                disabled={disabled}
+                onClick={() => api?.toggleFilter()}
               />
             </Group>
             <Group label="Data Tools">

@@ -28,6 +28,7 @@ import {
   readBasicWorkbook,
   type CellEdit,
   type EditableBorderStyle,
+  type SheetFilterState,
   type SheetPageSetupState,
   type SheetStructuralOps,
   type StructuralOp,
@@ -89,6 +90,13 @@ export interface BrowserWorkbookSavePlan {
    * without a wire-breaking change.
    */
   readonly pageSetupStates?: readonly SheetPageSetupState[]
+  /**
+   * Per-sheet AutoFilter states (Data → Filter). The engine applies these
+   * AFTER structural ops, cell edits, and page setup — filter coordinates
+   * and row sets match the sheet's final content. Each entry is the
+   * canonical `SheetFilterState`; `filter: null` clears the filter.
+   */
+  readonly filterStates?: readonly SheetFilterState[]
   // Extensibility seam — future mutation families land here as optional
   // readonly fields (chartEdits?, hyperlinkEdits?, …).
   // The route handler ignores unknown keys, so adding a field is a
@@ -1909,6 +1917,239 @@ function expectSheetPageSetupState(value: unknown, index: number): SheetPageSetu
   return out as SheetPageSetupState
 }
 
+// ── SheetFilterState validation (Data → Filter, Phase 4 Increment 4) ────────
+
+/// Custom filter operators the canonical gateway can serialize — the exact
+/// set Univer's CustomFilterOperator enum emits (and xlsx-filter.ts accepts).
+const FILTER_CUSTOM_OPERATORS = new Set([
+  'equal',
+  'notEqual',
+  'greaterThan',
+  'greaterThanOrEqual',
+  'lessThan',
+  'lessThanOrEqual',
+])
+
+/** Upper bound on filter rows/cols — Excel's sheet dimensions. */
+const MAX_FILTER_ROW_OR_COLUMN = 1_048_576
+/** Excel's column count ceiling. */
+const MAX_FILTER_COLUMN_INDEX = 16_384
+/** Guard against absurd payloads (one filter per sheet, plus headroom). */
+const MAX_FILTER_STATES = 100
+/** Guard against absurd per-column value lists. */
+const MAX_FILTER_VALUES = 10_000
+/** OOXML allows at most two customFilters per customFilters element. */
+const MAX_CUSTOM_FILTERS = 2
+
+/**
+ * Validate one per-sheet AutoFilter state from the wire. The browser only
+ * emits states snapshotted from Univer's live filter model through the
+ * canonical `SheetFilterState` shape — anything else (unknown kinds,
+ * arbitrary filter objects, out-of-range coordinates, unsupported
+ * operators) is rejected with a 400 rather than reaching the engine.
+ * `filter: null` is the explicit cleared-filter state.
+ */
+function expectSheetFilterState(value: unknown, index: number): SheetFilterState {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `filterStates[${index}] must be an object`)
+  }
+  const sheetName = expectString(value.sheetName, `filterStates[${index}].sheetName`)
+  const out: {
+    sheetName: string
+    filter: {
+      range: SheetFilterArea
+      columns: readonly SheetFilterColumn[]
+    } | null
+    hiddenRows: readonly number[]
+    visibilityRange: SheetFilterArea
+  } = {
+    sheetName,
+    filter: null,
+    hiddenRows: [],
+    visibilityRange: { startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+  }
+  if (value.filter !== null && value.filter !== undefined) {
+    if (!isRecord(value.filter)) {
+      throw new OfficeValidationError(
+        'validation',
+        `filterStates[${index}].filter must be an object or null`,
+      )
+    }
+    const range = expectFilterArea(value.filter.range, `filterStates[${index}].filter.range`)
+    const columns = expectArray(
+      value.filter.columns,
+      `filterStates[${index}].filter.columns`,
+      (column, i) => expectFilterColumn(column, `filterStates[${index}].filter.columns[${i}]`),
+    )
+    if (columns.length > MAX_FILTER_COLUMN_INDEX) {
+      throw new OfficeValidationError(
+        'validation',
+        `filterStates[${index}].filter.columns exceeds ${MAX_FILTER_COLUMN_INDEX} entries`,
+      )
+    }
+    for (const column of columns) {
+      if (column.colId < 0 || range.startColumn + column.colId > range.endColumn) {
+        throw new OfficeValidationError(
+          'validation',
+          `filterStates[${index}]: column colId ${column.colId} is outside the filter range`,
+        )
+      }
+    }
+    out.filter = { range, columns }
+  } else if (value.filter === undefined) {
+    throw new OfficeValidationError(
+      'validation',
+      `filterStates[${index}].filter is required (object or null)`,
+    )
+  }
+  const hiddenRows = expectArray(
+    value.hiddenRows,
+    `filterStates[${index}].hiddenRows`,
+    (row, i) => {
+      const n = expectNumber(row, `filterStates[${index}].hiddenRows[${i}]`)
+      if (!Number.isInteger(n) || n < 0 || n > MAX_FILTER_ROW_OR_COLUMN) {
+        throw new OfficeValidationError(
+          'validation',
+          `filterStates[${index}].hiddenRows[${i}] must be a 0-based row index`,
+        )
+      }
+      return n
+    },
+  )
+  out.hiddenRows = hiddenRows
+  out.visibilityRange = expectFilterArea(
+    value.visibilityRange,
+    `filterStates[${index}].visibilityRange`,
+  )
+  return out as unknown as SheetFilterState
+}
+
+type SheetFilterArea = {
+  startRow: number
+  endRow: number
+  startColumn: number
+  endColumn: number
+}
+type SheetFilterColumn = {
+  colId: number
+  values?: readonly string[]
+  blank?: boolean
+  customs?: {
+    and?: boolean
+    filters: readonly { val: string | number; operator?: string }[]
+  }
+}
+
+function expectFilterArea(value: unknown, field: string): SheetFilterArea {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const startRow = expectNumber(value.startRow, `${field}.startRow`)
+  const endRow = expectNumber(value.endRow, `${field}.endRow`)
+  const startColumn = expectNumber(value.startColumn, `${field}.startColumn`)
+  const endColumn = expectNumber(value.endColumn, `${field}.endColumn`)
+  for (const [n, label] of [
+    [startRow, `${field}.startRow`],
+    [endRow, `${field}.endRow`],
+    [startColumn, `${field}.startColumn`],
+    [endColumn, `${field}.endColumn`],
+  ] as const) {
+    if (!Number.isInteger(n) || n < 0 || n > MAX_FILTER_ROW_OR_COLUMN) {
+      throw new OfficeValidationError('validation', `${label} must be a non-negative integer`)
+    }
+  }
+  if (endRow < startRow || endColumn < startColumn) {
+    throw new OfficeValidationError('validation', `${field} end must be >= start`)
+  }
+  if (endColumn > MAX_FILTER_COLUMN_INDEX) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.endColumn exceeds Excel's column ceiling`,
+    )
+  }
+  return { startRow, endRow, startColumn, endColumn }
+}
+
+function expectFilterColumn(value: unknown, field: string): SheetFilterColumn {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const colId = expectNumber(value.colId, `${field}.colId`)
+  if (!Number.isInteger(colId) || colId < 0 || colId > MAX_FILTER_COLUMN_INDEX) {
+    throw new OfficeValidationError('validation', `${field}.colId must be a non-negative integer`)
+  }
+  const out: SheetFilterColumn = { colId }
+  if (value.values !== undefined && value.values !== null) {
+    const values = expectArray(value.values, `${field}.values`, (v, i) => {
+      if (typeof v !== 'string') {
+        throw new OfficeValidationError('validation', `${field}.values[${i}] must be a string`)
+      }
+      return v
+    })
+    if (values.length > MAX_FILTER_VALUES) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.values exceeds ${MAX_FILTER_VALUES} entries`,
+      )
+    }
+    out.values = values
+  }
+  if (value.blank !== undefined) {
+    if (typeof value.blank !== 'boolean') {
+      throw new OfficeValidationError('validation', `${field}.blank must be a boolean`)
+    }
+    out.blank = value.blank
+  }
+  if (value.customs !== undefined && value.customs !== null) {
+    if (!isRecord(value.customs)) {
+      throw new OfficeValidationError('validation', `${field}.customs must be an object`)
+    }
+    if (value.customs.and !== undefined && typeof value.customs.and !== 'boolean') {
+      throw new OfficeValidationError('validation', `${field}.customs.and must be a boolean`)
+    }
+    const filters = expectArray(value.customs.filters, `${field}.customs.filters`, (custom, i) => {
+      if (!isRecord(custom)) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.customs.filters[${i}] must be an object`,
+        )
+      }
+      const val = custom.val
+      if (typeof val !== 'string' && typeof val !== 'number') {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.customs.filters[${i}].val must be a string or number`,
+        )
+      }
+      if (custom.operator !== undefined && custom.operator !== null) {
+        if (typeof custom.operator !== 'string' || !FILTER_CUSTOM_OPERATORS.has(custom.operator)) {
+          throw new OfficeValidationError(
+            'validation',
+            `${field}.customs.filters[${i}].operator "${String(custom.operator)}" is not a supported filter condition`,
+          )
+        }
+        return { val, operator: custom.operator as string }
+      }
+      return { val }
+    })
+    if (filters.length === 0 || filters.length > MAX_CUSTOM_FILTERS) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.customs.filters must carry 1..${MAX_CUSTOM_FILTERS} conditions`,
+      )
+    }
+    const and = value.customs.and === true
+    out.customs = and ? { and: true, filters } : { filters }
+  }
+  if (out.values === undefined && !out.blank && out.customs === undefined) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field} carries no criteria (need values, blank, or customs)`,
+    )
+  }
+  return out
+}
+
 function parseSaveWorkbookRequest(
   body: unknown,
   codec: OfficeBinaryCodec,
@@ -1941,6 +2182,16 @@ function parseSaveWorkbookRequest(
             expectSheetPageSetupState,
           )
         : undefined
+    const filterStates =
+      body.savePlan.filterStates !== undefined && body.savePlan.filterStates !== null
+        ? expectArray(body.savePlan.filterStates, 'savePlan.filterStates', expectSheetFilterState)
+        : undefined
+    if (filterStates !== undefined && filterStates.length > MAX_FILTER_STATES) {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.filterStates exceeds ${MAX_FILTER_STATES} entries`,
+      )
+    }
     return {
       fileName,
       fileBytes,
@@ -1948,6 +2199,7 @@ function parseSaveWorkbookRequest(
         edits,
         ...(structuralOps ? { structuralOps } : {}),
         ...(pageSetupStates ? { pageSetupStates } : {}),
+        ...(filterStates ? { filterStates } : {}),
       },
     }
   }
@@ -2018,15 +2270,20 @@ async function handleSaveWorkbook(
   const edits = req.savePlan.edits
   const structuralOps = req.savePlan.structuralOps ?? []
   const pageSetupStates = req.savePlan.pageSetupStates ?? []
+  const filterStates = req.savePlan.filterStates ?? []
   let mutation
   try {
+    // filterStates is argument 6 (after chartEdits/sheetPlan): the canonical
+    // engine applies filter snapshots AFTER structural replay, cell edits,
+    // and page setup, so their coordinates and row set match the sheet's
+    // final content. See planCellEditsToXlsx in @genoffice/xlsx-gateway.
     mutation = await applyCellEditsToXlsx(
       buf,
       edits,
       structuralOps,
       [],
       undefined,
-      [],
+      filterStates,
       [],
       [],
       [],

@@ -767,18 +767,56 @@ test.describe('Data tab — Sort persists, Filter disabled', () => {
     expect(pageErrors).toEqual([])
   })
 
-  test('Filter button is disabled with documented reason', async ({ page }) => {
+  // Phase 4 Increment 4 (Data → Filter) replaced the disabled placeholder:
+  // the filterStates wire family now exists end-to-end, so the button is
+  // ENABLED and toggles the real Univer AutoFilter. The full persistence
+  // proof (apply → save → XML → reopen) lives in ribbon-filter.spec.ts.
+  test('Filter button is enabled and toggles the AutoFilter in-session', async ({ page }) => {
     test.setTimeout(120_000)
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
     await waitForGridCanvas(page)
 
-    await page.getByRole('tab', { name: 'Data', exact: true }).click()
-    await page.waitForTimeout(200)
+    const fixture = await buildExcelFixture()
+    writeFileSync('/tmp/e2e-ribbon-filter-toggle.xlsx', fixture)
+    await page.setInputFiles('input[type="file"]', '/tmp/e2e-ribbon-filter-toggle.xlsx')
+    await expect(page.getByText('Opened e2e-ribbon-filter-toggle.xlsx')).toBeVisible({
+      timeout: 30_000,
+    })
+    await page.waitForTimeout(1500)
 
-    const filterBtn = page.getByRole('button', { name: /^Filter/ }).first()
-    await expect(filterBtn).toBeDisabled()
-    const title = await filterBtn.getAttribute('title')
-    expect(title, 'Filter title names the architectural reason').toContain('filterStates')
+    // Select the data region (A1:B3) so smart-toggle-filter has a range.
+    const box = page.locator('[data-testid="excel-name-box"]')
+    await box.click()
+    await box.fill('A1:B3')
+    await box.press('Enter')
+    await page.waitForTimeout(400)
+
+    await page
+      .locator('[data-testid="excel-ribbon"] .excel-ribbon-tab', { hasText: 'Data' })
+      .click()
+    await page.waitForTimeout(200)
+    const filterBtn = page.getByRole('button', { name: /AutoFilter/i }).first()
+    await expect(filterBtn).toBeEnabled()
+    await filterBtn.click()
+    await page.waitForTimeout(600)
+    await expect(page.getByText('● Unsaved changes')).toBeVisible({ timeout: 10_000 })
+
+    // The live Univer model now carries a filter over the selection.
+    const hasFilter = await page.evaluate(() => {
+      const rt = (
+        window as {
+          __genofficeExcelRuntime?: {
+            univerAPI: {
+              getActiveWorkbook: () => {
+                getActiveSheet: () => { getFilter: () => unknown | null }
+              }
+            }
+          }
+        }
+      ).__genofficeExcelRuntime
+      return rt?.univerAPI?.getActiveWorkbook?.()?.getActiveSheet?.()?.getFilter?.() != null
+    })
+    expect(hasFilter, 'AutoFilter exists in the live model after the toggle').toBe(true)
   })
 })

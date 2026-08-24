@@ -74,7 +74,8 @@ export { SheetEditError, validateSheetName } from './gateway/xlsx-sheets.js'
 export type { StructuralOp, AxisAttributeOp } from './gateway/xlsx-structure.js'
 
 // ── Filter state ──
-export type { SheetFilterState } from './gateway/xlsx-filter.js'
+export type { SheetFilterState, FilterColumnState } from './gateway/xlsx-filter.js'
+export { parseAutoFilter, FilterReadError, FilterEditError } from './gateway/xlsx-filter.js'
 
 // ── Defined names ──
 export type { DefinedNamesState } from './gateway/xlsx-defined-names.js'

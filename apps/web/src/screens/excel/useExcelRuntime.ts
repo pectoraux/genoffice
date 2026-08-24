@@ -202,6 +202,16 @@ export interface ExcelRuntimeApi {
    * '=' is optional (added if absent). No second formula engine runs.
    */
   insertFunction(formulaBody: string): void
+  /**
+   * Toggle the AutoFilter on the active sheet — the REAL Univer command
+   * (sheet.command.smart-toggle-filter): removes the filter when one
+   * exists, else creates one over the selection (or the expanded
+   * continuous region for a single-cell selection). The fired mutations
+   * (set-filter-range / remove-filter) are journaled by ExcelEditor's
+   * subscription as per-sheet filter-dirty marks; on save, the LIVE
+   * filter model is snapshotted as a canonical SheetFilterState.
+   */
+  toggleFilter(): void
 }
 
 export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeApi | null {
@@ -591,6 +601,22 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     [commitFormula],
   )
 
+  const toggleFilter = useCallback(() => {
+    const r = rtRef.current
+    if (!r) return
+    // The REAL Univer toggle — same command the preset's own toolbar button
+    // executes. SmartToggleSheetsFilterCommand removes the sheet's filter
+    // when one exists, else creates one over the selection (or the expanded
+    // continuous region for a single-cell selection). The underlying
+    // mutations (sheet.mutation.set-filter-range / remove-filter) fire the
+    // journal's filter-dirty handler in ExcelEditor.
+    try {
+      void r.univerAPI.executeCommand('sheet.command.smart-toggle-filter')
+    } catch {
+      /* no selection / command rejected — the sheet stays canonical */
+    }
+  }, [])
+
   if (!rt) return null
   return {
     state,
@@ -618,5 +644,6 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     sortRange,
     toggleFreezePanes,
     insertFunction,
+    toggleFilter,
   }
 }

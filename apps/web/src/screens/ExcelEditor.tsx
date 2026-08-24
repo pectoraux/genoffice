@@ -9,14 +9,27 @@ import type {
   IStyleData,
   IWorksheetData,
 } from '@univerjs/core'
+// Side-effect import — loads @univerjs/sheets-filter's facade types, which
+// augment FWorksheet with the public getFilter(): FFilter | null method
+// (FWorksheetFilterMixin). The runtime side is already wired by
+// UniverSheetsFilterPreset in create-browser-univer.ts; this import only
+// surfaces the TypeScript signatures so the filter save snapshot
+// (collectFilterStates) and the load-time install typecheck with the
+// PUBLIC typed facade — no `as unknown as` casts, no private internals.
+import '@univerjs/sheets-filter/facade'
+import type { ICustomFilter, IFilterColumn } from '@univerjs/sheets-filter'
 import type {
   CellEdit,
   CellFormatState,
   CellState,
+  FilterColumnState,
+  SheetFilterState,
   WorkbookSnapshot,
 } from '@genoffice/xlsx-gateway'
 import {
   createBrowserUniver,
+  installJournalSuppressionUndoFilter,
+  journalSuppression as moduleJournalSuppression,
   primeSortFormulaInterceptor,
   type BrowserUniverRuntime,
 } from '../office/create-browser-univer'
@@ -63,6 +76,18 @@ const REORDER_RANGE_MUTATION_ID = 'sheet.mutation.reorder-range'
 
 /** Freeze-pane mutation ID (built-in sheets). */
 const SET_FROZEN_MUTATION_ID = 'sheet.mutation.set-frozen'
+
+/**
+ * Filter mutation IDs (sheets-filter preset) — the same set the desktop's
+ * App.tsx listens for. Any of these marks the sheet filter-dirty; the save
+ * snapshots the LIVE filter model declaratively (never replays mutations).
+ */
+const FILTER_MUTATION_IDS = new Set([
+  'sheet.mutation.set-filter-range',
+  'sheet.mutation.set-filter-criteria',
+  'sheet.mutation.remove-filter',
+  'sheet.mutation.re-calc-filter',
+])
 
 /** Structural mutation IDs (insert/remove row/column). */
 const STRUCTURAL_MUTATION_IDS = new Set([
@@ -291,6 +316,22 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   const freezeStateRef = useRef<Map<string, { frozenRows: number; frozenColumns: number }>>(
     new Map(),
   )
+  // ── AutoFilter journal (Data → Filter). Two structures, desktop parity
+  //    (App.tsx filterDirty / univer-sync.ts filterOrigins):
+  //    - filterDirtyRef: sheet NAMES whose filter changed in-session. A
+  //      sheet absent from this set is NOT filter-dirty: its save plan
+  //      carries NO filter state, so a no-op save preserves the file's own
+  //      <autoFilter> XML byte-for-byte.
+  //    - filterOriginsRef: per-sheet origin range — the union of the file's
+  //      filter range (seeded on open) and every in-session filter range.
+  //      The save's visibilityRange is this union, so removing or moving a
+  //      filter still unhides the OLD span's rows (the canonical
+  //      applyFilterState unhides every in-span row not listed in
+  //      hiddenRows).
+  const filterDirtyRef = useRef<Set<string>>(new Set())
+  const filterOriginsRef = useRef<
+    Map<string, { startRow: number; endRow: number; startColumn: number; endColumn: number }>
+  >(new Map())
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState<string>('Ready')
   const [fileName, setFileName] = useState<string>('workbook.xlsx')
@@ -348,12 +389,19 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     // FIRST sort of a session races it (rows reorder with verbatim,
     // un-rewritten formula references — see primeSortFormulaInterceptor).
     primeSortFormulaInterceptor(rt.univer)
+    // Install the load-time undo filter (desktop parity): drops undo
+    // entries pushed while journalSuppression is active, so opening a
+    // filtered workbook does not leave "undo the file's filter" on the
+    // stack. Idempotent; patches LocalUndoRedoService.prototype once.
+    installJournalSuppressionUndoFilter()
     const sub = subscribeToCellMutations(
       rt,
       dirtyCellsRef,
       structuralOpsRef,
       freezeStateRef,
       journalSuppressionRef,
+      filterDirtyRef,
+      filterOriginsRef,
       () => setDirty(true),
     )
     const w = window as { __genofficeExcelRuntime?: unknown }
@@ -435,6 +483,13 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     // cellData (see buildCellDataMatrix) — no post-create style
     // mutations fire during load.
     journalSuppressionRef.current = true
+    moduleJournalSuppression.active = true
+    // Clear the filter journal before seeding from the snapshot — stale
+    // filter-dirty marks from a previous workbook must never leak across
+    // an open (a reopened workbook starts NOT filter-dirty, so a no-op
+    // save preserves the file's own <autoFilter> XML).
+    filterDirtyRef.current.clear()
+    filterOriginsRef.current.clear()
     try {
       rt.univerAPI.createWorkbook({
         id: WORKBOOK_UNIT_ID,
@@ -452,9 +507,72 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             frozenColumns: sheet.freeze.frozenColumns,
           })
         }
+        // Render the file's existing AutoFilter in the REAL Univer UI:
+        // install the filter range, then re-apply the file's criteria so
+        // the live model is complete (dropdowns reflect the file state and
+        // a later user edit snapshots the FULL filter, not just the delta).
+        // The criteria re-application recalculates filteredOutRows, which
+        // drives Univer's render-time row-hidden interceptor — the grid
+        // shows exactly the rows the file's criteria keep visible. All of
+        // it runs under journal suppression: installing the FILE's filter
+        // is a load, not an edit.
+        const fs = sheet.filterState
+        if (fs && fs.filter) {
+          try {
+            const wb = rt.univerAPI.getActiveWorkbook()
+            const ws = wb?.getSheetByName(sheet.name)
+            const range = fs.filter.range
+            const fFilter = ws
+              ?.getRange(
+                range.startRow,
+                range.startColumn,
+                range.endRow - range.startRow + 1,
+                range.endColumn - range.startColumn + 1,
+              )
+              ?.createFilter()
+            if (fFilter) {
+              for (const column of fs.filter.columns) {
+                const absoluteColumn = range.startColumn + column.colId
+                // IFilterColumn criteria shape (Univer's filter model):
+                // { colId, filters?: { blank?: true, filters?: string[] },
+                //   customFilters?: { and?: TRUE, customFilters: [c1] | [c1, c2] } }.
+                const criteria: IFilterColumn = { colId: column.colId }
+                if (column.values !== undefined || column.blank) {
+                  criteria.filters = {
+                    ...(column.values !== undefined ? { filters: [...column.values] } : {}),
+                    ...(column.blank ? { blank: true } : {}),
+                  }
+                }
+                if (column.customs) {
+                  const customFilters = column.customs.filters.map((custom) => ({
+                    val: custom.val,
+                    ...(custom.operator !== undefined ? { operator: custom.operator } : {}),
+                  }))
+                  // ICustomFilters.customFilters is a 1-or-2 tuple; the
+                  // gateway's parser rejects criteria-less and >2-entry
+                  // filterColumns, so the runtime shape is already valid.
+                  criteria.customFilters = {
+                    ...(column.customs.and === true ? { and: 1 } : {}),
+                    customFilters: customFilters as
+                      [ICustomFilter] | [ICustomFilter, ICustomFilter],
+                  }
+                }
+                fFilter.setColumnFilterCriteria(absoluteColumn, criteria)
+              }
+            }
+            // Record the origin: the file's own filter range. A later
+            // move/remove unhides this span (visibilityRange = union).
+            filterOriginsRef.current.set(sheet.name, { ...range })
+          } catch {
+            // Installing the file's filter must never fail the open —
+            // the workbook still renders; only the filter dropdowns are
+            // absent (and a no-op save preserves the file's XML).
+          }
+        }
       }
     } finally {
       journalSuppressionRef.current = false
+      moduleJournalSuppression.active = false
     }
     dirtyCellsRef.current.clear()
     structuralOpsRef.current.clear()
@@ -501,6 +619,11 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           frozenRows: f.frozenRows,
           frozenColumns: f.frozenColumns,
         }))
+      // Snapshot the LIVE filter model for every filter-dirty sheet
+      // (Data → Filter). Declarative, desktop collectFilterStates parity:
+      // never replay mutations. Sheets NOT in the set emit NO filter state,
+      // so their <autoFilter> XML survives a no-op save byte-for-byte.
+      const filterStates = collectFilterStates(runtimeRef.current, filterDirtyRef, filterOriginsRef)
       let nextFileName = handle.fileName
       if (saveAs) {
         const newName = window.prompt('Save as:', nextFileName)
@@ -517,6 +640,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           edits,
           ...(structuralOps.length > 0 ? { structuralOps } : {}),
           ...(pageSetupStates.length > 0 ? { pageSetupStates } : {}),
+          ...(filterStates.length > 0 ? { filterStates } : {}),
         },
       })
       handleRef.current = {
@@ -527,6 +651,9 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       setFileName(nextFileName)
       dirtyCellsRef.current.clear()
       structuralOpsRef.current.clear()
+      // A saved filter state is now IN the source bytes — the sheet is no
+      // longer filter-dirty (another no-op save must not re-emit it).
+      filterDirtyRef.current.clear()
       const blob = new Blob([savedBytes.buffer as ArrayBuffer], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       })
@@ -650,17 +777,132 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
  *      save as a BrowserSheetPageSetupState (the canonical SheetPageSetupState
  *      family in applyCellEditsToXlsx writes the <pane> element)
  *
+ * Phase 4 Increment 4 adds the filter family (desktop parity — the save
+ * snapshots the LIVE filter model, never replays mutations):
+ *   - `sheet.mutation.set-filter-range | set-filter-criteria | remove-filter
+ *      | re-calc-filter` → mark the sheet filter-dirty. On save, the live
+ *      FFilter model is snapshotted as a canonical SheetFilterState
+ *      (range + criteria + getFilteredOutRows()), composed with the
+ *      sheet's origin range so a moved/removed filter still unhides its
+ *      old span.
+ *
  * `suppressionRef` mirrors the desktop's journalSuppression: while a
  * snapshot load is in progress, every mutation is ignored — a load is not
  * an edit. createWorkbook on a live-formula snapshot fires synchronous
  * recalc echoes that must never reach the journal.
  */
+
+/**
+ * Snapshot the LIVE Univer filter model for every filter-dirty sheet into
+ * the canonical SheetFilterState wire shape (desktop collectFilterStates
+ * parity — a declarative state snapshot, never a mutation replay).
+ *
+ * For each dirty sheet:
+ *   - No filter in the live model → the user removed it → emit
+ *     `{ filter: null, hiddenRows: [] }` with the ORIGIN's visibilityRange:
+ *     the gateway removes the <autoFilter> and unhides the old span.
+ *   - A filter exists → emit its range + per-column criteria
+ *     (getColumnFilterCriteria → values / blank / customs) +
+ *     getFilteredOutRows() as hiddenRows, with the visibilityRange as the
+ *     UNION of the origin and the live range (a moved filter still unhides
+ *     its old span).
+ *
+ * Color filters cannot be serialized by the canonical gateway — they fail
+ * closed (throw), matching the desktop's appColorFiltersUnsaveable. The
+ * save surfaces the error instead of silently dropping criteria.
+ */
+function collectFilterStates(
+  runtime: BrowserUniverRuntime | null,
+  filterDirtyRef: React.MutableRefObject<Set<string>>,
+  filterOriginsRef: React.MutableRefObject<
+    Map<string, { startRow: number; endRow: number; startColumn: number; endColumn: number }>
+  >,
+): SheetFilterState[] {
+  const workbook = runtime?.univerAPI.getActiveWorkbook()
+  if (!workbook) return []
+  const states: SheetFilterState[] = []
+  for (const sheetName of filterDirtyRef.current) {
+    const worksheet = workbook.getSheetByName(sheetName)
+    if (!worksheet) continue
+    const origin = filterOriginsRef.current.get(sheetName)
+    // The typed filter facade (sheets-filter preset's FWorksheet mixin):
+    // getFilter() returns the FFilter handle, or null when the sheet has no
+    // filter (the user removed it).
+    const filter = worksheet.getFilter()
+    if (!filter) {
+      // The user removed the filter; unhide what it was hiding. Without an
+      // origin there is nothing that could have been filter-hidden.
+      if (!origin) continue
+      states.push({
+        sheetName,
+        filter: null,
+        hiddenRows: [],
+        visibilityRange: { ...origin },
+      })
+      continue
+    }
+    const filterRange = filter.getRange()
+    const range = {
+      startRow: filterRange.getRow(),
+      startColumn: filterRange.getColumn(),
+      endRow: filterRange.getRow() + filterRange.getHeight() - 1,
+      endColumn: filterRange.getColumn() + filterRange.getWidth() - 1,
+    }
+    const columns: FilterColumnState[] = []
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const criteria = filter.getColumnFilterCriteria(column)
+      if (!criteria) continue
+      if (criteria.colorFilters) {
+        throw new Error(
+          'Color filters cannot be saved as XLSX yet — clear the color filter before saving.',
+        )
+      }
+      if (!criteria.filters && !criteria.customFilters) continue
+      columns.push({
+        colId: column - range.startColumn,
+        ...(criteria.filters?.filters ? { values: [...criteria.filters.filters] } : {}),
+        ...(criteria.filters?.blank ? { blank: true } : {}),
+        ...(criteria.customFilters
+          ? {
+              customs: {
+                ...(criteria.customFilters.and === 1 ? { and: true } : {}),
+                filters: criteria.customFilters.customFilters.map((custom) => ({
+                  val: custom.val,
+                  ...(custom.operator !== undefined ? { operator: custom.operator } : {}),
+                })),
+              },
+            }
+          : {}),
+      })
+    }
+    const visibilityRange = origin
+      ? {
+          startRow: Math.min(range.startRow, origin.startRow),
+          startColumn: Math.min(range.startColumn, origin.startColumn),
+          endRow: Math.max(range.endRow, origin.endRow),
+          endColumn: Math.max(range.endColumn, origin.endColumn),
+        }
+      : range
+    states.push({
+      sheetName,
+      filter: { range, columns },
+      hiddenRows: filter.getFilteredOutRows(),
+      visibilityRange,
+    })
+  }
+  return states
+}
+
 function subscribeToCellMutations(
   runtime: BrowserUniverRuntime,
   dirtyRef: React.MutableRefObject<Map<string, CellEdit>>,
   structuralRef: React.MutableRefObject<Map<string, JournaledStructuralOp[]>>,
   freezeRef: React.MutableRefObject<Map<string, { frozenRows: number; frozenColumns: number }>>,
   suppressionRef: React.MutableRefObject<boolean>,
+  filterDirtyRef: React.MutableRefObject<Set<string>>,
+  filterOriginsRef: React.MutableRefObject<
+    Map<string, { startRow: number; endRow: number; startColumn: number; endColumn: number }>
+  >,
   onDirty: () => void,
 ): { dispose(): void } {
   const sub = runtime.univerAPI.addEvent(runtime.univerAPI.Event.CommandExecuted, (event) => {
@@ -936,6 +1178,52 @@ function subscribeToCellMutations(
         })
       }
       structuralRef.current.set(sheetName, ops)
+      onDirty()
+      return
+    }
+
+    // ── Filter mutations (sheets-filter preset). set-filter-range carries
+    //    the new filter's range; the other three (set-filter-criteria,
+    //    remove-filter, re-calc-filter) change an existing filter. All mark
+    //    the sheet filter-dirty — the SAVE snapshots the live filter model
+    //    declaratively (collectFilterStates below), exactly like the
+    //    desktop. For set-filter-range, the origin union extends to cover
+    //    the new range so a later move/remove still unhides this span.
+    if (FILTER_MUTATION_IDS.has(event.id)) {
+      const params = event.params as
+        | {
+            subUnitId?: string
+            unitId?: string
+            range?: { startRow?: number; endRow?: number; startColumn?: number; endColumn?: number }
+          }
+        | undefined
+      if (!params?.subUnitId) return
+      const wb = runtime.univerAPI.getActiveWorkbook()
+      if (!wb) return
+      const ws = wb.getSheetBySheetId(params.subUnitId)
+      if (!ws) return
+      const sheetName = ws.getSheetName()
+      filterDirtyRef.current.add(sheetName)
+      const range = params.range
+      if (
+        range &&
+        Number.isInteger(range.startRow) &&
+        Number.isInteger(range.endRow) &&
+        Number.isInteger(range.startColumn) &&
+        Number.isInteger(range.endColumn) &&
+        range.startRow! >= 0 &&
+        range.endRow! >= range.startRow! &&
+        range.startColumn! >= 0 &&
+        range.endColumn! >= range.startColumn!
+      ) {
+        const origin = filterOriginsRef.current.get(sheetName)
+        filterOriginsRef.current.set(sheetName, {
+          startRow: Math.min(origin?.startRow ?? range.startRow!, range.startRow!),
+          endRow: Math.max(origin?.endRow ?? range.endRow!, range.endRow!),
+          startColumn: Math.min(origin?.startColumn ?? range.startColumn!, range.startColumn!),
+          endColumn: Math.max(origin?.endColumn ?? range.endColumn!, range.endColumn!),
+        })
+      }
       onDirty()
       return
     }

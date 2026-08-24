@@ -1,4 +1,11 @@
-import { LogLevel, LocaleType, ThemeService, IUndoRedoService, Univer } from '@univerjs/core'
+import {
+  LogLevel,
+  LocaleType,
+  ThemeService,
+  IUndoRedoService,
+  LocalUndoRedoService,
+  Univer,
+} from '@univerjs/core'
 import type { Plugin, PluginCtor } from '@univerjs/core'
 import { FUniver } from '@univerjs/core/lib/facade'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
@@ -216,5 +223,54 @@ export function primeSortFormulaInterceptor(univer: Univer): void {
     univer.__getInjector().get(FormulaReorderController)
   } catch {
     /* preset no longer exports the controller — sort degrades gracefully */
+  }
+}
+
+/**
+ * Shared load-time journal suppression flag (desktop univer-state.ts
+ * journalSuppression parity). ExcelEditor sets this while a snapshot load
+ * is in progress; `installJournalSuppressionUndoFilter` patches Univer's
+ * undo service to DROP undo entries pushed while it is active.
+ *
+ * Why: installing a loaded file's AutoFilter (createFilter +
+ * setColumnFilterCriteria under suppression) pushes undo entries. Without
+ * the filter, a freshly opened workbook would already "have undo", and ⌘Z
+ * would strip the loaded filter/formulas instead of a USER edit — the
+ * exact bug the desktop fixed with the same patch.
+ *
+ * Shared mutable state between ExcelEditor and the prototype patch —
+ * mirrors the desktop's module-level object.
+ */
+export const journalSuppression = { active: false }
+
+let undoFilterInstalled = false
+
+/**
+ * Drops undo-stack entries pushed while journalSuppression is active.
+ * Must patch LocalUndoRedoService.PROTOTYPE: the DI injector hands out a
+ * lazy redi proxy, so wrapping the resolved instance only shadows the
+ * proxy — Univer-internal command handlers resolve the real instance and
+ * would keep calling the unwrapped method (desktop univer-state.ts
+ * parity; that is exactly how file opens used to leak load-time entries).
+ */
+export function installJournalSuppressionUndoFilter(): void {
+  if (undoFilterInstalled) return
+  undoFilterInstalled = true
+  try {
+    // LocalUndoRedoService is exported by @univerjs/core — its PROTOTYPE
+    // carries pushUndoRedo (the injector hands out a lazy redi proxy, so
+    // patching the resolved instance would only shadow the proxy; Univer's
+    // internal command handlers resolve the real instance and would keep
+    // calling the unwrapped method).
+    const proto = LocalUndoRedoService.prototype as unknown as {
+      pushUndoRedo: (this: unknown, item: { unitID: string }) => void
+    }
+    const originalPush = proto.pushUndoRedo
+    proto.pushUndoRedo = function (this: unknown, item: { unitID: string }) {
+      if (!journalSuppression.active) originalPush.call(this, item)
+    }
+  } catch {
+    /* the prototype shape changed in a preset update — suppression still
+       keeps the journal clean; only undo would carry load entries */
   }
 }

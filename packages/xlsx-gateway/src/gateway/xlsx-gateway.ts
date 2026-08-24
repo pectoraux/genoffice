@@ -35,7 +35,7 @@ import {
   type PivotValueSpec,
 } from './xlsx-pivot-add'
 import type { SheetFilterState } from './xlsx-filter'
-import { applyFilterState } from './xlsx-filter'
+import { applyFilterState, FilterReadError, parseAutoFilter } from './xlsx-filter'
 import type { SheetAllocation, SheetEditPlan, SheetElement } from './xlsx-sheets'
 import {
   addWorksheetOverride,
@@ -405,6 +405,18 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     const worksheetPath = await resolveWorksheetPath(zip, decodedName)
     const worksheetXml = await zip.readText(worksheetPath)
     const presentation = parseWorksheetPresentation(worksheetXml, styleReader)
+    // AutoFilter read: fail closed PER FILTER — an unrepresentable
+    // <autoFilter> (top10 / dynamicFilter / iconFilter / dateGroup / color
+    // criteria) surfaces no filterState, so the browser never renders a
+    // filter it cannot save faithfully, while the workbook itself still
+    // opens and a no-op save preserves the file's XML byte-for-byte.
+    let filterState: SheetFilterState | undefined
+    try {
+      const parsed = parseAutoFilter(worksheetXml, decodedName)
+      if (parsed !== null) filterState = parsed
+    } catch (error) {
+      if (!(error instanceof FilterReadError)) throw error
+    }
     sheets.push({
       id,
       name: decodedName,
@@ -420,6 +432,7 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
         ? { colWidths: presentation.colWidths }
         : {}),
       ...(presentation.freeze ? { freeze: presentation.freeze } : {}),
+      ...(filterState ? { filterState } : {}),
     })
     sheetNamesById[id] = decodedName
   }

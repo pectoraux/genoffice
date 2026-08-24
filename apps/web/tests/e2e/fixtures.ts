@@ -820,6 +820,222 @@ export async function buildExcelSortFormulaFixture(): Promise<Buffer> {
   return toBytes(zip)
 }
 
+// ── Excel AutoFilter fixtures (ribbon-filter E2E) ───────────────────────────
+
+/**
+ * Deterministic XLSX for the Data → Filter E2E — a produce-price table with
+ * the architect-mandated surfaces:
+ *
+ *   Sheet "Produce" (visible):
+ *     Row 1 (header, bold + fill via xf 1):
+ *       A1="Category" B1="Item" C1="Qty" D1="Total"
+ *     Rows 2-8 (7 data rows, mixed values + ONE blank):
+ *       A2=Fruit  B2=Apple   C2=10  D2==C2*2 (v=20)   — formula
+ *       A3=Veg    B3=Carrot  C3=5   D3==C3*2 (v=10)
+ *       A4=Fruit  B4=Banana  C4=20  D4==C4*2 (v=40)
+ *       A5=Veg    B5=Pea     C5=(blank) D5=(blank)   — the blank row
+ *       A6=Fruit  B6=Cherry  C6=15  D6==C6*2 (v=30)
+ *       A7=Veg    B7=Kale    C7=8   D7==C7*2 (v=16)
+ *       A8=Fruit  B8=Melon   C8=30  D8==C8*2 (v=60)
+ *   C column carries the currency numfmt (xf 3, numFmtId 164) on data rows
+ *   A2 is italic (xf 2); other category cells are regular — mixed styles.
+ *   Worksheet-level hyperlink on B2 → rId1 (https://example.com/produce).
+ *
+ * buildExcelFilterFixture(): NO autoFilter — the E2E applies one.
+ * buildExcelFilteredFixture(): carries
+ *   <autoFilter ref="A1:D8"><filterColumn colId="0"><filters>
+ *     <filter val="Fruit"/></filters></filterColumn></autoFilter>
+ *   with the Veg rows (3, 5, 7 — 1-based) hidden="1" — the state Excel
+ *   would store for Category="Fruit".
+ */
+export async function buildExcelFilterFixture(): Promise<Buffer> {
+  return buildProduceFilterFixture(false)
+}
+
+export async function buildExcelFilteredFixture(): Promise<Buffer> {
+  return buildProduceFilterFixture(true)
+}
+
+async function buildProduceFilterFixture(withExistingFilter: boolean): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Produce" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  // Shared strings: headers + categories + items.
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="13" uniqueCount="13">
+  <si><t>Category</t></si>
+  <si><t>Item</t></si>
+  <si><t>Qty</t></si>
+  <si><t>Total</t></si>
+  <si><t>Fruit</t></si>
+  <si><t>Veg</t></si>
+  <si><t>Apple</t></si>
+  <si><t>Carrot</t></si>
+  <si><t>Banana</t></si>
+  <si><t>Pea</t></si>
+  <si><t>Cherry</t></si>
+  <si><t>Kale</t></si>
+  <si><t>Melon</t></si>
+</sst>`,
+  )
+
+  // xf 1 = header (bold font 1 + fill 2), xf 2 = italic, xf 3 = currency.
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1">
+    <numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00"/>
+  </numFmts>
+  <fonts count="3">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+    <font><i/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="4">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`,
+  )
+
+  // Data rows 2-8. The "with filter" variant hides the Veg rows (1-based
+  // 3, 5, 7) and carries the Category="Fruit" autoFilter.
+  const hiddenVeg = (row: number) =>
+    withExistingFilter && (row === 3 || row === 5 || row === 7) ? ' hidden="1"' : ''
+  const autoFilter = withExistingFilter
+    ? '<autoFilter ref="A1:D8"><filterColumn colId="0"><filters><filter val="Fruit"/></filters></filterColumn></autoFilter>'
+    : ''
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s" s="1"><v>0</v></c>
+      <c r="B1" t="s" s="1"><v>1</v></c>
+      <c r="C1" t="s" s="1"><v>2</v></c>
+      <c r="D1" t="s" s="1"><v>3</v></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s" s="2"><v>4</v></c>
+      <c r="B2" t="s"><v>6</v></c>
+      <c r="C2" s="3"><v>10</v></c>
+      <c r="D2"><f>C2*2</f><v>20</v></c>
+    </row>
+    <row r="3"${hiddenVeg(3)}>
+      <c r="A3" t="s"><v>5</v></c>
+      <c r="B3" t="s"><v>7</v></c>
+      <c r="C3" s="3"><v>5</v></c>
+      <c r="D3"><f>C3*2</f><v>10</v></c>
+    </row>
+    <row r="4">
+      <c r="A4" t="s"><v>4</v></c>
+      <c r="B4" t="s"><v>8</v></c>
+      <c r="C4" s="3"><v>20</v></c>
+      <c r="D4"><f>C4*2</f><v>40</v></c>
+    </row>
+    <row r="5"${hiddenVeg(5)}>
+      <c r="A5" t="s"><v>5</v></c>
+      <c r="B5" t="s"><v>9</v></c>
+    </row>
+    <row r="6">
+      <c r="A6" t="s"><v>4</v></c>
+      <c r="B6" t="s"><v>10</v></c>
+      <c r="C6" s="3"><v>15</v></c>
+      <c r="D6"><f>C6*2</f><v>30</v></c>
+    </row>
+    <row r="7"${hiddenVeg(7)}>
+      <c r="A7" t="s"><v>5</v></c>
+      <c r="B7" t="s"><v>11</v></c>
+      <c r="C7" s="3"><v>8</v></c>
+      <c r="D7"><f>C7*2</f><v>16</v></c>
+    </row>
+    <row r="8">
+      <c r="A8" t="s"><v>4</v></c>
+      <c r="B8" t="s"><v>12</v></c>
+      <c r="C8" s="3"><v>30</v></c>
+      <c r="D8"><f>C8*2</f><v>60</v></c>
+    </row>
+  </sheetData>
+  ${autoFilter}
+  <hyperlinks count="1">
+    <hyperlink ref="B2" r:id="rId1"/>
+  </hyperlinks>
+</worksheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/sheet1.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/produce" TargetMode="External"/>
+</Relationships>`,
+  )
+
+  return toBytes(zip)
+}
+
 // ── DOCX fixture ────────────────────────────────────────────────────────────
 
 /**
