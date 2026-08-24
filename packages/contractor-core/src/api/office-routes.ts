@@ -28,6 +28,7 @@ import {
   readBasicWorkbook,
   type CellEdit,
   type EditableBorderStyle,
+  type SheetDvState,
   type SheetFilterState,
   type SheetPageSetupState,
   type SheetStructuralOps,
@@ -97,6 +98,14 @@ export interface BrowserWorkbookSavePlan {
    * canonical `SheetFilterState`; `filter: null` clears the filter.
    */
   readonly filterStates?: readonly SheetFilterState[]
+  /**
+   * Per-sheet data-validation states (Data → Data Validation). The engine
+   * applies these AFTER structural ops, cell edits, and filters — each
+   * entry is the canonical `SheetDvState` (the full declarative rule set
+   * of a DV-dirty sheet). An empty rules list clears the sheet's
+   * `<dataValidations>`.
+   */
+  readonly dvStates?: readonly SheetDvState[]
   // Extensibility seam — future mutation families land here as optional
   // readonly fields (chartEdits?, hyperlinkEdits?, …).
   // The route handler ignores unknown keys, so adding a field is a
@@ -2150,6 +2159,227 @@ function expectFilterColumn(value: unknown, field: string): SheetFilterColumn {
   return out
 }
 
+// ── SheetDvState validation (Data → Data Validation, Phase 4 Increment 5) ────
+
+/// Canonical DV types the gateway can serialize — the Univer DataValidationType
+/// subset that maps to OOXML (plus 'any'/'none', the messages-only form).
+const DV_TYPES = new Set([
+  'whole',
+  'decimal',
+  'list',
+  'date',
+  'time',
+  'textLength',
+  'custom',
+  'any',
+  'none',
+])
+/// Canonical DV operators — identical to Univer's DataValidationOperator enum.
+const DV_OPERATORS = new Set([
+  'between',
+  'notBetween',
+  'equal',
+  'notEqual',
+  'greaterThan',
+  'greaterThanOrEqual',
+  'lessThan',
+  'lessThanOrEqual',
+])
+/// Univer DataValidationErrorStyle numbers the gateway understands.
+const DV_ERROR_STYLES = new Set([0, 1, 2])
+
+/** Caps mirroring the desktop's workbookDvStateSchema. */
+const MAX_DV_STATES = 1_000
+const MAX_DV_RULES_PER_SHEET = 500
+const MAX_DV_RANGES_PER_RULE = 100
+/** OOXML message fields are Excel-bounded to 255 characters. */
+const MAX_DV_MESSAGE_LENGTH = 255
+/** Excel's row/column ceilings. */
+const MAX_DV_ROW = 1_048_575
+const MAX_DV_COLUMN = 16_383
+
+/**
+ * Validate one per-sheet data-validation state from the wire. The browser
+ * only emits full declarative snapshots of Univer's live validation model
+ * (the same shape the desktop ships) — anything else (unknown types,
+ * unknown operators, malformed ranges, oversized messages, excessive rule
+ * counts, non-object rules) is rejected with a 400 rather than reaching the
+ * engine. An empty rules array is VALID: it means "all validation on this
+ * sheet was cleared".
+ */
+function expectSheetDvState(value: unknown, index: number): SheetDvState {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `dvStates[${index}] must be an object`)
+  }
+  const sheetName = expectString(value.sheetName, `dvStates[${index}].sheetName`)
+  const rules = expectArray(value.rules, `dvStates[${index}].rules`, (rule, i) =>
+    expectDvWireRule(rule, `dvStates[${index}].rules[${i}]`),
+  )
+  if (rules.length > MAX_DV_RULES_PER_SHEET) {
+    throw new OfficeValidationError(
+      'validation',
+      `dvStates[${index}].rules exceeds ${MAX_DV_RULES_PER_SHEET} entries`,
+    )
+  }
+  return { sheetName, rules }
+}
+
+function expectDvWireRule(
+  value: unknown,
+  field: string,
+): {
+  ranges: ReadonlyArray<{
+    startRow: number
+    endRow: number
+    startColumn: number
+    endColumn: number
+  }>
+  rule: Record<string, unknown>
+} {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const ranges = expectArray(value.ranges, `${field}.ranges`, (area, i) => {
+    if (!isRecord(area)) {
+      throw new OfficeValidationError('validation', `${field}.ranges[${i}] must be an object`)
+    }
+    return expectDvArea(area, `${field}.ranges[${i}]`)
+  })
+  if (ranges.length === 0 || ranges.length > MAX_DV_RANGES_PER_RULE) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.ranges must carry 1..${MAX_DV_RANGES_PER_RULE} areas`,
+    )
+  }
+  if (!isRecord(value.rule)) {
+    throw new OfficeValidationError('validation', `${field}.rule must be an object`)
+  }
+  const rule = expectDvRule(value.rule, `${field}.rule`)
+  return { ranges, rule }
+}
+
+function expectDvArea(
+  value: Record<string, unknown>,
+  field: string,
+): { startRow: number; endRow: number; startColumn: number; endColumn: number } {
+  const startRow = expectNumber(value.startRow, `${field}.startRow`)
+  const endRow = expectNumber(value.endRow, `${field}.endRow`)
+  const startColumn = expectNumber(value.startColumn, `${field}.startColumn`)
+  const endColumn = expectNumber(value.endColumn, `${field}.endColumn`)
+  for (const [n, label] of [
+    [startRow, `${field}.startRow`],
+    [endRow, `${field}.endRow`],
+    [startColumn, `${field}.startColumn`],
+    [endColumn, `${field}.endColumn`],
+  ] as const) {
+    if (!Number.isInteger(n) || n < 0) {
+      throw new OfficeValidationError('validation', `${label} must be a non-negative integer`)
+    }
+  }
+  if (endRow < startRow || endColumn < startColumn) {
+    throw new OfficeValidationError('validation', `${field} end must be >= start`)
+  }
+  if (endRow > MAX_DV_ROW || endColumn > MAX_DV_COLUMN) {
+    throw new OfficeValidationError('validation', `${field} exceeds Excel's sheet dimensions`)
+  }
+  return { startRow, endRow, startColumn, endColumn }
+}
+
+function expectDvRule(value: Record<string, unknown>, field: string): Record<string, unknown> {
+  const type = value.type
+  if (typeof type !== 'string' || !DV_TYPES.has(type)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.type "${String(type)}" is not a supported data-validation type`,
+    )
+  }
+  const out: Record<string, unknown> = { type }
+  if (value.operator !== undefined && value.operator !== null) {
+    if (typeof value.operator !== 'string' || !DV_OPERATORS.has(value.operator)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.operator "${String(value.operator)}" is not a supported data-validation operator`,
+      )
+    }
+    out.operator = value.operator
+  }
+  for (const key of ['formula1', 'formula2'] as const) {
+    const v = value[key]
+    if (v === undefined || v === null) continue
+    if (typeof v !== 'string' && typeof v !== 'number') {
+      throw new OfficeValidationError('validation', `${field}.${key} must be a string or number`)
+    }
+    const text = String(v)
+    if (text.length > 1_000) {
+      throw new OfficeValidationError('validation', `${field}.${key} exceeds 1000 characters`)
+    }
+    out[key] = text
+  }
+  if (value.allowBlank !== undefined) {
+    if (typeof value.allowBlank !== 'boolean') {
+      throw new OfficeValidationError('validation', `${field}.allowBlank must be a boolean`)
+    }
+    out.allowBlank = value.allowBlank
+  }
+  for (const key of ['showDropDown', 'showInputMessage', 'showErrorMessage'] as const) {
+    if (value[key] === undefined) continue
+    if (typeof value[key] !== 'boolean') {
+      throw new OfficeValidationError('validation', `${field}.${key} must be a boolean`)
+    }
+    out[key] = value[key]
+  }
+  if (value.errorStyle !== undefined && value.errorStyle !== null) {
+    const style = value.errorStyle
+    if (typeof style !== 'number' || !Number.isInteger(style) || !DV_ERROR_STYLES.has(style)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.errorStyle "${String(style)}" is not a supported error style`,
+      )
+    }
+    out.errorStyle = style
+  }
+  for (const key of ['errorTitle', 'error', 'promptTitle', 'prompt'] as const) {
+    const v = value[key]
+    if (v === undefined || v === null) continue
+    if (typeof v !== 'string') {
+      throw new OfficeValidationError('validation', `${field}.${key} must be a string`)
+    }
+    if (v.length > MAX_DV_MESSAGE_LENGTH) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.${key} exceeds ${MAX_DV_MESSAGE_LENGTH} characters`,
+      )
+    }
+    out[key] = v
+  }
+  // Reject unknown extra keys: the canonical model carries only the fields
+  // above plus uid/renderMode (browser-side chrome the serializer ignores).
+  for (const key of Object.keys(value)) {
+    if (
+      ![
+        'type',
+        'operator',
+        'formula1',
+        'formula2',
+        'allowBlank',
+        'showDropDown',
+        'showInputMessage',
+        'showErrorMessage',
+        'errorStyle',
+        'errorTitle',
+        'error',
+        'promptTitle',
+        'prompt',
+        'uid',
+        'renderMode',
+      ].includes(key)
+    ) {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return out
+}
+
 function parseSaveWorkbookRequest(
   body: unknown,
   codec: OfficeBinaryCodec,
@@ -2192,6 +2422,16 @@ function parseSaveWorkbookRequest(
         `savePlan.filterStates exceeds ${MAX_FILTER_STATES} entries`,
       )
     }
+    const dvStates =
+      body.savePlan.dvStates !== undefined && body.savePlan.dvStates !== null
+        ? expectArray(body.savePlan.dvStates, 'savePlan.dvStates', expectSheetDvState)
+        : undefined
+    if (dvStates !== undefined && dvStates.length > MAX_DV_STATES) {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.dvStates exceeds ${MAX_DV_STATES} entries`,
+      )
+    }
     return {
       fileName,
       fileBytes,
@@ -2200,6 +2440,7 @@ function parseSaveWorkbookRequest(
         ...(structuralOps ? { structuralOps } : {}),
         ...(pageSetupStates ? { pageSetupStates } : {}),
         ...(filterStates ? { filterStates } : {}),
+        ...(dvStates ? { dvStates } : {}),
       },
     }
   }
@@ -2271,12 +2512,15 @@ async function handleSaveWorkbook(
   const structuralOps = req.savePlan.structuralOps ?? []
   const pageSetupStates = req.savePlan.pageSetupStates ?? []
   const filterStates = req.savePlan.filterStates ?? []
+  const dvStates = req.savePlan.dvStates ?? []
   let mutation
   try {
     // filterStates is argument 6 (after chartEdits/sheetPlan): the canonical
     // engine applies filter snapshots AFTER structural replay, cell edits,
     // and page setup, so their coordinates and row set match the sheet's
-    // final content. See planCellEditsToXlsx in @genoffice/xlsx-gateway.
+    // final content. dvStates is argument 9 (after hyperlinkEdits/cfStates):
+    // validation rules likewise replay after structural + cell changes.
+    // See planCellEditsToXlsx in @genoffice/xlsx-gateway.
     mutation = await applyCellEditsToXlsx(
       buf,
       edits,
@@ -2286,7 +2530,7 @@ async function handleSaveWorkbook(
       filterStates,
       [],
       [],
-      [],
+      dvStates,
       [],
       null,
       pageSetupStates,

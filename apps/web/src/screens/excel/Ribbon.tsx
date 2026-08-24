@@ -537,8 +537,9 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
               {/* Disabled: the wire save plan does not expose dvStates. */}
               <RibbonButton
                 label="Data Validation"
-                title="Data Validation — disabled: the web save plan does not yet expose the dvStates family"
-                disabled
+                title="Open the Data Validation panel for the active sheet (Data → Data Validation)"
+                disabled={disabled}
+                onClick={() => api?.openDataValidation()}
               />
             </Group>
           </>

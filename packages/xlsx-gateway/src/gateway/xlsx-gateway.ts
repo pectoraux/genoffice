@@ -74,7 +74,7 @@ import {
   DefinedNameError,
   type DefinedNamesState,
 } from './xlsx-defined-names'
-import { applyDvRules, type DvWireRule } from './xlsx-dv'
+import { applyDvRules, DvReadError, parseDataValidations, type DvWireRule } from './xlsx-dv'
 import { applyPageSetupState, applyPrintAreas, type SheetPageSetupState } from './xlsx-page-setup'
 import {
   applyProtectedRanges,
@@ -417,6 +417,19 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     } catch (error) {
       if (!(error instanceof FilterReadError)) throw error
     }
+    // Data-validation read: fail closed PER SHEET — an unrepresentable
+    // <dataValidations> section (x14 extensions, unknown
+    // types/operators/error styles, malformed sqref) surfaces no dvRules,
+    // so the browser never renders a validation it cannot save faithfully,
+    // while the workbook itself still opens and a no-op save preserves the
+    // file's XML byte-for-byte.
+    let dvRules: readonly DvWireRule[] | undefined
+    try {
+      const parsed = parseDataValidations(worksheetXml)
+      if (parsed.length > 0) dvRules = parsed
+    } catch (error) {
+      if (!(error instanceof DvReadError)) throw error
+    }
     sheets.push({
       id,
       name: decodedName,
@@ -433,6 +446,7 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
         : {}),
       ...(presentation.freeze ? { freeze: presentation.freeze } : {}),
       ...(filterState ? { filterState } : {}),
+      ...(dvRules ? { dvRules } : {}),
     })
     sheetNamesById[id] = decodedName
   }

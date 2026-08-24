@@ -212,6 +212,15 @@ export interface ExcelRuntimeApi {
    * filter model is snapshotted as a canonical SheetFilterState.
    */
   toggleFilter(): void
+  /**
+   * Open the real Univer Data Validation sidebar panel for the active
+   * sheet — the same data-validation.operation.open-validation-panel
+   * command the desktop's dv-open ribbon action executes. The panel's
+   * edits fire data-validation.mutation.* mutations, journaled by
+   * ExcelEditor as per-sheet DV-dirty marks; on save, the LIVE validation
+   * model is snapshotted as canonical SheetDvState rules.
+   */
+  openDataValidation(): void
 }
 
 export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeApi | null {
@@ -617,6 +626,22 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     }
   }, [])
 
+  const openDataValidation = useCallback(() => {
+    const r = rtRef.current
+    if (!r) return
+    // The REAL Univer panel — same command the desktop's dv-open ribbon
+    // action executes (apps/sheets/src/renderer/ribbon-actions.ts). The
+    // empty params object matters: OpenValidationPanelOperation without
+    // params silently no-ops (the desktop hit the same trap). The sidebar
+    // opens with the sheet's current rules; edits fire the journaled
+    // data-validation.mutation.* family.
+    try {
+      void r.univerAPI.executeCommand('data-validation.operation.open-validation-panel', {})
+    } catch {
+      /* panel unavailable — the sheet stays canonical */
+    }
+  }, [])
+
   if (!rt) return null
   return {
     state,
@@ -645,5 +670,6 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     toggleFreezePanes,
     insertFunction,
     toggleFilter,
+    openDataValidation,
   }
 }

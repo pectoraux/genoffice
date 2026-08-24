@@ -22,6 +22,7 @@ import type {
   CellEdit,
   CellFormatState,
   CellState,
+  DvWireRule,
   FilterColumnState,
   SheetFilterState,
   WorkbookSnapshot,
@@ -87,6 +88,18 @@ const FILTER_MUTATION_IDS = new Set([
   'sheet.mutation.set-filter-criteria',
   'sheet.mutation.remove-filter',
   'sheet.mutation.re-calc-filter',
+])
+
+/**
+ * Data-validation mutation IDs (data-validation preset) — the same set the
+ * desktop's App.tsx listens for. Any of these marks the sheet DV-dirty; the
+ * save snapshots the LIVE validation model declaratively (collectDvStates),
+ * never replaying individual UI commands.
+ */
+const DV_MUTATION_IDS = new Set([
+  'data-validation.mutation.addRule',
+  'data-validation.mutation.updateRule',
+  'data-validation.mutation.removeRule',
 ])
 
 /** Structural mutation IDs (insert/remove row/column). */
@@ -332,6 +345,14 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   const filterOriginsRef = useRef<
     Map<string, { startRow: number; endRow: number; startColumn: number; endColumn: number }>
   >(new Map())
+  // ── Data-validation journal (Data → Data Validation). Desktop parity
+  //    (App.tsx dvDirty): sheet NAMES whose validation changed in-session.
+  //    A sheet absent from this set is NOT DV-dirty: its save plan carries
+  //    NO dv state, so a no-op save preserves the file's own
+  //    <dataValidations> XML byte-for-byte. At save, the sheet's FULL live
+  //    rule set is snapshotted (created + modified + untouched rules alike)
+  //    — editing one rule never drops its neighbors.
+  const dvDirtyRef = useRef<Set<string>>(new Set())
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState<string>('Ready')
   const [fileName, setFileName] = useState<string>('workbook.xlsx')
@@ -402,6 +423,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       journalSuppressionRef,
       filterDirtyRef,
       filterOriginsRef,
+      dvDirtyRef,
       () => setDirty(true),
     )
     const w = window as { __genofficeExcelRuntime?: unknown }
@@ -487,9 +509,10 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     // Clear the filter journal before seeding from the snapshot — stale
     // filter-dirty marks from a previous workbook must never leak across
     // an open (a reopened workbook starts NOT filter-dirty, so a no-op
-    // save preserves the file's own <autoFilter> XML).
+    // save preserves the file's own <autoFilter> XML). Same for DV.
     filterDirtyRef.current.clear()
     filterOriginsRef.current.clear()
+    dvDirtyRef.current.clear()
     try {
       rt.univerAPI.createWorkbook({
         id: WORKBOOK_UNIT_ID,
@@ -569,6 +592,38 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             // absent (and a no-op save preserves the file's XML).
           }
         }
+        // Install the file's data-validation rules into the REAL Univer
+        // model (desktop applyDataValidations parity): each DvWireRule
+        // becomes a data-validation.mutation.addRule execution under
+        // journal suppression — loading a workbook is not an edit, and the
+        // installed rules give real in-cell validation behavior (reject
+        // dialogs on invalid input, list dropdowns, prompts). The rule
+        // shape is the Univer IDataValidationRule wire form with the
+        // desktop's toUniverDvRule transforms: list literals unquote
+        // ("a,b" → a,b) while references/custom gain a leading '='.
+        if (sheet.dvRules && sheet.dvRules.length > 0) {
+          try {
+            const wb = rt.univerAPI.getActiveWorkbook()
+            const ws = wb?.getSheetByName(sheet.name)
+            if (ws) {
+              for (const [index, wire] of sheet.dvRules.entries()) {
+                const mapped = toUniverDvRule(wire, `file-dv-${sheet.id}-${index}`)
+                if (!mapped) continue
+                try {
+                  rt.univerAPI.syncExecuteCommand('data-validation.mutation.addRule', {
+                    unitId: wb!.getId(),
+                    subUnitId: ws.getSheetId(),
+                    rule: mapped,
+                  })
+                } catch {
+                  // An unsupported rule shape must not break the open.
+                }
+              }
+            }
+          } catch {
+            // Installing the file's validations must never fail the open.
+          }
+        }
       }
     } finally {
       journalSuppressionRef.current = false
@@ -624,6 +679,12 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       // never replay mutations. Sheets NOT in the set emit NO filter state,
       // so their <autoFilter> XML survives a no-op save byte-for-byte.
       const filterStates = collectFilterStates(runtimeRef.current, filterDirtyRef, filterOriginsRef)
+      // Snapshot the LIVE validation model for every DV-dirty sheet
+      // (Data → Data Validation). Declarative, desktop collectDvStates
+      // parity: the FULL rule set of each dirty sheet — untouched rules
+      // ride along, so editing one rule never drops its neighbors. An
+      // empty list means all validation on the sheet was cleared.
+      const dvStates = collectDvStates(runtimeRef.current, dvDirtyRef)
       let nextFileName = handle.fileName
       if (saveAs) {
         const newName = window.prompt('Save as:', nextFileName)
@@ -641,6 +702,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           ...(structuralOps.length > 0 ? { structuralOps } : {}),
           ...(pageSetupStates.length > 0 ? { pageSetupStates } : {}),
           ...(filterStates.length > 0 ? { filterStates } : {}),
+          ...(dvStates.length > 0 ? { dvStates } : {}),
         },
       })
       handleRef.current = {
@@ -652,8 +714,10 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       dirtyCellsRef.current.clear()
       structuralOpsRef.current.clear()
       // A saved filter state is now IN the source bytes — the sheet is no
-      // longer filter-dirty (another no-op save must not re-emit it).
+      // longer filter-dirty (another no-op save must not re-emit it). Same
+      // for DV: the snapshot is in the file; a no-op save must preserve it.
       filterDirtyRef.current.clear()
+      dvDirtyRef.current.clear()
       const blob = new Blob([savedBytes.buffer as ArrayBuffer], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       })
@@ -793,6 +857,116 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
  */
 
 /**
+ * File DvWireRule → Univer IDataValidationRule (browser port of the
+ * desktop's toUniverDvRule; bijective with the gateway's serializeRule):
+ *   - type none → any (messages-only), everything else verbatim
+ *   - list literals unquote ("a,b" → a,b); references gain a leading '='
+ *   - custom formulas gain a leading '='
+ *   - the checkbox degrade list "1,0" restores to a checkbox rule
+ *   - errorStyle names arrive as Univer numbers already (parse side)
+ *   - list rules carry showDropDown + renderMode TEXT (the file's normal
+ *     cell appearance; the preset overlays only the small dropdown arrow)
+ * Returns null for types the model cannot install — the caller skips them.
+ */
+function toUniverDvRule(wire: DvWireRule, uid: string): Record<string, unknown> | null {
+  const raw = wire.rule
+  const type = raw.type === 'none' ? 'any' : String(raw.type ?? 'any')
+  if (!['any', 'whole', 'decimal', 'list', 'date', 'time', 'textLength', 'custom'].includes(type)) {
+    return null
+  }
+  let formula1 = raw.formula1 === undefined ? undefined : String(raw.formula1)
+  const formula2 = raw.formula2 === undefined ? undefined : String(raw.formula2)
+  if (type === 'list' && formula1 !== undefined) {
+    const literal = formula1.trim()
+    // The insert-checkbox degrade writes list "1,0" (gateway); restore it.
+    if (literal === '"1,0"') {
+      return {
+        uid,
+        type: 'checkbox',
+        ranges: wire.ranges.map((area) => ({ ...area })),
+        ...(raw.allowBlank === true ? { allowBlank: true } : {}),
+      }
+    }
+    formula1 =
+      literal.startsWith('"') && literal.endsWith('"')
+        ? literal.slice(1, -1)
+        : `=${literal.replace(/^=/, '')}`
+  } else if (type === 'custom' && formula1 !== undefined) {
+    formula1 = `=${formula1.replace(/^=/, '')}`
+  }
+  return {
+    uid,
+    type,
+    ranges: wire.ranges.map((area) => ({ ...area })),
+    ...(raw.allowBlank === true ? { allowBlank: true } : {}),
+    ...(raw.operator === undefined ? {} : { operator: raw.operator }),
+    ...(formula1 === undefined ? {} : { formula1 }),
+    ...(formula2 === undefined ? {} : { formula2 }),
+    ...(type === 'list'
+      ? {
+          // OOXML showDropDown="1" suppresses the dropdown — the gateway's
+          // read already inverted it into the Univer sense.
+          showDropDown: raw.showDropDown !== false,
+          renderMode: 1,
+        }
+      : {}),
+    ...(raw.showInputMessage === true ? { showInputMessage: true } : {}),
+    ...(raw.showErrorMessage === true ? { showErrorMessage: true } : {}),
+    ...(raw.errorStyle === undefined ? {} : { errorStyle: raw.errorStyle }),
+    ...(raw.errorTitle === undefined ? {} : { errorTitle: raw.errorTitle }),
+    ...(raw.error === undefined ? {} : { error: raw.error }),
+    ...(raw.promptTitle === undefined ? {} : { promptTitle: raw.promptTitle }),
+    ...(raw.prompt === undefined ? {} : { prompt: raw.prompt }),
+  }
+}
+
+/**
+ * Snapshot the LIVE Univer validation model for every DV-dirty sheet into
+ * the canonical SheetDvState wire shape (desktop collectDvStates parity —
+ * a declarative full-rule-set snapshot, never a UI-command replay). The
+ * FWorksheet.getDataValidations() facade returns FDataValidation handles;
+ * each .rule is the IDataValidationRule. The wire rule strips ranges out
+ * of the rule object and emits them as the sibling `ranges` array, exactly
+ * the shape the gateway's applyDvRules consumes. An empty rule list means
+ * "all validation on the sheet was cleared" (the engine removes
+ * <dataValidations>).
+ */
+function collectDvStates(
+  runtime: BrowserUniverRuntime | null,
+  dvDirtyRef: React.MutableRefObject<Set<string>>,
+): Array<{ sheetName: string; rules: DvWireRule[] }> {
+  const workbook = runtime?.univerAPI.getActiveWorkbook()
+  if (!workbook) return []
+  const states: Array<{ sheetName: string; rules: DvWireRule[] }> = []
+  for (const sheetName of dvDirtyRef.current) {
+    const worksheet = workbook.getSheetByName(sheetName)
+    if (!worksheet) continue
+    const rules: DvWireRule[] = []
+    for (const handle of worksheet.getDataValidations()) {
+      const { ranges, ...rest } = (handle as unknown as { rule: Record<string, unknown> }).rule as {
+        ranges?: Array<{
+          startRow: number
+          endRow: number
+          startColumn: number
+          endColumn: number
+        }>
+      } & Record<string, unknown>
+      rules.push({
+        ranges: (ranges ?? []).map((range) => ({
+          startRow: range.startRow,
+          endRow: range.endRow,
+          startColumn: range.startColumn,
+          endColumn: range.endColumn,
+        })),
+        rule: rest,
+      })
+    }
+    states.push({ sheetName, rules })
+  }
+  return states
+}
+
+/**
  * Snapshot the LIVE Univer filter model for every filter-dirty sheet into
  * the canonical SheetFilterState wire shape (desktop collectFilterStates
  * parity — a declarative state snapshot, never a mutation replay).
@@ -903,6 +1077,7 @@ function subscribeToCellMutations(
   filterOriginsRef: React.MutableRefObject<
     Map<string, { startRow: number; endRow: number; startColumn: number; endColumn: number }>
   >,
+  dvDirtyRef: React.MutableRefObject<Set<string>>,
   onDirty: () => void,
 ): { dispose(): void } {
   const sub = runtime.univerAPI.addEvent(runtime.univerAPI.Event.CommandExecuted, (event) => {
@@ -1224,6 +1399,24 @@ function subscribeToCellMutations(
           endColumn: Math.max(origin?.endColumn ?? range.endColumn!, range.endColumn!),
         })
       }
+      onDirty()
+      return
+    }
+
+    // ── Data-validation mutations (data-validation preset). Any add/update/
+    //    remove marks the sheet DV-dirty — the SAVE snapshots the live
+    //    validation model declaratively (collectDvStates), exactly like the
+    //    desktop's DV_MUTATIONS handler. Individual commands are never
+    //    replayed; created/modified/deleted all collapse into "the sheet's
+    //    full rule set at save time".
+    if (DV_MUTATION_IDS.has(event.id)) {
+      const params = event.params as { subUnitId?: string; unitId?: string } | undefined
+      if (!params?.subUnitId) return
+      const wb = runtime.univerAPI.getActiveWorkbook()
+      if (!wb) return
+      const ws = wb.getSheetBySheetId(params.subUnitId)
+      if (!ws) return
+      dvDirtyRef.current.add(ws.getSheetName())
       onDirty()
       return
     }

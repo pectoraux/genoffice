@@ -6,6 +6,7 @@ import type {
 } from './workbook-dsl'
 import type { SheetVisual } from './chart-visual'
 import type { SheetFilterState } from '../gateway/xlsx-filter'
+import type { DvWireRule } from '../gateway/xlsx-dv'
 
 export type CellScalar = string | number | boolean | null
 
@@ -69,6 +70,18 @@ export interface WorksheetState {
    * reopen, so filter range + criteria + hidden rows survive round-trip.
    */
   readonly filterState?: Readonly<SheetFilterState> | undefined
+  /**
+   * Data-validation rules parsed from the worksheet's <dataValidations>
+   * section. Absent means no parseable rules — including when the section
+   * carries constructs the canonical model cannot represent (x14 extensions,
+   * unknown types/operators/error styles, malformed sqref), which fail
+   * closed: the browser never renders such rules and a no-op save preserves
+   * the file's XML byte-for-byte. The web Sheets shell (Data → Data
+   * Validation) journals changes through the canonical SheetDvState save
+   * family and reads it back via this field on reopen, so validation rules
+   * survive round-trip.
+   */
+  readonly dvRules?: readonly DvWireRule[] | undefined
 }
 
 export interface WorkbookSnapshot {

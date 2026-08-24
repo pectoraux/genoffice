@@ -19,7 +19,12 @@
 // Type-only imports — erased at build time. The browser never bundles the
 // engine packages; these types exist purely so the client's wire shapes line
 // up with the server-side route handlers.
-import type { CellEdit, SheetFilterState, WorkbookSnapshot } from '@genoffice/xlsx-gateway'
+import type {
+  CellEdit,
+  DvWireRule,
+  SheetFilterState,
+  WorkbookSnapshot,
+} from '@genoffice/xlsx-gateway'
 
 // ── Wire types (mirror the @contractor/core/api office-routes module) ────────
 
@@ -111,6 +116,19 @@ export interface BrowserWorkbookSavePlan {
    * the visibility span's rows).
    */
   readonly filterStates?: readonly SheetFilterState[]
+  /**
+   * Per-sheet data-validation states (Data → Data Validation). Replayed by
+   * the engine AFTER structural ops, cell edits, and filters — validation
+   * ranges match the sheet's final content. Each entry carries the full
+   * declarative rule set of a DV-dirty sheet, snapshotted from Univer's
+   * live validation model (canonical `SheetDvState.rules` — the Univer
+   * rule shape + ranges). An empty rule list means "all validation on the
+   * sheet was cleared" (the engine removes `<dataValidations>`).
+   */
+  readonly dvStates?: readonly {
+    readonly sheetName: string
+    readonly rules: readonly DvWireRule[]
+  }[]
   readonly [key: string]: unknown
 }
 

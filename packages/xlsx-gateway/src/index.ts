@@ -77,6 +77,10 @@ export type { StructuralOp, AxisAttributeOp } from './gateway/xlsx-structure.js'
 export type { SheetFilterState, FilterColumnState } from './gateway/xlsx-filter.js'
 export { parseAutoFilter, FilterReadError, FilterEditError } from './gateway/xlsx-filter.js'
 
+// ── Data validation ──
+export type { DvWireRule, DvCellArea } from './gateway/xlsx-dv.js'
+export { parseDataValidations, DvReadError, DvEditError } from './gateway/xlsx-dv.js'
+
 // ── Defined names ──
 export type { DefinedNamesState } from './gateway/xlsx-defined-names.js'
 export { DefinedNameError } from './gateway/xlsx-defined-names.js'

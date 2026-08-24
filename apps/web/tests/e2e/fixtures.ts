@@ -1036,6 +1036,189 @@ async function buildProduceFilterFixture(withExistingFilter: boolean): Promise<B
   return toBytes(zip)
 }
 
+// ── Excel data-validation fixtures (ribbon-data-validation E2E) ─────────────
+
+/**
+ * Deterministic XLSX for the Data → Data Validation E2E — a survey sheet:
+ *
+ *   Sheet "Survey" (visible):
+ *     Row 1 (header, bold + fill via xf 1): A1="Count" B1="Choice" C1="Check"
+ *     Rows 2-6 (5 data rows):
+ *       A2=5   B2=Apple   C2=1
+ *       A3=120 B3=Carrot  C3=0
+ *       A4=50  B4=Banana  C4=1
+ *       A5=(blank — allowBlank probe) B5=Pea  C5=0
+ *       A6=7   B6=Kale    C6=1
+ *   Currency numfmt (xf 3) on the C data cells; hyperlink on B2 → rId1.
+ *
+ * buildExcelDvFixture(): NO validations — the E2E creates them.
+ * buildExcelDvExistingFixture(): carries THREE validations:
+ *   A2:A6 whole between 1..100 (with error message) — A3=120 violates it
+ *   B2:B6 list "Fruit,Vegetable,Grain" (dropdown shown)
+ *   C2:C6 custom =ISNUMBER(C2)
+ */
+export async function buildExcelDvFixture(): Promise<Buffer> {
+  return buildSurveyDvFixture(false)
+}
+
+export async function buildExcelDvExistingFixture(): Promise<Buffer> {
+  return buildSurveyDvFixture(true)
+}
+
+async function buildSurveyDvFixture(withValidations: boolean): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Survey" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="9" uniqueCount="9">
+  <si><t>Count</t></si>
+  <si><t>Choice</t></si>
+  <si><t>Check</t></si>
+  <si><t>Apple</t></si>
+  <si><t>Carrot</t></si>
+  <si><t>Banana</t></si>
+  <si><t>Pea</t></si>
+  <si><t>Kale</t></si>
+</sst>`,
+  )
+
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1">
+    <numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00"/>
+  </numFmts>
+  <fonts count="2">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="3">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`,
+  )
+
+  const validations = withValidations
+    ? `  <dataValidations count="3">
+    <dataValidation type="whole" operator="between" allowBlank="1" showErrorMessage="1" errorTitle="Bad count" error="Enter 1-100" sqref="A2:A6"><formula1>1</formula1><formula2>100</formula2></dataValidation>
+    <dataValidation type="list" sqref="B2:B6"><formula1>"Fruit,Vegetable,Grain"</formula1></dataValidation>
+    <dataValidation type="custom" sqref="C2:C6"><formula1>ISNUMBER(C2)</formula1></dataValidation>
+  </dataValidations>
+`
+    : ''
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s" s="1"><v>0</v></c>
+      <c r="B1" t="s" s="1"><v>1</v></c>
+      <c r="C1" t="s" s="1"><v>2</v></c>
+    </row>
+    <row r="2">
+      <c r="A2"><v>5</v></c>
+      <c r="B2" t="s"><v>3</v></c>
+      <c r="C2" s="2"><v>1</v></c>
+    </row>
+    <row r="3">
+      <c r="A3"><v>120</v></c>
+      <c r="B3" t="s"><v>4</v></c>
+      <c r="C3" s="2"><v>0</v></c>
+    </row>
+    <row r="4">
+      <c r="A4"><v>50</v></c>
+      <c r="B4" t="s"><v>5</v></c>
+      <c r="C4" s="2"><v>1</v></c>
+    </row>
+    <row r="5">
+      <c r="B5" t="s"><v>6</v></c>
+      <c r="C5" s="2"><v>0</v></c>
+    </row>
+    <row r="6">
+      <c r="A6"><v>7</v></c>
+      <c r="B6" t="s"><v>7</v></c>
+      <c r="C6" s="2"><v>1</v></c>
+    </row>
+  </sheetData>
+${validations}  <hyperlinks count="1">
+    <hyperlink ref="B2" r:id="rId1"/>
+  </hyperlinks>
+</worksheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/sheet1.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/survey" TargetMode="External"/>
+</Relationships>`,
+  )
+
+  return toBytes(zip)
+}
+
 // ── DOCX fixture ────────────────────────────────────────────────────────────
 
 /**
