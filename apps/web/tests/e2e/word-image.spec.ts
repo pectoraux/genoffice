@@ -25,6 +25,8 @@ interface WireImage {
   rotDeg?: number
   flipH?: boolean
   flipV?: boolean
+  /** accessibility alt text (wp:docPr descr); tri-state: undefined|null|string */
+  alt?: string | null
 }
 interface WireBlock {
   docxIndex: number | null
@@ -468,4 +470,155 @@ test.describe('Word editable images (real HTTP + real engine)', () => {
 
     expect(pageErrors).toEqual([])
   })
+})
+
+test('alt text: render <img alt>, edit, save, reopen, clear — real HTTP + engine', async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const pageErrors: string[] = []
+  page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+  await loginAsDemoOwner(page)
+  await gotoHashRoute(page, '/office/word')
+  await page.waitForSelector('.ProseMirror', { timeout: 30_000 })
+
+  const fixture = await buildWordImageFixture()
+  writeFileSync('/tmp/e2e-img-alt.docx', fixture)
+  const openResponsePromise = page.waitForResponse(
+    (r) => r.url().includes('/api/office/documents/open') && r.request().method() === 'POST',
+  )
+  await page.setInputFiles('input[type="file"]', '/tmp/e2e-img-alt.docx')
+  await expect(page.getByText('Opened e2e-img-alt.docx')).toBeVisible({ timeout: 30_000 })
+  const openResponse = await openResponsePromise
+  expect(openResponse.status()).toBe(200)
+  const blocks = (await openResponse.json()).blocks as WireBlock[]
+  const images = blocks.filter((b) => b.type === 'image' && b.image)
+  // Fixture: images 1, 3, 5 carry descr; 2, 4, 6, 7 do not.
+  const byIdx = new Map(images.map((b) => [b.docxIndex, b]))
+  expect(byIdx.get(1)?.image?.alt).toBe('A red square')
+  expect(byIdx.get(3)?.image?.alt).toBe('Wide blue banner')
+  expect(byIdx.get(5)?.image?.alt).toBe('Rotated magenta')
+  for (const idx of [2, 4, 6, 7]) {
+    expect(byIdx.get(idx)?.image?.alt).toBeUndefined()
+  }
+
+  await expect(page.locator(IMG)).toHaveCount(7)
+  // Real <img alt> renders for images with descr.
+  await expect(page.locator(`${IMG}[data-docx-index="1"]`)).toHaveAttribute('alt', 'A red square')
+  await expect(page.locator(`${IMG}[data-docx-index="3"]`)).toHaveAttribute(
+    'alt',
+    'Wide blue banner',
+  )
+  await expect(page.locator(`${IMG}[data-docx-index="5"]`)).toHaveAttribute(
+    'alt',
+    'Rotated magenta',
+  )
+  // Images without descr render alt="" (decorative).
+  await expect(page.locator(`${IMG}[data-docx-index="2"]`)).toHaveAttribute('alt', '')
+
+  // ── Edit image 1's alt text through the real toolbar ──────────────
+  await page.locator(`${IMG}[data-docx-index="1"]`).click()
+  await expect(page.getByTestId('image-toolbar')).toBeVisible()
+  const altInput = page.getByTestId('image-alt')
+  await expect(altInput).toHaveValue('A red square')
+  await altInput.fill('Edited alt text')
+  await expect(page.getByText('● Unsaved')).toBeVisible()
+
+  const saveReq = page.waitForRequest(
+    (r) => r.url().includes('/api/office/documents/save') && r.method() === 'POST',
+  )
+  const dl = page.waitForEvent('download', { timeout: 30_000 })
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  const req = await saveReq
+  const download = await dl
+  await expect(page.getByText('Saved e2e-img-alt.docx')).toBeVisible({ timeout: 15_000 })
+
+  // Save payload carries the edited alt + edited:true on image 1; others unchanged.
+  const savedBlocks = JSON.parse(req.postData() ?? '{}').blocks as WireBlock[]
+  const saved1 = savedBlocks.find((b) => b.docxIndex === 1)!
+  expect(saved1.edited).toBe(true)
+  expect(saved1.image?.alt).toBe('Edited alt text')
+  // Other images with descr are unchanged (edited:false, descr echoed).
+  expect(savedBlocks.find((b) => b.docxIndex === 3)?.edited).toBe(false)
+  expect(savedBlocks.find((b) => b.docxIndex === 5)?.edited).toBe(false)
+
+  const stream = await download.createReadStream()
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) chunks.push(chunk as Buffer)
+  const saved = Buffer.concat(chunks)
+  const xml = await readZipEntry(saved, 'word/document.xml')
+  // Canonical generator wrote the new descr; the old one is gone on image 1.
+  expect(xml).toContain('descr="Edited alt text"')
+  expect(xml).not.toContain('descr="A red square"')
+  // Unchanged images keep their descr (byte-preserved).
+  expect(xml).toContain('descr="Wide blue banner"')
+  expect(xml).toContain('descr="Rotated magenta"')
+
+  // ── Reopen: edited alt surfaces; others unchanged ─────────────────
+  writeFileSync('/tmp/e2e-img-alt-saved.docx', saved)
+  const reopenResponsePromise = page.waitForResponse(
+    (r) => r.url().includes('/api/office/documents/open') && r.request().method() === 'POST',
+  )
+  await page.setInputFiles('input[type="file"]', '/tmp/e2e-img-alt-saved.docx')
+  await expect(page.getByText('Opened e2e-img-alt-saved.docx')).toBeVisible({
+    timeout: 30_000,
+  })
+  const reopenResponse = await reopenResponsePromise
+  const reopened = (await reopenResponse.json()).blocks as WireBlock[]
+  expect(reopened.find((b) => b.docxIndex === 1)!.image?.alt).toBe('Edited alt text')
+  expect(reopened.find((b) => b.docxIndex === 3)!.image?.alt).toBe('Wide blue banner')
+  expect(reopened.find((b) => b.docxIndex === 5)!.image?.alt).toBe('Rotated magenta')
+  // Render: the edited alt shows.
+  await expect(page.locator(`${IMG}[data-docx-index="1"]`)).toHaveAttribute(
+    'alt',
+    'Edited alt text',
+  )
+
+  // ── Clear alt on image 3: empty alt → descr removed on save ───────
+  await page.locator(`${IMG}[data-docx-index="3"]`).click()
+  await expect(page.getByTestId('image-toolbar')).toBeVisible()
+  await page.getByTestId('image-alt').fill('')
+  await expect(page.getByText('● Unsaved')).toBeVisible()
+  const saveReq2 = page.waitForRequest(
+    (r) => r.url().includes('/api/office/documents/save') && r.method() === 'POST',
+  )
+  const dl2 = page.waitForEvent('download', { timeout: 30_000 })
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  const req2 = await saveReq2
+  const download2 = await dl2
+  const clearedBlocks = JSON.parse(req2.postData() ?? '{}').blocks as WireBlock[]
+  // alt:null on image 3 (clear); edited:true.
+  expect(clearedBlocks.find((b) => b.docxIndex === 3)?.edited).toBe(true)
+  expect(clearedBlocks.find((b) => b.docxIndex === 3)?.image?.alt).toBeNull()
+  const stream2 = await download2.createReadStream()
+  const chunks2: Buffer[] = []
+  for await (const chunk of stream2) chunks2.push(chunk as Buffer)
+  const saved2 = Buffer.concat(chunks2)
+  const xml2 = await readZipEntry(saved2, 'word/document.xml')
+  // Image 3's descr is gone; image 1's edited descr + image 5's descr survive.
+  expect(xml2).not.toContain('descr="Wide blue banner"')
+  expect(xml2).toContain('descr="Edited alt text"')
+  expect(xml2).toContain('descr="Rotated magenta"')
+  // name is preserved (object name, separate field).
+  expect(xml2).toContain('name="Picture 103"')
+
+  // Reopen: image 3 alt undefined; others intact.
+  writeFileSync('/tmp/e2e-img-alt-cleared.docx', saved2)
+  const reopen2Promise = page.waitForResponse(
+    (r) => r.url().includes('/api/office/documents/open') && r.request().method() === 'POST',
+  )
+  await page.setInputFiles('input[type="file"]', '/tmp/e2e-img-alt-cleared.docx')
+  await expect(page.getByText('Opened e2e-img-alt-cleared.docx')).toBeVisible({
+    timeout: 30_000,
+  })
+  const reopen2 = await reopen2Promise
+  const r2 = (await reopen2.json()).blocks as WireBlock[]
+  expect(r2.find((b) => b.docxIndex === 1)!.image?.alt).toBe('Edited alt text')
+  expect(r2.find((b) => b.docxIndex === 3)!.image?.alt).toBeUndefined()
+  expect(r2.find((b) => b.docxIndex === 5)!.image?.alt).toBe('Rotated magenta')
+  // Image 3 renders alt="" (decorative) after the clear.
+  await expect(page.locator(`${IMG}[data-docx-index="3"]`)).toHaveAttribute('alt', '')
+
+  expect(pageErrors).toEqual([])
 })

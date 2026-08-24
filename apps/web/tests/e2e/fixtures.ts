@@ -627,6 +627,20 @@ export async function readZipEntry(buffer: Buffer, path: string): Promise<string
   return entry.async('string')
 }
 
+/** Read a zip entry as base64 (for binary parts like word/media/*.png). */
+export async function readZipEntryBase64(buffer: Buffer, path: string): Promise<string> {
+  const zip = await JSZip.loadAsync(buffer)
+  const entry = zip.file(path)
+  if (!entry) throw new Error(`zip entry not found: ${path}`)
+  return entry.async('base64')
+}
+
+/** List all zip entry paths (for structural assertions). */
+export async function listZipEntries(buffer: Buffer): Promise<string[]> {
+  const zip = await JSZip.loadAsync(buffer)
+  return Object.keys(zip.files).filter((p) => !zip.files[p].dir)
+}
+
 // ── Word table fixture (editable-table E2E) ─────────────────────────────────
 
 /**
@@ -740,6 +754,8 @@ function imageDrawingXml(
     srcRect?: { l: number; t: number; r: number; b: number }
     align?: 'center' | 'right'
     docPrId: number
+    /** accessibility alt text (wp:docPr descr); absent when undefined */
+    descr?: string
   },
 ): string {
   const { cx, cy } = opts
@@ -753,8 +769,13 @@ function imageDrawingXml(
   const pic = `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${opts.docPrId}" name="Picture ${opts.docPrId}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}"/>${srcRect}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm${xfrmAttrs}><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>`
   const graphic = `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">${pic}</a:graphicData></a:graphic>`
   const jc = opts.align ? `<w:pPr><w:jc w:val="${opts.align}"/></w:pPr>` : ''
+  const descrAttr =
+    opts.descr !== undefined
+      ? ` descr="${opts.descr.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}"`
+      : ''
+  const docPr = `<wp:docPr id="${opts.docPrId}" name="Picture ${opts.docPrId}"${descrAttr}/>`
   if (!opts.floating) {
-    return `<w:p>${jc}<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="${opts.docPrId}" name="Picture ${opts.docPrId}"/>${graphic}</wp:inline></w:drawing></w:r></w:p>`
+    return `<w:p>${jc}<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/>${docPr}${graphic}</wp:inline></w:drawing></w:r></w:p>`
   }
   const behind = opts.wrap === 'behind' ? '1' : '0'
   let wrapEl = '<wp:wrapNone/>'
@@ -762,7 +783,7 @@ function imageDrawingXml(
   else if (opts.wrap === 'topBottom') wrapEl = '<wp:wrapTopAndBottom/>'
   const posH = `<wp:positionH relativeFrom="column"><wp:posOffset>${opts.posOffsetX ?? 0}</wp:posOffset></wp:positionH>`
   const posV = `<wp:positionV relativeFrom="paragraph"><wp:posOffset>${opts.posOffsetY ?? 0}</wp:posOffset></wp:positionV>`
-  return `<w:p>${jc}<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251658240" behindDoc="${behind}" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>${posH}${posV}${wrapEl}<wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${opts.docPrId}" name="Picture ${opts.docPrId}"/>${graphic}</wp:anchor></w:drawing></w:r></w:p>`
+  return `<w:p>${jc}<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251658240" behindDoc="${behind}" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>${posH}${posV}${wrapEl}<wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>${docPr}${graphic}</wp:anchor></w:drawing></w:r></w:p>`
 }
 
 /**
@@ -844,9 +865,12 @@ export async function buildWordImageFixture(): Promise<Buffer> {
   )
 
   // Seven image paragraphs: inline / floating square / big size / topBottom
-  // wrap / rotated / flipped / cropped.
+  // wrap / rotated / flipped / cropped. Images 1, 3, 5 carry accessibility
+  // alt text (wp:docPr descr) so the alt-render/edit/clear E2E + unit tests
+  // have real descr to assert; images 2, 4, 6, 7 have none (verifies the
+  // absent-alt path round-trips without picking up a spurious descr).
   const imgs = [
-    imageDrawingXml('rIdImg1', { cx: 64 * EMU, cy: 64 * EMU, docPrId: 101 }),
+    imageDrawingXml('rIdImg1', { cx: 64 * EMU, cy: 64 * EMU, docPrId: 101, descr: 'A red square' }),
     imageDrawingXml('rIdImg2', {
       cx: 80 * EMU,
       cy: 80 * EMU,
@@ -856,7 +880,12 @@ export async function buildWordImageFixture(): Promise<Buffer> {
       posOffsetY: 100000,
       docPrId: 102,
     }),
-    imageDrawingXml('rIdImg3', { cx: 240 * EMU, cy: 120 * EMU, docPrId: 103 }),
+    imageDrawingXml('rIdImg3', {
+      cx: 240 * EMU,
+      cy: 120 * EMU,
+      docPrId: 103,
+      descr: 'Wide blue banner',
+    }),
     imageDrawingXml('rIdImg4', {
       cx: 100 * EMU,
       cy: 60 * EMU,
@@ -864,7 +893,13 @@ export async function buildWordImageFixture(): Promise<Buffer> {
       wrap: 'topBottom',
       docPrId: 104,
     }),
-    imageDrawingXml('rIdImg5', { cx: 70 * EMU, cy: 70 * EMU, rotDeg: 90, docPrId: 105 }),
+    imageDrawingXml('rIdImg5', {
+      cx: 70 * EMU,
+      cy: 70 * EMU,
+      rotDeg: 90,
+      docPrId: 105,
+      descr: 'Rotated magenta',
+    }),
     imageDrawingXml('rIdImg6', {
       cx: 70 * EMU,
       cy: 70 * EMU,

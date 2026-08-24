@@ -4785,6 +4785,7 @@ type ImageMeta = Pick<
   | 'imageFlipV'
   | 'imageCrop'
   | 'imageFillRect'
+  | 'imageAlt'
 >
 
 /** a:srcRect / a:fillRect attribute (1000ths of a percent; some writers emit decimals) → fraction */
@@ -4891,6 +4892,21 @@ function imageMeta(xml: string): ImageMeta {
       // mixed positioning (H aligned, V by offset): keep the horizontal preset
       // so no-wrap images at least center like Word/LO
       meta.imagePosH = alignH as ImageMeta['imagePosH']
+    }
+  }
+  // Accessibility alt text: wp:docPr descr is the canonical alt text that
+  // screen readers announce. Surfaced for healthy images so the browser
+  // renders <img alt> and edits through the canonical patchImageParagraphXml
+  // path; broken images already surface this as previewText on their
+  // passthrough block. The wp:docPr name (object name, shown in Word's
+  // selection pane) is NOT alt text — it is a separate concern and is not
+  // surfaced here, so clearing descr makes imageAlt undefined (not a
+  // name fallback that would mask the user's intent).
+  const docPrEl = /<wp:docPr\b[^>]*\/?>/.exec(xml)?.[0] ?? ''
+  if (docPrEl) {
+    const descr = /\bdescr="([^"]*)"/.exec(docPrEl)?.[1]
+    if (descr !== undefined && descr.length > 0) {
+      meta.imageAlt = decodeEntities(descr)
     }
   }
   return meta

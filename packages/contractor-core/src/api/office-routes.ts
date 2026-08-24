@@ -277,6 +277,13 @@ export interface SerializedImage {
   readonly rotDeg?: number
   readonly flipH?: boolean
   readonly flipV?: boolean
+  /**
+   * Accessibility alt text (wp:docPr descr). Tri-state:
+   *  - undefined: keep the existing descr (field absent — unchanged echo)
+   *  - null:       clear (remove the descr attribute)
+   *  - non-empty:  set the descr (bounded + control-char stripped)
+   */
+  readonly alt?: string | null
 }
 
 /**
@@ -1210,6 +1217,37 @@ const MAX_IMAGE_BASE64_CHARS = 11_000_000
 const IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|gif);base64,[A-Za-z0-9+/=]*$/
 const IMAGE_BASE64_RE = /^[A-Za-z0-9+/=]+$/
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif'] as const
+/**
+ * Accessibility alt text bounds (wp:docPr descr). Word's UI caps the descr
+ * field at ~125 chars but the format allows more; 500 is a generous ceiling
+ * that still blocks oversized payloads. Control characters (except \t \n \r)
+ * are stripped at the wire boundary so they cannot break the XML attribute
+ * the canonical generator emits.
+ */
+const MAX_ALT_CHARS = 500
+
+/**
+ * Sanitize a wire alt-text value.
+ *  - undefined → undefined (field absent: keep the existing descr)
+ *  - null      → null       (explicit clear: remove the descr attribute)
+ *  - ""        → null       (empty string is treated as clear)
+ *  - non-empty → stripped string (set the descr)
+ * Control characters (except \t \n \r — invalid in XML attrs) are removed
+ * and length is bounded to MAX_ALT_CHARS.
+ */
+function sanitizeAltText(value: unknown, field: string): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  const s = expectString(value, field, false)
+  // strip control chars except \t (0x09), \n (0x0A), \r (0x0D) — invalid in XML attrs
+  // (intentional: XML 1.0 forbids these control chars in attribute values)
+  // eslint-disable-next-line no-control-regex
+  const stripped = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+  if (stripped.length > MAX_ALT_CHARS) {
+    throw new OfficeValidationError('validation', `${field} exceeds ${MAX_ALT_CHARS} characters`)
+  }
+  return stripped.length > 0 ? stripped : null
+}
 
 function expectImageRect(value: unknown, field: string): SerializedImageRect {
   if (!isRecord(value)) {
@@ -1320,6 +1358,7 @@ function expectSerializedImage(value: unknown, field: string): SerializedImage {
   }
   const flipH = expectOptionalBoolean(value.flipH, `${field}.flipH`)
   const flipV = expectOptionalBoolean(value.flipV, `${field}.flipV`)
+  const altSanitized = sanitizeAltText(value.alt, `${field}.alt`)
   return {
     imageDataUrl,
     ...(widthPx !== undefined ? { widthPx } : {}),
@@ -1337,6 +1376,7 @@ function expectSerializedImage(value: unknown, field: string): SerializedImage {
     ...(rotRaw !== undefined ? { rotDeg: rotRaw } : {}),
     ...(flipH !== undefined ? { flipH } : {}),
     ...(flipV !== undefined ? { flipV } : {}),
+    ...(altSanitized !== undefined ? { alt: altSanitized } : {}),
   }
 }
 
@@ -2041,6 +2081,7 @@ function serializeImage(block: Block): SerializedImage | undefined {
     ...(block.imageRotDeg !== undefined ? { rotDeg: block.imageRotDeg } : {}),
     ...(block.imageFlipH ? { flipH: true } : {}),
     ...(block.imageFlipV ? { flipV: true } : {}),
+    ...(block.imageAlt ? { alt: block.imageAlt } : {}),
   }
 }
 
@@ -2110,6 +2151,14 @@ function imagePatchFromWire(wire: SerializedImage, original: Block): ImageBlockP
   if (flipV !== (original.imageFlipV ?? false)) patch.flipV = flipV
   const crop = cropOf(wire.crop)
   if (!cropsEqual(crop, cropOf(original.imageCrop))) patch.crop = crop
+  // alt text diff (tri-state): undefined = keep; null = clear descr;
+  // non-empty = set descr. The wire validator strips control chars + bounds
+  // length; the canonical generator escapes for the wp:docPr descr attribute.
+  if (wire.alt !== undefined) {
+    const wireAlt = wire.alt === null || wire.alt.length === 0 ? null : wire.alt
+    const origAlt = original.imageAlt ?? null
+    if (wireAlt !== origAlt) patch.alt = wireAlt
+  }
   // margin-relative position presets are written by applyImageWrap only when
   // the patch carries a wrap; force it in when the preset changed
   const posH = wire.posH ?? null

@@ -183,6 +183,13 @@ export interface SerializedImage {
   readonly rotDeg?: number
   readonly flipH?: boolean
   readonly flipV?: boolean
+  /**
+   * Accessibility alt text (wp:docPr descr). Tri-state:
+   *  - undefined: keep existing descr (field absent — unchanged echo)
+   *  - null:       clear (remove the descr attribute)
+   *  - non-empty:  set the descr (server bounds + control-char strips)
+   */
+  readonly alt?: string | null
 }
 
 export interface SerializedNewImage {
@@ -665,6 +672,8 @@ function isSerializedImage(v: unknown): v is SerializedImage {
   }
   if (v.flipH !== undefined && typeof v.flipH !== 'boolean') return false
   if (v.flipV !== undefined && typeof v.flipV !== 'boolean') return false
+  // alt: undefined | null | string (tri-state: keep / clear / set)
+  if (v.alt !== undefined && v.alt !== null && !isString(v.alt)) return false
   return true
 }
 

@@ -34254,6 +34254,16 @@ function patchImageParagraphXml(xml, patch) {
       out = out.replace(/(<pic:blipFill>[\s\S]*?<a:blip[^>]*\/>)/, `$1${tag}`);
     }
   }
+  if (patch.alt !== void 0) {
+    const newAlt = patch.alt !== null && patch.alt.length > 0 ? patch.alt : null;
+    out = out.replace(/<wp:docPr\b([^>]*?)\s*\/?>/, (whole, attrs) => {
+      let a = attrs.replace(/\s+descr="[^"]*"/, "");
+      if (newAlt !== null) {
+        a += ` descr="${escapeXmlAttr(newAlt)}"`;
+      }
+      return `<wp:docPr${a} />`;
+    });
+  }
   return out;
 }
 var WRAP_ELEMENT_RE = /<wp:wrapNone\s*\/>|<wp:wrapSquare[^>]*\/>|<wp:wrapSquare[\s\S]*?<\/wp:wrapSquare>|<wp:wrapTight[\s\S]*?<\/wp:wrapTight>|<wp:wrapThrough[\s\S]*?<\/wp:wrapThrough>|<wp:wrapTopAndBottom\s*\/>|<wp:wrapTopAndBottom[\s\S]*?<\/wp:wrapTopAndBottom>/g;
@@ -39570,6 +39580,13 @@ function imageMeta(xml) {
       meta.imagePosH = alignH;
     }
   }
+  const docPrEl = /<wp:docPr\b[^>]*\/?>/.exec(xml)?.[0] ?? "";
+  if (docPrEl) {
+    const descr = /\bdescr="([^"]*)"/.exec(docPrEl)?.[1];
+    if (descr !== void 0 && descr.length > 0) {
+      meta.imageAlt = decodeEntities5(descr);
+    }
+  }
   return meta;
 }
 var EMU_PER_PT = 12700;
@@ -42147,6 +42164,17 @@ var MAX_IMAGE_BASE64_CHARS = 11e6;
 var IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|gif);base64,[A-Za-z0-9+/=]*$/;
 var IMAGE_BASE64_RE = /^[A-Za-z0-9+/=]+$/;
 var IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif"];
+var MAX_ALT_CHARS = 500;
+function sanitizeAltText(value, field) {
+  if (value === void 0) return void 0;
+  if (value === null) return null;
+  const s = expectString(value, field, false);
+  const stripped = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+  if (stripped.length > MAX_ALT_CHARS) {
+    throw new OfficeValidationError("validation", `${field} exceeds ${MAX_ALT_CHARS} characters`);
+  }
+  return stripped.length > 0 ? stripped : null;
+}
 function expectImageRect(value, field) {
   if (!isRecord(value)) {
     throw new OfficeValidationError("validation", `${field} must be an object {l,t,r,b}`);
@@ -42238,6 +42266,7 @@ function expectSerializedImage(value, field) {
   }
   const flipH = expectOptionalBoolean(value.flipH, `${field}.flipH`);
   const flipV = expectOptionalBoolean(value.flipV, `${field}.flipV`);
+  const altSanitized = sanitizeAltText(value.alt, `${field}.alt`);
   return {
     imageDataUrl,
     ...widthPx !== void 0 ? { widthPx } : {},
@@ -42254,7 +42283,8 @@ function expectSerializedImage(value, field) {
     ...posVRel !== void 0 ? { posVRel } : {},
     ...rotRaw !== void 0 ? { rotDeg: rotRaw } : {},
     ...flipH !== void 0 ? { flipH } : {},
-    ...flipV !== void 0 ? { flipV } : {}
+    ...flipV !== void 0 ? { flipV } : {},
+    ...altSanitized !== void 0 ? { alt: altSanitized } : {}
   };
 }
 function expectSerializedNewImage(value, field) {
@@ -42772,7 +42802,8 @@ function serializeImage(block) {
     ...block.imagePosVRel ? { posVRel: block.imagePosVRel } : {},
     ...block.imageRotDeg !== void 0 ? { rotDeg: block.imageRotDeg } : {},
     ...block.imageFlipH ? { flipH: true } : {},
-    ...block.imageFlipV ? { flipV: true } : {}
+    ...block.imageFlipV ? { flipV: true } : {},
+    ...block.imageAlt ? { alt: block.imageAlt } : {}
   };
 }
 function cropOf(crop) {
@@ -42810,6 +42841,11 @@ function imagePatchFromWire(wire, original) {
   if (flipV !== (original.imageFlipV ?? false)) patch.flipV = flipV;
   const crop = cropOf(wire.crop);
   if (!cropsEqual(crop, cropOf(original.imageCrop))) patch.crop = crop;
+  if (wire.alt !== void 0) {
+    const wireAlt = wire.alt === null || wire.alt.length === 0 ? null : wire.alt;
+    const origAlt = original.imageAlt ?? null;
+    if (wireAlt !== origAlt) patch.alt = wireAlt;
+  }
   const posH = wire.posH ?? null;
   const posV = wire.posV ?? null;
   if (posH && posV && (posH !== (original.imagePosH ?? null) || posV !== (original.imagePosV ?? null))) {

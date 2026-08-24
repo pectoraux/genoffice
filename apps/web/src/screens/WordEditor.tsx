@@ -621,6 +621,7 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
         flipV: imageSelection.attrs['flipV'] === true,
         wrap: String(imageSelection.attrs['wrap'] ?? 'inline'),
         crop: imageSelection.attrs['crop'] as { l: number; t: number; r: number; b: number } | null,
+        alt: (imageSelection.attrs['alt'] as string | null | undefined) ?? null,
       }
     : null
 
@@ -830,6 +831,20 @@ export function WordEditor({ onRoute }: { onRoute: (route: string) => void }) {
                 }}
               />
             ))}
+          </label>
+          {/* Accessibility alt text (wp:docPr descr). Empty clears the descr
+              on save (wire alt:null → canonical patch removes the attribute). */}
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+            Alt
+            <input
+              type="text"
+              maxLength={500}
+              value={selImage.alt ?? ''}
+              style={{ width: 180, ...styles.input, padding: '3px 6px', fontSize: 13 }}
+              data-testid="image-alt"
+              onChange={(e) => updateSelectedImage({ alt: e.target.value || null })}
+              placeholder="Alt text"
+            />
           </label>
           <button
             style={{ ...styles.button, padding: '4px 10px', fontSize: 13, color: '#b3261e' }}

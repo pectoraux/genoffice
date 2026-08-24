@@ -72,7 +72,16 @@ export function imageToHtml(image: SerializedImage, docxIndex: number | null): s
   const w = image.widthPx ?? 0
   const h = image.heightPx ?? 0
   attrs.push(`width="${w}" height="${h}"`)
-  return `<img ${attrs.join(' ')} alt="Document image" draggable="false" />`
+  // Accessibility alt text (wp:docPr descr). Surfaced as the <img alt>
+  // attribute so screen readers announce the picture's description. The
+  // canonical engine preserves/patches descr on save; the browser never
+  // builds OOXML. Empty alt when no descr is present (HTML convention for
+  // decorative images); round-trips to wire null → no diff vs an original
+  // that had no descr, so an unchanged image never picks up a spurious alt.
+  const altText = image.alt !== undefined && image.alt !== null ? image.alt : ''
+  attrs.push(`alt="${escapeAttr(altText)}"`)
+  attrs.push('draggable="false"')
+  return `<img ${attrs.join(' ')} />`
 }
 
 export interface ImageNodeAttrs {
@@ -93,6 +102,8 @@ export interface ImageNodeAttrs {
   rotDeg: number
   flipH: boolean
   flipV: boolean
+  /** accessibility alt text (null when absent; the <img alt> attribute) */
+  alt: string | null
 }
 
 /** Read the typed image attributes off a rendered <img> DOM element. */
@@ -128,6 +139,7 @@ export function imageAttrsFromElement(el: HTMLImageElement): ImageNodeAttrs {
     rotDeg: num('data-rot') ?? 0,
     flipH: el.getAttribute('data-flip-h') === '1',
     flipV: el.getAttribute('data-flip-v') === '1',
+    alt: el.getAttribute('alt'),
   }
 }
 
@@ -167,6 +179,10 @@ export function imageAttrsToWire(a: ImageNodeAttrs): SerializedImage {
     ...(a.rotDeg ? { rotDeg: Math.round(a.rotDeg) % 360 } : {}),
     ...(a.flipH ? { flipH: true } : {}),
     ...(a.flipV ? { flipV: true } : {}),
+    // alt is tri-state on the wire: undefined = keep, null = clear,
+    // non-empty = set. Always include it for edited images so the server
+    // can diff against the parsed original's imageAlt.
+    alt: a.alt,
   }
 }
 
@@ -222,6 +238,10 @@ export function imageFingerprint(image: SerializedImage): string {
     fh: image.flipH === true,
     fv: image.flipV === true,
     c: image.crop ? [image.crop.l, image.crop.t, image.crop.r, image.crop.b] : [0, 0, 0, 0],
+    // Normalize undefined/null/"" all to null so an unchanged no-descr image
+    // (loaded.alt=undefined, rendered <img alt="">, attrs.alt="") does not
+    // falsely trip the dirty flag.
+    alt: image.alt && image.alt.length > 0 ? image.alt : null,
   })
 }
 
@@ -240,5 +260,6 @@ export function imageAttrsFingerprint(a: ImageNodeAttrs): string {
     fh: a.flipH,
     fv: a.flipV,
     c: a.crop ? [a.crop.l, a.crop.t, a.crop.r, a.crop.b] : [0, 0, 0, 0],
+    alt: a.alt && a.alt.length > 0 ? a.alt : null,
   })
 }

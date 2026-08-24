@@ -267,6 +267,17 @@ export const DocxImage = Node.create<DocxImageOptions>({
           return attributes.flipV ? { 'data-flip-v': '1' } : {}
         },
       },
+      alt: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('alt'),
+        renderHTML: (attributes: { alt: string | null }) => {
+          // null (absent) falls back to "Document image" in imageToHtml; the
+          // Tiptap node mirrors the <img alt> attribute so screen readers
+          // announce the picture's accessibility text.
+          if (attributes.alt === null || attributes.alt === undefined) return {}
+          return { alt: attributes.alt }
+        },
+      },
     }
   },
 

@@ -852,6 +852,13 @@ export interface Block {
   /** picture whose rel/media is broken (or metafile-only): render an empty frame + alt text */
   brokenImage?: boolean
   /**
+   * Accessibility alt text (wp:docPr descr, falling back to wp:docPr name) for
+   * a healthy image (type === 'image'). Surfaced so the browser editor can
+   * render an <img alt> attribute and edit it through the canonical
+   * patchImageParagraphXml path. Absent when the drawing has no descr/name.
+   */
+  imageAlt?: string
+  /**
    * Invisible range marker leaked to body top level (w:bookmarkEnd, w:proofErr…):
    * renders as nothing but keeps its body position. Not `hidden` — hidden blocks
    * are moved to the body tail on save, which would relocate the marker.

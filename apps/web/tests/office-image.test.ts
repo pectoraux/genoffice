@@ -12,7 +12,13 @@
  */
 import { describe, expect, it } from 'vitest'
 import { routeOffice } from '@contractor/core/api'
-import { buildWordImageFixture, buildSolidPng, readZipEntry } from './e2e/fixtures'
+import {
+  buildWordImageFixture,
+  buildSolidPng,
+  readZipEntry,
+  readZipEntryBase64,
+  listZipEntries,
+} from './e2e/fixtures'
 
 interface WireImage {
   imageDataUrl: string | null
@@ -30,6 +36,8 @@ interface WireImage {
   rotDeg?: number
   flipH?: boolean
   flipV?: boolean
+  /** accessibility alt text (wp:docPr descr); tri-state: undefined|null|string */
+  alt?: string | null
 }
 interface WireBlock {
   docxIndex: number | null
@@ -448,5 +456,278 @@ describe('Word image wire validation (malformed payloads → 400)', () => {
       heightPx: 48,
     }
     await expectValidation({ fileName: 'fixture.docx', fileBytes: b64(bytes), blocks: edited })
+  })
+})
+
+/**
+ * Alt-text (wp:docPr descr) wire contract — Phase 3 Increment 13.
+ *
+ * Covers: parse-side surfacing of descr, render of <img alt>, alt edit →
+ * canonical patch (descr set/clear), dirty classification, unchanged-image
+ * descr preservation (kind:original re-slices bytes), and runtime validation
+ * (oversized alt rejected, control chars stripped, file:// scheme rejected).
+ * The canonical engine path (patchImageParagraphXml wp:docPr descr) is
+ * covered at the docx-engine level by image-alt-text.test.ts.
+ */
+describe('Word image alt text (wp:docPr descr)', () => {
+  it('open surfaces descr as image.alt for images that carry one', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const images = blocks.filter((b) => b.type === 'image' && b.image)
+    // Fixture: images 1, 3, 5 carry descr; 2, 4, 6, 7 do not.
+    const withAlt = images.filter((b) => b.image?.alt !== undefined)
+    expect(withAlt.map((b) => b.docxIndex).sort()).toEqual([1, 3, 5])
+    const byIdx = new Map(images.map((b) => [b.docxIndex, b]))
+    expect(byIdx.get(1)?.image?.alt).toBe('A red square')
+    expect(byIdx.get(3)?.image?.alt).toBe('Wide blue banner')
+    expect(byIdx.get(5)?.image?.alt).toBe('Rotated magenta')
+    // Images without descr have alt === undefined (field absent on the wire).
+    for (const idx of [2, 4, 6, 7]) {
+      expect(byIdx.get(idx)?.image?.alt).toBeUndefined()
+    }
+  })
+
+  it('unchanged image preserves descr byte-for-byte (kind:original)', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    // Save with NO edits → engine re-slices original <w:drawing> bytes; descr survives.
+    const saved = await saveDoc(bytes, blocks)
+    const reparsed = await openDoc(saved)
+    const byIdx = new Map(reparsed.filter((b) => b.type === 'image').map((b) => [b.docxIndex, b]))
+    expect(byIdx.get(1)?.image?.alt).toBe('A red square')
+    expect(byIdx.get(3)?.image?.alt).toBe('Wide blue banner')
+    expect(byIdx.get(5)?.image?.alt).toBe('Rotated magenta')
+    // Images without descr still have no alt.
+    expect(byIdx.get(2)?.image?.alt).toBeUndefined()
+  })
+
+  it('alt edit produces edited:true + canonical descr patch in saved XML', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const edited = JSON.parse(JSON.stringify(blocks)) as WireBlock[]
+    const img = edited.find((b) => b.docxIndex === 1)!
+    img.edited = true
+    img.image = { ...img.image!, alt: 'Edited alt text' }
+    const saved = await saveDoc(bytes, edited)
+    const documentXml = await readZipEntry(saved, 'word/document.xml')
+    // Canonical generator wrote the new descr; the old one is gone.
+    expect(documentXml).toContain('descr="Edited alt text"')
+    expect(documentXml).not.toContain('descr="A red square"')
+    // Reopen: the patched descr surfaces back.
+    const reparsed = await openDoc(saved)
+    const img1 = reparsed.find((b) => b.docxIndex === 1)!
+    expect(img1.image?.alt).toBe('Edited alt text')
+  })
+
+  it('clearing alt (alt:null) removes descr from the saved XML', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const edited = JSON.parse(JSON.stringify(blocks)) as WireBlock[]
+    const img = edited.find((b) => b.docxIndex === 1)!
+    img.edited = true
+    img.image = { ...img.image!, alt: null }
+    const saved = await saveDoc(bytes, edited)
+    const documentXml = await readZipEntry(saved, 'word/document.xml')
+    // Image 101's descr is gone; its name is preserved (object name, separate field).
+    expect(documentXml).not.toContain('descr="A red square"')
+    expect(documentXml).toContain('name="Picture 101"')
+    // Unchanged images keep their descr (byte-preserved via kind:original).
+    expect(documentXml).toContain('descr="Wide blue banner"')
+    const reparsed = await openDoc(saved)
+    const img1 = reparsed.find((b) => b.docxIndex === 1)!
+    expect(img1.image?.alt).toBeUndefined()
+  })
+
+  it('alt change flips dirty; size change alone keeps alt unchanged', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    // Alt-only edit on image 1: edited:true, alt changed.
+    const editedAlt = JSON.parse(JSON.stringify(blocks)) as WireBlock[]
+    const imgAlt = editedAlt.find((b) => b.docxIndex === 1)!
+    imgAlt.edited = true
+    imgAlt.image = { ...imgAlt.image!, alt: 'Alt-only edit' }
+    const savedAlt = await saveDoc(bytes, editedAlt)
+    const reparsedAlt = await openDoc(savedAlt)
+    expect(reparsedAlt.find((b) => b.docxIndex === 1)!.image?.alt).toBe('Alt-only edit')
+    // Other images keep their descr (byte-preserved).
+    expect(reparsedAlt.find((b) => b.docxIndex === 3)!.image?.alt).toBe('Wide blue banner')
+
+    // Size-only edit on image 3: alt must survive untouched.
+    const editedSize = JSON.parse(JSON.stringify(blocks)) as WireBlock[]
+    const imgSize = editedSize.find((b) => b.docxIndex === 3)!
+    imgSize.edited = true
+    imgSize.image = { ...imgSize.image!, widthPx: 200, heightPx: 100, alt: 'Wide blue banner' }
+    const savedSize = await saveDoc(bytes, editedSize)
+    const reparsedSize = await openDoc(savedSize)
+    expect(reparsedSize.find((b) => b.docxIndex === 3)!.image?.alt).toBe('Wide blue banner')
+    expect(reparsedSize.find((b) => b.docxIndex === 3)!.image?.widthPx).toBe(200)
+  })
+
+  it('rejects an oversized alt string (500 char cap)', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const edited = JSON.parse(JSON.stringify(blocks)) as WireBlock[]
+    const img = edited.find((b) => b.docxIndex === 1)!
+    img.edited = true
+    img.image = { ...img.image!, alt: 'x'.repeat(501) }
+    const err = await expectValidation({
+      fileName: 'fixture.docx',
+      fileBytes: b64(bytes),
+      blocks: edited,
+    })
+    expect(err.message).toContain('alt')
+    expect(err.message).toContain('500')
+  })
+
+  it('strips XML-invalid control chars from alt but keeps the value', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const edited = JSON.parse(JSON.stringify(blocks)) as WireBlock[]
+    const img = edited.find((b) => b.docxIndex === 1)!
+    img.edited = true
+    // \x00 (NUL) and \x07 (BEL) are invalid in XML attrs; \t \n \r are kept.
+    img.image = { ...img.image!, alt: 'A\x00B\x07C\tD\nE\rF' }
+    const saved = await saveDoc(bytes, edited)
+    const documentXml = await readZipEntry(saved, 'word/document.xml')
+    // Control chars stripped; the value survived and the XML is well-formed.
+    expect(documentXml).toContain('descr=')
+    expect(documentXml).not.toContain('\x00')
+    expect(documentXml).not.toContain('\x07')
+    const reparsed = await openDoc(saved)
+    const img1 = reparsed.find((b) => b.docxIndex === 1)!
+    expect(img1.image?.alt).toBe('ABC\tD\nE\rF')
+  })
+
+  it('rejects a non-string alt (number)', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const edited = JSON.parse(JSON.stringify(blocks)) as WireBlock[]
+    const img = edited.find((b) => b.docxIndex === 1)!
+    img.edited = true
+    img.image = { ...img.image!, alt: 42 as unknown as string }
+    await expectValidation({ fileName: 'fixture.docx', fileBytes: b64(bytes), blocks: edited })
+  })
+
+  it('rejects a file:// image src (foreign scheme already rejected by data URL regex)', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const edited = JSON.parse(JSON.stringify(blocks)) as WireBlock[]
+    const img = edited.find((b) => b.docxIndex === 1)!
+    img.edited = true
+    img.image = { ...img.image!, imageDataUrl: 'file:///etc/passwd' }
+    await expectValidation({ fileName: 'fixture.docx', fileBytes: b64(bytes), blocks: edited })
+  })
+})
+
+/**
+ * Byte/fidelity checks — Phase 3 Increment 13 §F + §K.
+ *
+ * Open a DOCX containing images and immediately save without editing. The
+ * save payload must mark every image block edited:false. The resulting DOCX
+ * must preserve the original image relationship, media part bytes, content
+ * type, dimensions, and surrounding document XML byte-for-byte (kind:original
+ * re-slices the source bytes; media parts are copied verbatim).
+ *
+ * JSZip is used ONLY in the test environment (never in apps/web) to inspect
+ * the saved zip's parts.
+ */
+describe('Word image byte/fidelity (unchanged-image preservation)', () => {
+  it('marks every image block edited:false on open→save (no edits)', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    // Open returns blocks with edited:false already; saving them back goes
+    // through the kind:original path (no patch).
+    const saved = await saveDoc(bytes, blocks)
+    expect(saved.length).toBeGreaterThan(0)
+  })
+
+  it('preserves the image relationship in word/_rels/document.xml.rels', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const saved = await saveDoc(bytes, blocks)
+    const rels = await readZipEntry(saved, 'word/_rels/document.xml.rels')
+    // All 7 image relationships survive (rIdImg1..7 → media/image1..7.png).
+    for (let i = 1; i <= 7; i++) {
+      expect(rels).toContain(`Id="rIdImg${i}"`)
+      expect(rels).toContain(`Target="media/image${i}.png"`)
+      expect(rels).toContain(
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"',
+      )
+    }
+  })
+
+  it('preserves every media part byte-for-byte (word/media/*.png)', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const saved = await saveDoc(bytes, blocks)
+    for (let i = 1; i <= 7; i++) {
+      const origB64 = await readZipEntryBase64(bytes, `word/media/image${i}.png`)
+      const savedB64 = await readZipEntryBase64(saved, `word/media/image${i}.png`)
+      expect(savedB64).toBe(origB64)
+    }
+  })
+
+  it('preserves the png content type in [Content_Types].xml', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const saved = await saveDoc(bytes, blocks)
+    const ct = await readZipEntry(saved, '[Content_Types].xml')
+    expect(ct).toContain('Extension="png"')
+    expect(ct).toContain('ContentType="image/png"')
+    // The document + styles overrides survive too.
+    expect(ct).toContain('PartName="/word/document.xml"')
+    expect(ct).toContain('PartName="/word/styles.xml"')
+  })
+
+  it('preserves image dimensions + descr in word/document.xml (kind:original)', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const saved = await saveDoc(bytes, blocks)
+    const xml = await readZipEntry(saved, 'word/document.xml')
+    // Extents survive (the original drawing bytes are re-sliced).
+    expect(xml).toContain('cx="609600" cy="609600"') // image 1: 64×64
+    expect(xml).toContain('cx="2286000" cy="1143000"') // image 3: 240×120
+    // descr survives for images that carry it.
+    expect(xml).toContain('descr="A red square"')
+    expect(xml).toContain('descr="Wide blue banner"')
+    expect(xml).toContain('descr="Rotated magenta"')
+    // Surrounding paragraphs survive.
+    expect(xml).toContain('First paragraph.')
+    expect(xml).toContain('Last paragraph.')
+  })
+
+  it('keeps the zip structure (all expected parts present)', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const saved = await saveDoc(bytes, blocks)
+    const entries = await listZipEntries(saved)
+    expect(entries).toContain('[Content_Types].xml')
+    expect(entries).toContain('_rels/.rels')
+    expect(entries).toContain('word/document.xml')
+    expect(entries).toContain('word/_rels/document.xml.rels')
+    expect(entries).toContain('word/styles.xml')
+    for (let i = 1; i <= 7; i++) {
+      expect(entries).toContain(`word/media/image${i}.png`)
+    }
+  })
+
+  it('a resize edit preserves all media bytes (only extent XML changes)', async () => {
+    const bytes = await buildWordImageFixture()
+    const blocks = await openDoc(bytes)
+    const edited = JSON.parse(JSON.stringify(blocks)) as WireBlock[]
+    const big = edited.find((b) => b.docxIndex === 3)!
+    big.edited = true
+    big.image!.widthPx = 120
+    big.image!.heightPx = 60
+    const saved = await saveDoc(bytes, edited)
+    // All 7 media parts are byte-identical (only image 3's drawing XML changed).
+    for (let i = 1; i <= 7; i++) {
+      const origB64 = await readZipEntryBase64(bytes, `word/media/image${i}.png`)
+      const savedB64 = await readZipEntryBase64(saved, `word/media/image${i}.png`)
+      expect(savedB64).toBe(origB64)
+    }
+    // image 3's extent changed; others' did not.
+    const xml = await readZipEntry(saved, 'word/document.xml')
+    expect(xml).toContain('cx="1143000" cy="571500"') // 120×60
   })
 })

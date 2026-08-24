@@ -45,6 +45,13 @@ export interface ImagePatch {
    * Rewrites the <a:srcRect> inside the pic's blipFill (after a:blip).
    */
   crop?: { l: number; t: number; r: number; b: number } | null
+  /**
+   * Accessibility alt text (wp:docPr descr). null or '' removes the descr
+   * attribute; a non-empty string sets it (XML-escaped). undefined keeps
+   * the existing descr as-is. The wp:docPr name attribute is untouched
+   * (it is the object name, not the alt text).
+   */
+  alt?: string | null
 }
 
 /**
@@ -158,6 +165,21 @@ export function patchImageParagraphXml(xml: string, patch: ImagePatch): string {
     } else if (hasCrop) {
       out = out.replace(/(<pic:blipFill>[\s\S]*?<a:blip[^>]*\/>)/, `$1${tag}`)
     }
+  }
+  // Accessibility alt text: rewrite the wp:docPr descr attribute. The
+  // wp:docPr name (object name) is preserved; only descr (the canonical alt
+  // text) is touched. null/'' removes descr; a non-empty string sets it.
+  if (patch.alt !== undefined) {
+    const newAlt = patch.alt !== null && patch.alt.length > 0 ? patch.alt : null
+    out = out.replace(/<wp:docPr\b([^>]*?)\s*\/?>/, (whole, attrs: string) => {
+      // strip existing descr (and any stray trailing whitespace before />)
+      let a = attrs.replace(/\s+descr="[^"]*"/, '')
+      if (newAlt !== null) {
+        a += ` descr="${escapeXmlAttr(newAlt)}"`
+      }
+      // normalize to self-closing form (wp:docPr is always self-closing)
+      return `<wp:docPr${a} />`
+    })
   }
   return out
 }
