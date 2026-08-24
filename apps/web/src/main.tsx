@@ -49,7 +49,9 @@ function Root() {
     }
   }, [])
 
-  useEffect(() => { refreshSession() }, [refreshSession])
+  useEffect(() => {
+    refreshSession()
+  }, [refreshSession])
 
   if (loading) {
     return <div style={styles.loading}>Loading…</div>
@@ -60,12 +62,7 @@ function Root() {
   }
 
   if (!session.tenantSelected) {
-    return (
-      <TenantSelectScreen
-        memberships={memberships ?? []}
-        onSelected={refreshSession}
-      />
-    )
+    return <TenantSelectScreen memberships={memberships ?? []} onSelected={refreshSession} />
   }
 
   return <AppShell route={route} onRoute={setRoute} onLogout={refreshSession} theme={theme} />

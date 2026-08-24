@@ -43,12 +43,22 @@ export function StatusBar({
   const z = Math.min(400, Math.max(50, s.zoomPercent))
   return (
     <footer className="excel-statusbar" data-testid="excel-statusbar">
-      <span className={`excel-status-msg${isError ? ' error' : ''}`} role="status" aria-live="polite">
+      <span
+        className={`excel-status-msg${isError ? ' error' : ''}`}
+        role="status"
+        aria-live="polite"
+      >
         {status}
       </span>
       <span className="stat">{s.ready ? 'Ready' : ''}</span>
       <div className="excel-zoom" data-testid="excel-zoom">
-        <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => api?.zoomOut()} disabled={!s.ready}>
+        <button
+          type="button"
+          aria-label="Zoom out"
+          title="Zoom out"
+          onClick={() => api?.zoomOut()}
+          disabled={!s.ready}
+        >
           −
         </button>
         <input
@@ -61,7 +71,13 @@ export function StatusBar({
           disabled={!s.ready}
           onChange={(e) => api?.setZoom(Number(e.target.value) / 100)}
         />
-        <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => api?.zoomIn()} disabled={!s.ready}>
+        <button
+          type="button"
+          aria-label="Zoom in"
+          title="Zoom in"
+          onClick={() => api?.zoomIn()}
+          disabled={!s.ready}
+        >
           +
         </button>
         <span className="excel-zoom-value">{s.zoomPercent}%</span>

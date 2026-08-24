@@ -46,8 +46,12 @@ export async function gotoHashRoute(page: Page, route: string): Promise<void> {
 export async function waitForGridCanvas(page: Page): Promise<void> {
   await page.waitForFunction(
     () => {
-      const cs = Array.from(document.querySelectorAll('#genoffice-web-excel canvas')) as HTMLCanvasElement[]
-      return cs.some((c) => c.getBoundingClientRect().width > 200 && c.getBoundingClientRect().height > 100)
+      const cs = Array.from(
+        document.querySelectorAll('#genoffice-web-excel canvas'),
+      ) as HTMLCanvasElement[]
+      return cs.some(
+        (c) => c.getBoundingClientRect().width > 200 && c.getBoundingClientRect().height > 100,
+      )
     },
     { timeout: 30_000 },
   )

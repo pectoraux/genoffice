@@ -28,6 +28,7 @@ electron-builder.env
 
 # Playwright artifacts
 /test-results/
+**/test-results/
 
 .cursor/rules/git-remote.mdc
 __pycache__/

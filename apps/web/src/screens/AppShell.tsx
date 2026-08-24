@@ -38,14 +38,7 @@ export function AppShell({
   // application header — wrapping it in OfficeFrame would stack two competing
   // headers. Auth + nav live inside ExcelEditor's quick-actions row.
   if (route === '/office/excel') {
-    return (
-      <ExcelEditor
-        onRoute={onRoute}
-        onLogout={logout}
-        session={session}
-        theme={theme}
-      />
-    )
+    return <ExcelEditor onRoute={onRoute} onLogout={logout} session={session} theme={theme} />
   }
 
   if (route === '/office' || route === '/office/') {

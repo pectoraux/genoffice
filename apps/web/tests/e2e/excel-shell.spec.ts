@@ -14,7 +14,12 @@
  */
 import { test, expect } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
-import { loginAsDemoOwner, gotoHashRoute, waitForGridCanvas, clickSaveAndCaptureDownload } from './helpers'
+import {
+  loginAsDemoOwner,
+  gotoHashRoute,
+  waitForGridCanvas,
+  clickSaveAndCaptureDownload,
+} from './helpers'
 import { buildExcelFixture, readZipEntry } from './fixtures'
 
 const SHELL = '[data-testid="excel-shell"]'
@@ -33,8 +38,26 @@ const THEME_TOGGLE = '[data-testid="theme-toggle"]'
  */
 async function getActiveCellA1(page: import('@playwright/test').Page): Promise<string> {
   return page.evaluate(() => {
-    const rt = (window as { __genofficeExcelRuntime?: { univerAPI: { getActiveWorkbook: () => { getActiveSheet: () => { getActiveCell: () => { getA1Notation: () => string } | null } | null } | null } } }).__genofficeExcelRuntime
-    return rt?.univerAPI?.getActiveWorkbook?.()?.getActiveSheet?.()?.getActiveCell?.()?.getA1Notation?.() ?? 'none'
+    const rt = (
+      window as {
+        __genofficeExcelRuntime?: {
+          univerAPI: {
+            getActiveWorkbook: () => {
+              getActiveSheet: () => {
+                getActiveCell: () => { getA1Notation: () => string } | null
+              } | null
+            } | null
+          }
+        }
+      }
+    ).__genofficeExcelRuntime
+    return (
+      rt?.univerAPI
+        ?.getActiveWorkbook?.()
+        ?.getActiveSheet?.()
+        ?.getActiveCell?.()
+        ?.getA1Notation?.() ?? 'none'
+    )
   })
 }
 
@@ -43,15 +66,35 @@ async function getActiveCellA1(page: import('@playwright/test').Page): Promise<s
  */
 async function getActiveRangeA1(page: import('@playwright/test').Page): Promise<string> {
   return page.evaluate(() => {
-    const rt = (window as { __genofficeExcelRuntime?: { univerAPI: { getActiveWorkbook: () => { getActiveSheet: () => { getActiveRange: () => { getA1Notation: () => string } | null } | null } | null } } }).__genofficeExcelRuntime
-    return rt?.univerAPI?.getActiveWorkbook?.()?.getActiveSheet?.()?.getActiveRange?.()?.getA1Notation?.() ?? 'none'
+    const rt = (
+      window as {
+        __genofficeExcelRuntime?: {
+          univerAPI: {
+            getActiveWorkbook: () => {
+              getActiveSheet: () => {
+                getActiveRange: () => { getA1Notation: () => string } | null
+              } | null
+            } | null
+          }
+        }
+      }
+    ).__genofficeExcelRuntime
+    return (
+      rt?.univerAPI
+        ?.getActiveWorkbook?.()
+        ?.getActiveSheet?.()
+        ?.getActiveRange?.()
+        ?.getA1Notation?.() ?? 'none'
+    )
   })
 }
 
 test.describe('Excel workspace shell (Phase 4 parity)', () => {
   test.describe.configure({ mode: 'serial' })
 
-  test('1. Sheets shell renders with exactly one Name Box and one Formula Bar', async ({ page }) => {
+  test('1. Sheets shell renders with exactly one Name Box and one Formula Bar', async ({
+    page,
+  }) => {
     test.setTimeout(120_000)
     const pageErrors: string[] = []
     page.on('pageerror', (err) => pageErrors.push(String(err)))
@@ -81,11 +124,14 @@ test.describe('Excel workspace shell (Phase 4 parity)', () => {
     expect(univerHeaderCount, 'no Univer preset header chrome inside the grid container').toBe(0)
     // The grid canvas has real, non-zero dimensions.
     const size = await page.evaluate(() => {
-      const canvases = Array.from(document.querySelectorAll('#genoffice-web-excel canvas')) as HTMLCanvasElement[]
+      const canvases = Array.from(
+        document.querySelectorAll('#genoffice-web-excel canvas'),
+      ) as HTMLCanvasElement[]
       let best = { w: 0, h: 0 }
       for (const c of canvases) {
         const r = c.getBoundingClientRect()
-        if (r.width > best.w && r.height > best.h) best = { w: Math.round(r.width), h: Math.round(r.height) }
+        if (r.width > best.w && r.height > best.h)
+          best = { w: Math.round(r.width), h: Math.round(r.height) }
       }
       return best
     })
@@ -167,7 +213,9 @@ test.describe('Excel workspace shell (Phase 4 parity)', () => {
     await expect(page.locator(CANVAS).last()).toBeVisible()
     // The workbook is still alive — the runtime still reports an active workbook.
     const alive = await page.evaluate(() => {
-      const rt = (window as { __genofficeExcelRuntime?: { univerAPI: { getActiveWorkbook: () => unknown } } }).__genofficeExcelRuntime
+      const rt = (
+        window as { __genofficeExcelRuntime?: { univerAPI: { getActiveWorkbook: () => unknown } } }
+      ).__genofficeExcelRuntime
       return !!rt?.univerAPI?.getActiveWorkbook?.()
     })
     expect(alive, 'workbook must survive ribbon tab switches').toBe(true)
@@ -284,7 +332,9 @@ test.describe('Excel workspace shell (Phase 4 parity)', () => {
     // miscalculation from a hidden/mounted header plugin).
     expect(await getActiveCellA1(page), 'default active cell is A1').toBe('A1')
     const bbox = await page.evaluate(() => {
-      const cs = Array.from(document.querySelectorAll('#genoffice-web-excel canvas')) as HTMLCanvasElement[]
+      const cs = Array.from(
+        document.querySelectorAll('#genoffice-web-excel canvas'),
+      ) as HTMLCanvasElement[]
       let best: { x: number; y: number; w: number; h: number } | null = null
       for (const c of cs) {
         const r = c.getBoundingClientRect()
@@ -328,7 +378,19 @@ test.describe('Excel workspace shell (Phase 4 parity)', () => {
     // canvas-rendered, so UI tab-clicking is coordinate-fragile; the
     // runtime path exercises the same Univer sheet-switch the UI would).
     await page.evaluate(() => {
-      const rt = (window as { __genofficeExcelRuntime?: { univerAPI: { getActiveWorkbook: () => { insertSheet: () => { getSheetName: () => string }; setActiveSheet: (s: unknown) => void; getActiveSheet: () => { getSheetId: () => string } } } } }).__genofficeExcelRuntime
+      const rt = (
+        window as {
+          __genofficeExcelRuntime?: {
+            univerAPI: {
+              getActiveWorkbook: () => {
+                insertSheet: () => { getSheetName: () => string }
+                setActiveSheet: (s: unknown) => void
+                getActiveSheet: () => { getSheetId: () => string }
+              }
+            }
+          }
+        }
+      ).__genofficeExcelRuntime
       const wb = rt?.univerAPI?.getActiveWorkbook?.()
       if (!wb) return
       const ns = wb.insertSheet()
@@ -410,7 +472,9 @@ test.describe('Excel workspace shell (Phase 4 parity)', () => {
     await expect(bar).toBeVisible()
     // The formula bar should echo the existing formula.
     await page.waitForFunction(
-      () => (document.querySelector('[data-testid="excel-formula-bar"]') as HTMLInputElement | null)?.value,
+      () =>
+        (document.querySelector('[data-testid="excel-formula-bar"]') as HTMLInputElement | null)
+          ?.value,
       { timeout: 10_000 },
     )
     const before = await bar.inputValue()
