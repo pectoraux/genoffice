@@ -6,7 +6,7 @@
  * server state. (ADR-0008; Phase 2C.1 §14.)
  */
 
-import { StrictMode, useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { createRoot } from 'react-dom/client'
 import { authApi, type SessionInfo, type MembershipChoice } from './api/client'
 import { LoginScreen } from './screens/Login'
@@ -14,12 +14,17 @@ import { TenantSelectScreen } from './screens/TenantSelect'
 import { AppShell } from './screens/AppShell'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { styles } from './styles'
+import { useTheme } from './theme'
+import './theme.css'
 
 function Root() {
   const [session, setSession] = useState<SessionInfo | null>(null)
   const [memberships, setMemberships] = useState<MembershipChoice[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [route, setRoute] = useState(window.location.hash.slice(1) || '/')
+  // One theme source for the whole app — sets <html data-theme>, persisted
+  // to localStorage, and mirrored into Univer's ThemeService by ExcelEditor.
+  const theme = useTheme()
 
   useEffect(() => {
     const onHash = () => setRoute(window.location.hash.slice(1) || '/')
@@ -63,14 +68,18 @@ function Root() {
     )
   }
 
-  return <AppShell route={route} onRoute={setRoute} onLogout={refreshSession} />
+  return <AppShell route={route} onRoute={setRoute} onLogout={refreshSession} theme={theme} />
 }
 
 const root = createRoot(document.getElementById('root')!)
+// NOTE: StrictMode is intentionally NOT used here. React 19 StrictMode
+// double-invokes effects in DEV, which makes Univer's grid canvas fail to
+// mount under toolbar:false (the custom-ribbon config). StrictMode has ZERO
+// effect on the production build, so this only changes dev behavior — the
+// deployed app is unaffected. The desktop (Electron) also doesn't double-
+// mount Univer.
 root.render(
-  <StrictMode>
-    <ErrorBoundary>
-      <Root />
-    </ErrorBoundary>
-  </StrictMode>,
+  <ErrorBoundary>
+    <Root />
+  </ErrorBoundary>,
 )

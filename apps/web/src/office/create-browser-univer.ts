@@ -1,4 +1,4 @@
-import { LogLevel, LocaleType, Univer } from '@univerjs/core'
+import { LogLevel, LocaleType, ThemeService, IUndoRedoService, Univer } from '@univerjs/core'
 import type { Plugin, PluginCtor } from '@univerjs/core'
 import { FUniver } from '@univerjs/core/lib/facade'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
@@ -36,15 +36,44 @@ import '@univerjs/preset-sheets-sort/lib/index.css'
 import '@univerjs/preset-sheets-table/lib/index.css'
 
 type PluginEntry =
-  PluginCtor<Plugin> | [PluginCtor<Plugin>, ConstructorParameters<PluginCtor<Plugin>>[0]]
+  | PluginCtor<Plugin>
+  | [PluginCtor<Plugin>, ConstructorParameters<PluginCtor<Plugin>>[0]]
 type BrowserPreset = { plugins: PluginEntry[] }
 
 export interface BrowserUniverRuntime {
   readonly univer: Univer
   readonly univerAPI: FUniver
+  /** Univer's theme service — ExcelEditor mirrors <html data-theme> into it. */
+  readonly themeService: ThemeService
+  /** Undo/redo stack occupancy — drives the QAT button greying. */
+  readonly undoRedoService: IUndoRedoService
 }
 
-/** Merged en-US locale messages from every registered preset. */
+/**
+ * Read the resolved theme from <html data-theme> (set by useTheme in
+ * theme.ts). Falls back to the OS appearance when no attribute is set.
+ * Mirrors the desktop's isDarkTheme() in App.tsx.
+ */
+function isDarkTheme(): boolean {
+  if (typeof document === 'undefined') return false
+  const attr = document.documentElement.getAttribute('data-theme')
+  if (attr === 'dark') return true
+  if (attr === 'light') return false
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-color-scheme: dark)').matches
+  )
+}
+
+/**
+ * Merged en-US locale messages from every registered preset, plus the
+ * sheets-ui compatibility patch. Univer 0.25.1's sheets-ui references two
+ * info keys (error, forceStringInfo) the shipped pack lacks — without the
+ * patch the raw keys pop up for users (same fix the desktop applies in
+ * App.tsx). The existing sheets-ui namespace is spread first so the patch
+ * only adds the missing entries instead of overwriting the whole namespace.
+ */
 const EN_US_LOCALES = {
   ...sheetsCoreEnUS,
   ...sheetsConditionalFormattingEnUS,
@@ -55,23 +84,58 @@ const EN_US_LOCALES = {
   ...sheetsNoteEnUS,
   ...sheetsSortEnUS,
   ...sheetsTableEnUS,
+  'sheets-ui': {
+    ...(sheetsCoreEnUS as Record<string, Record<string, unknown>>)['sheets-ui'],
+    info: {
+      ...((sheetsCoreEnUS as Record<string, Record<string, Record<string, string>>>)['sheets-ui']?.info),
+      error: 'Number stored as text',
+      forceStringInfo:
+        'The value in this cell is stored as text — it will not be treated as a ' +
+        'number in formulas.',
+    },
+  },
 }
 
 export function createBrowserUniver(container: string): BrowserUniverRuntime {
   const univer = new Univer({
     logLevel: LogLevel.WARN,
+    // green selection/highlight instead of Univer's default blue — matches
+    // the desktop and the --accent token in theme.css.
     theme: greenTheme,
+    darkMode: isDarkTheme(),
     locale: LocaleType.EN_US,
     locales: { [LocaleType.EN_US]: EN_US_LOCALES },
   })
   const presets: BrowserPreset[] = [
+    // SheetsCore preset — Phase D parity with the desktop (App.tsx:1245-1264):
+    //   toolbar: false  → hide Univer's preset ribbon; the web shell renders
+    //                     its own 7-tab Ribbon so the chrome matches Electron
+    //                     (no duplicate ribbon).
+    //   zoomSlider: false → zoom lives in the custom status bar.
+    //   statusBarStatistic: true → opt into the preset's statistic bar.
+    //   sheets.isRowStylePrecedeColumnStyle: true → OOXML resolves style
+    //     defaults as cell-over-row-over-column; without this flag Univer
+    //     defaults to column-wins and inherits the wrong style for cells
+    //     that rely on row/column defaults. NOT cosmetic.
+    // NB: toolbar:false requires that React NOT double-mount Univer (StrictMode
+    //   double-invokes effects in dev, which leaves the grid canvas unsized).
+    //   main.tsx therefore omits <StrictMode> — this is dev-only (StrictMode
+    //   has no effect on the production build) and the deployed app is
+    //   unaffected. The custom Name Box + Formula Bar row render above the
+    //   grid; Univer's preset header (name box + formula bar) is also
+    //   visible inside the container — that pair is a known cosmetic
+    //   duplicate (the desktop has the same: custom name box + Univer's
+    //   formula bar). Hiding Univer's header via CSS breaks grid
+    //   interactivity, so it is left visible.
     UniverSheetsCorePreset({
       container,
       header: true,
-      toolbar: true,
+      toolbar: false,
       contextMenu: true,
       formulaBar: true,
-      footer: { sheetBar: true, statisticBar: true, menus: true, zoomSlider: true },
+      footer: { sheetBar: true, statisticBar: true, menus: true, zoomSlider: false },
+      statusBarStatistic: true,
+      sheets: { isRowStylePrecedeColumnStyle: true },
     }),
     UniverSheetsDrawingPreset(),
     UniverSheetsConditionalFormattingPreset(),
@@ -82,6 +146,9 @@ export function createBrowserUniver(container: string): BrowserUniverRuntime {
     UniverSheetsSortPreset(),
     UniverSheetsTablePreset(),
   ]
+  // Dedupe plugins by pluginName across presets (last registration wins),
+  // then register each survivor with its options — same algorithm the
+  // desktop's create-univer.ts uses.
   const registry = new Map<string, { plugin: PluginCtor<Plugin>; options: unknown }>()
   for (const preset of presets) {
     for (const entry of preset.plugins) {
@@ -90,6 +157,13 @@ export function createBrowserUniver(container: string): BrowserUniverRuntime {
       registry.set(plugin.pluginName, { plugin, options })
     }
   }
-  for (const { plugin, options } of registry.values()) univer.registerPlugin(plugin, options)
-  return { univer, univerAPI: FUniver.newAPI(univer) }
+  for (const { plugin, options } of registry.values()) {
+    univer.registerPlugin(plugin, options)
+  }
+  // Expose the theme + undo/redo services so the shell can mirror the DOM
+  // theme into Univer's canvas and grey out the QAT buttons correctly.
+  const injector = univer.__getInjector()
+  const themeService = injector.get(ThemeService)
+  const undoRedoService = injector.get(IUndoRedoService)
+  return { univer, univerAPI: FUniver.newAPI(univer), themeService, undoRedoService }
 }

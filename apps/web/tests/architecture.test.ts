@@ -71,6 +71,11 @@ describe('architecture: apps/web has zero Electron / Node API imports', () => {
     /from\s+['"]@genoffice\/platform-electron['"]/,
     /from\s+['"]@genoffice\/project-store['"]/,
     /from\s+['"]apps\/shell['"]/,
+    // Frozen desktop/doc surfaces — the web shell must NOT reach into the
+    // Electron apps' renderer or the docs app source. (Phase 4 §J.)
+    /['"][^'"]*apps\/sheets\/src[^'"]*['"]/,
+    /['"][^'"]*apps\/docs\/src[^'"]*['"]/,
+    /['"][^'"]*apps\/sheets\/(renderer|shared|preload)[^'"]*['"]/,
     // Node built-ins (require / import)
     /from\s+['"]node:[a-z]+['"]/,
     /from\s+['"]fs['"]/,
