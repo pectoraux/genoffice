@@ -18372,6 +18372,7 @@ function isValidGrouping(grouping) {
 
 // packages/xlsx-gateway/src/gateway/xlsx-structure.ts
 function isShiftingOp(op) {
+  if (op.kind === "reorder-rows") return false;
   return "index" in op || "range" in op;
 }
 var StructuralShiftError = class extends Error {
@@ -18380,6 +18381,10 @@ function applyStructuralOps(worksheetXml, ops, sheetName) {
   let xml = worksheetXml;
   let outlineTouched = false;
   for (const op of ops) {
+    if (op.kind === "reorder-rows") {
+      xml = transformSheetRowsByPermutation(xml, op);
+      continue;
+    }
     if ("start" in op) {
       outlineTouched ||= "level" in op;
       xml = op.kind === "set-row-size" || op.kind === "set-rows-hidden" || op.kind === "set-rows-outline" ? applyRowAttributeOp(xml, op) : applyColAttributeOp(xml, op);
@@ -18912,6 +18917,90 @@ function transformSheetRows(xml, shift) {
     }
   );
   return shift.swap ? sortSheetDataRows(renumbered) : renumbered;
+}
+function transformSheetRowsByPermutation(xml, op) {
+  const { startRow, endRow, startColumn, endColumn } = op.range;
+  const section = /<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/.exec(xml);
+  if (!section?.[1]) return xml;
+  const spanRows = /* @__PURE__ */ new Map();
+  const outsideRows = [];
+  const leftover = section[1].replace(
+    /<row\b[^>]*?\br="([0-9]+)"[^>]*?(?:\/>|>[\s\S]*?<\/row>)/g,
+    (full, rowNumStr) => {
+      const rowIdx = Number(rowNumStr) - 1;
+      if (rowIdx < startRow || rowIdx > endRow) {
+        outsideRows.push({ index: rowIdx, text: full });
+        return "";
+      }
+      const openEnd = full.indexOf(">");
+      const openTag = full.slice(0, openEnd + 1);
+      const selfClosing = openTag.endsWith("/>");
+      const attrs = selfClosing ? openTag.slice(5, -2) : openTag.slice(5, -1);
+      const cells = /* @__PURE__ */ new Map();
+      if (!selfClosing) {
+        const inner = full.slice(openEnd + 1, full.length - "</row>".length);
+        for (const match of inner.matchAll(
+          /<c\b[^>]*?\br="([A-Z]{1,3})[0-9]+"[^>]*?(?:\/>|>[\s\S]*?<\/c>)/g
+        )) {
+          cells.set(lettersToColumn(match[1]), match[0]);
+        }
+      }
+      spanRows.set(rowIdx, { attrs, cells, originalText: full });
+      return "";
+    }
+  );
+  if (leftover.trim() !== "") {
+    throw new StructuralShiftError("sheetData holds content other than rows \u2014 sort aborted.");
+  }
+  const rebuilt = /* @__PURE__ */ new Map();
+  for (const [destKey, srcRow] of Object.entries(op.order)) {
+    const dest = Number(destKey);
+    if (!Number.isInteger(dest) || !Number.isInteger(srcRow)) continue;
+    if (dest < startRow || dest > endRow) continue;
+    const destRow = spanRows.get(dest);
+    const srcParsed = spanRows.get(srcRow);
+    const newCells = /* @__PURE__ */ new Map();
+    if (destRow) {
+      for (const [col, cellXml] of destRow.cells) {
+        if (col < startColumn || col > endColumn) newCells.set(col, cellXml);
+      }
+    }
+    if (srcParsed) {
+      for (const [col, cellXml] of srcParsed.cells) {
+        if (col >= startColumn && col <= endColumn) {
+          newCells.set(
+            col,
+            cellXml.replace(
+              /(<c\b[^>]*?\br="[A-Z]{1,3})[0-9]+(")/,
+              (_m, prefix, suffix) => `${prefix}${dest + 1}${suffix}`
+            )
+          );
+        }
+      }
+    }
+    rebuilt.set(dest, {
+      // Drop the stale spans hint on rebuilt rows — the cell extent may
+      // change; Excel rebuilds spans on save (same policy as the column
+      // ops above). Keep every other row attribute (height, hidden, …).
+      attrs: (destRow?.attrs ?? `r="${dest + 1}"`).replace(/\s+spans="[^"]*"/g, ""),
+      cells: newCells
+    });
+  }
+  const parts = [...outsideRows];
+  for (const [rowIdx, parsed] of spanRows) {
+    if (rebuilt.has(rowIdx)) continue;
+    parts.push({ index: rowIdx, text: parsed.originalText });
+  }
+  for (const [dest, parsed] of rebuilt) {
+    parts.push({ index: dest, text: reassembleRow(parsed) });
+  }
+  parts.sort((a, b) => a.index - b.index);
+  return xml.slice(0, section.index) + `${section[0].slice(0, section[0].indexOf(">") + 1)}${parts.map((part) => part.text).join("")}</sheetData>` + xml.slice(section.index + section[0].length);
+}
+function reassembleRow(parsed) {
+  const sortedCells = [...parsed.cells.entries()].sort((a, b) => a[0] - b[0]).map(([, cellXml]) => cellXml);
+  if (sortedCells.length === 0) return `<row ${parsed.attrs}/>`;
+  return `<row ${parsed.attrs}>${sortedCells.join("")}</row>`;
 }
 function sortSheetDataRows(xml) {
   const section = /<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/.exec(xml);
@@ -21725,6 +21814,42 @@ function escapeXmlAttribute8(input) {
 }
 
 // packages/xlsx-gateway/src/gateway/xlsx-styles.ts
+var BUILTIN_NUMFMTS = /* @__PURE__ */ new Map([
+  [1, "0"],
+  [2, "0.00"],
+  [3, "#,##0"],
+  [4, "#,##0.00"],
+  [5, "$#,##0_);($#,##0)"],
+  [6, "$#,##0_);[Red]($#,##0)"],
+  [7, "$#,##0.00_);($#,##0.00)"],
+  [8, "$#,##0.00_);[Red]($#,##0.00)"],
+  [9, "0%"],
+  [10, "0.00%"],
+  [11, "0.00E+00"],
+  [12, "# ?/?"],
+  [13, "# ??/??"],
+  [14, "mm-dd-yy"],
+  [15, "d-mmm-yy"],
+  [16, "d-mmm"],
+  [17, "mmm-yy"],
+  [18, "h:mm AM/PM"],
+  [19, "h:mm:ss AM/PM"],
+  [20, "h:mm"],
+  [21, "h:mm:ss"],
+  [22, "m/d/yy h:mm"],
+  [37, "#,##0_);(#,##0)"],
+  [38, "#,##0_);[Red](#,##0)"],
+  [39, "#,##0.00_);(#,##0.00)"],
+  [40, "#,##0.00_);[Red](#,##0.00)"],
+  [41, '_(* #,##0_);_(* (#,##0);_(* "-"_);_(@_)'],
+  [42, '_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)'],
+  [44, '_($* #,##0_);_($* (#,##0);_($* "-"_);_(@_)'],
+  [45, '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'],
+  [46, "[$-404]e-m-d"],
+  [47, "mm:ss"],
+  [48, "[h]:mm:ss"],
+  [49, "mmss.0"]
+]);
 var StylesheetEditor = class {
   source;
   numFmts;
@@ -22054,6 +22179,16 @@ var StylesheetReader = class {
   fonts;
   fills;
   cellXfs;
+  /**
+   * numFmtId → formatCode map, parsed from the styles.xml <numFmts> section.
+   * Built once at construction time. Used by resolve() to attach a
+   * numberFormat pattern to CellFormatState when the cellXfs entry references
+   * a custom numFmt (numFmtId ≥ 164, the threshold above which user-defined
+   * formats live). Built-in numFmtIds (0..163) are mapped via BUILTIN_NUMFMTS
+   * so common formats (General, 0, 0.00, #,##0, $#,##0.00, …) survive
+   * round-trip without needing a <numFmt> entry.
+   */
+  numFmtByCode;
   cache = /* @__PURE__ */ new Map();
   constructor(stylesXml) {
     const fontsInner = sectionInner(stylesXml, "fonts");
@@ -22062,6 +22197,15 @@ var StylesheetReader = class {
     this.fonts = fontsInner === null ? [] : extractElements(fontsInner, "font");
     this.fills = fillsInner === null ? [] : extractElements(fillsInner, "fill");
     this.cellXfs = cellXfsInner === null ? [] : extractElements(cellXfsInner, "xf");
+    const numFmtsInner = sectionInner(stylesXml, "numFmts");
+    const numFmtEntries = numFmtsInner === null ? [] : extractElements(numFmtsInner, "numFmt");
+    const byCode = /* @__PURE__ */ new Map();
+    for (const entry of numFmtEntries) {
+      const id = Number(readAttribute2(entry, "numFmtId") ?? "NaN");
+      const code = readAttribute2(entry, "formatCode");
+      if (Number.isInteger(id) && code) byCode.set(id, decodeXmlText(code));
+    }
+    this.numFmtByCode = byCode;
   }
   /**
    * Resolved editable format of cellXfs[index]; undefined when the index is
@@ -22079,6 +22223,14 @@ var StylesheetReader = class {
   resolve(xfIndex) {
     const xf = this.cellXfs[xfIndex] ?? "";
     const format = {};
+    const numFmtIdAttr = readAttribute2(xf, "numFmtId");
+    if (numFmtIdAttr !== void 0) {
+      const id = Number(numFmtIdAttr);
+      if (Number.isInteger(id) && id > 0) {
+        const pattern2 = this.numFmtByCode.get(id) ?? BUILTIN_NUMFMTS.get(id);
+        if (pattern2) format.numberFormat = pattern2;
+      }
+    }
     const fontId = Number(readAttribute2(xf, "fontId") ?? 0);
     const font = this.fonts[fontId] ?? "";
     if (/<b\b[^>]*\/?>/.test(font)) format.bold = true;
@@ -22275,7 +22427,8 @@ async function readBasicWorkbook(buffer) {
       ...presentation.styles && Object.keys(presentation.styles).length > 0 ? { styles: presentation.styles } : {},
       ...presentation.merges.length > 0 ? { merges: presentation.merges } : {},
       ...presentation.rowHeights && Object.keys(presentation.rowHeights).length > 0 ? { rowHeights: presentation.rowHeights } : {},
-      ...presentation.colWidths && Object.keys(presentation.colWidths).length > 0 ? { colWidths: presentation.colWidths } : {}
+      ...presentation.colWidths && Object.keys(presentation.colWidths).length > 0 ? { colWidths: presentation.colWidths } : {},
+      ...presentation.freeze ? { freeze: presentation.freeze } : {}
     });
     sheetNamesById[id] = decodedName;
   }
@@ -22333,7 +22486,21 @@ function parseWorksheetPresentation(worksheetXml, styleReader) {
       colWidths[columnLabel2(column)] = px;
     }
   }
-  return { styles, merges, rowHeights, colWidths };
+  const freeze = parseFrozenPane(worksheetXml);
+  return { styles, merges, rowHeights, colWidths, freeze };
+}
+function parseFrozenPane(worksheetXml) {
+  const paneMatch = /<pane\b([^>]*)\/?>/.exec(worksheetXml);
+  if (!paneMatch) return void 0;
+  const attrs = paneMatch[1] ?? "";
+  const state = readXmlAttribute(attrs, "state");
+  if (state !== "frozen" && state !== "frozenSplit") return void 0;
+  const ySplit = Number(readXmlAttribute(attrs, "ySplit") ?? "0");
+  const xSplit = Number(readXmlAttribute(attrs, "xSplit") ?? "0");
+  const frozenRows = Number.isInteger(ySplit) && ySplit > 0 ? ySplit : 0;
+  const frozenColumns = Number.isInteger(xSplit) && xSplit > 0 ? xSplit : 0;
+  if (frozenRows === 0 && frozenColumns === 0) return void 0;
+  return { frozenRows, frozenColumns };
 }
 function columnLabel2(column) {
   let label = "";
@@ -42489,8 +42656,21 @@ function parseOpenWorkbookRequest(body, codec) {
   const fileBytes = decodeFileBytes(body.fileBytes, codec);
   return { fileName, fileBytes };
 }
-var STRUCTURAL_KINDS = ["insert-rows", "remove-rows", "insert-cols", "remove-cols"];
+var ROWCOL_STRUCTURAL_KINDS = [
+  "insert-rows",
+  "remove-rows",
+  "insert-cols",
+  "remove-cols"
+];
+var MERGE_STRUCTURAL_KINDS = ["merge-cells", "unmerge-cells"];
+var SORT_STRUCTURAL_KIND = "reorder-rows";
+var STRUCTURAL_KINDS = [
+  ...ROWCOL_STRUCTURAL_KINDS,
+  ...MERGE_STRUCTURAL_KINDS,
+  SORT_STRUCTURAL_KIND
+];
 var MAX_STRUCTURAL_COUNT = 1e4;
+var MAX_REORDER_ROWS = 1048576;
 function expectStructuralOp(value, field) {
   if (!isRecord(value)) {
     throw new OfficeValidationError("validation", `${field} must be an object`);
@@ -42501,6 +42681,15 @@ function expectStructuralOp(value, field) {
       "validation",
       `${field}.kind must be one of: ${STRUCTURAL_KINDS.join(", ")}`
     );
+  }
+  if (kind === "merge-cells" || kind === "unmerge-cells") {
+    const range = expectStructuralRange(value.range, `${field}.range`);
+    return { kind, range };
+  }
+  if (kind === SORT_STRUCTURAL_KIND) {
+    const range = expectStructuralRange(value.range, `${field}.range`);
+    const order = expectReorderOrder(value.order, `${field}.order`, range);
+    return { kind: SORT_STRUCTURAL_KIND, range, order };
   }
   const index = expectNumber(value.index, `${field}.index`);
   if (!Number.isInteger(index) || index < 0 || index > 1048576) {
@@ -42518,6 +42707,84 @@ function expectStructuralOp(value, field) {
   }
   return { kind, index, count };
 }
+function expectReorderOrder(value, field, range) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const { startRow, endRow } = range;
+  if (endRow < startRow) {
+    throw new OfficeValidationError("validation", `${field}: range endRow < startRow`);
+  }
+  const rangeRowCount = endRow - startRow + 1;
+  if (rangeRowCount > MAX_REORDER_ROWS) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}: sort range exceeds ${MAX_REORDER_ROWS} rows`
+    );
+  }
+  const out = {};
+  const seenDest = /* @__PURE__ */ new Set();
+  for (const key of Object.keys(value)) {
+    const src = Number(key);
+    if (!Number.isInteger(src) || src < 0) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}: source row "${key}" must be a non-negative integer`
+      );
+    }
+    if (src < startRow || src > endRow) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}: source row ${src} is outside the sort range [${startRow}, ${endRow}]`
+      );
+    }
+    const dest = expectNumber(value[key], `${field}[${src}]`);
+    if (!Number.isInteger(dest) || dest < 0) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}[${src}] must be a non-negative integer`
+      );
+    }
+    if (dest < startRow || dest > endRow) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}[${src}] = ${dest} is outside the sort range [${startRow}, ${endRow}]`
+      );
+    }
+    if (seenDest.has(dest)) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}: destination row ${dest} is targeted by more than one source row (not a bijection)`
+      );
+    }
+    seenDest.add(dest);
+    out[src] = dest;
+  }
+  return out;
+}
+function expectStructuralRange(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const startRow = expectNumber(value.startRow, `${field}.startRow`);
+  const endRow = expectNumber(value.endRow, `${field}.endRow`);
+  const startColumn = expectNumber(value.startColumn, `${field}.startColumn`);
+  const endColumn = expectNumber(value.endColumn, `${field}.endColumn`);
+  for (const [n, label] of [
+    [startRow, `${field}.startRow`],
+    [endRow, `${field}.endRow`],
+    [startColumn, `${field}.startColumn`],
+    [endColumn, `${field}.endColumn`]
+  ]) {
+    if (!Number.isInteger(n) || n < 0) {
+      throw new OfficeValidationError("validation", `${label} must be a non-negative integer`);
+    }
+  }
+  if (endRow < startRow || endColumn < startColumn) {
+    throw new OfficeValidationError("validation", `${field} end must be >= start`);
+  }
+  return { startRow, endRow, startColumn, endColumn };
+}
 function expectSheetStructuralOps(value, index) {
   if (!isRecord(value)) {
     throw new OfficeValidationError("validation", `structuralOps[${index}] must be an object`);
@@ -42532,6 +42799,34 @@ function expectSheetStructuralOps(value, index) {
     throw new OfficeValidationError("validation", `structuralOps[${index}].ops exceeds 100 entries`);
   }
   return { sheetName, ops };
+}
+function expectSheetPageSetupState(value, index) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `pageSetupStates[${index}] must be an object`);
+  }
+  const sheetName = expectString(value.sheetName, `pageSetupStates[${index}].sheetName`);
+  const out = { sheetName };
+  if (value.frozenRows !== void 0) {
+    const n = expectNumber(value.frozenRows, `pageSetupStates[${index}].frozenRows`);
+    if (!Number.isInteger(n) || n < 0 || n > 1048576) {
+      throw new OfficeValidationError(
+        "validation",
+        `pageSetupStates[${index}].frozenRows must be a non-negative integer`
+      );
+    }
+    out.frozenRows = n;
+  }
+  if (value.frozenColumns !== void 0) {
+    const n = expectNumber(value.frozenColumns, `pageSetupStates[${index}].frozenColumns`);
+    if (!Number.isInteger(n) || n < 0 || n > 16384) {
+      throw new OfficeValidationError(
+        "validation",
+        `pageSetupStates[${index}].frozenColumns must be a non-negative integer`
+      );
+    }
+    out.frozenColumns = n;
+  }
+  return out;
 }
 function parseSaveWorkbookRequest(body, codec) {
   if (!isRecord(body)) {
@@ -42549,7 +42844,20 @@ function parseSaveWorkbookRequest(body, codec) {
       "savePlan.structuralOps",
       expectSheetStructuralOps
     ) : void 0;
-    return { fileName, fileBytes, savePlan: { edits, ...structuralOps ? { structuralOps } : {} } };
+    const pageSetupStates = body.savePlan.pageSetupStates !== void 0 && body.savePlan.pageSetupStates !== null ? expectArray(
+      body.savePlan.pageSetupStates,
+      "savePlan.pageSetupStates",
+      expectSheetPageSetupState
+    ) : void 0;
+    return {
+      fileName,
+      fileBytes,
+      savePlan: {
+        edits,
+        ...structuralOps ? { structuralOps } : {},
+        ...pageSetupStates ? { pageSetupStates } : {}
+      }
+    };
   }
   if (body.cellEdits !== void 0) {
     const edits = expectArray(body.cellEdits, "cellEdits", expectCellEdit);
@@ -42596,9 +42904,23 @@ async function handleSaveWorkbook(body, codec) {
   const buf = Buffer.from(req.fileBytes);
   const edits = req.savePlan.edits;
   const structuralOps = req.savePlan.structuralOps ?? [];
+  const pageSetupStates = req.savePlan.pageSetupStates ?? [];
   let mutation;
   try {
-    mutation = await applyCellEditsToXlsx(buf, edits, structuralOps);
+    mutation = await applyCellEditsToXlsx(
+      buf,
+      edits,
+      structuralOps,
+      [],
+      void 0,
+      [],
+      [],
+      [],
+      [],
+      [],
+      null,
+      pageSetupStates
+    );
   } catch (e) {
     throw new OfficeValidationError(
       "malformed",
