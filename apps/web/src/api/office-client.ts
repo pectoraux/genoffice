@@ -38,11 +38,19 @@ export interface OpenWorkbookResponse {
  * and the open index signature lets future mutation families land without
  * a wire-breaking change.
  */
-/** One journaled structural operation (insert/remove rows/columns). */
+/** One journaled structural operation (insert/remove rows/columns, merge/unmerge). */
 export interface BrowserStructuralOp {
-  readonly kind: 'insert-rows' | 'remove-rows' | 'insert-cols' | 'remove-cols'
+  readonly kind:
+    | 'insert-rows'
+    | 'remove-rows'
+    | 'insert-cols'
+    | 'remove-cols'
+    | 'merge-cells'
+    | 'unmerge-cells'
   readonly index: number
   readonly count: number
+  /** Range for merge/unmerge ops (0-based startRow/endRow/startColumn/endColumn). */
+  readonly range?: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number }
 }
 
 /** Per-sheet structural operations for a save plan. */
@@ -51,10 +59,31 @@ export interface BrowserSheetStructuralOps {
   readonly ops: readonly BrowserStructuralOp[]
 }
 
+/**
+ * Per-sheet page-setup state for a save plan. Mirrors the canonical
+ * `SheetPageSetupState` from @genoffice/xlsx-gateway — only the
+ * `frozenRows` / `frozenColumns` fields are wired by the web shell today
+ * (View → Freeze Panes); the remaining optional fields are kept open so
+ * future View commands (gridlines-on-print, page breaks, …) can land
+ * without a wire-breaking change.
+ */
+export interface BrowserSheetPageSetupState {
+  readonly sheetName: string
+  readonly frozenRows?: number
+  readonly frozenColumns?: number
+  readonly [key: string]: unknown
+}
+
 export interface BrowserWorkbookSavePlan {
   readonly edits: readonly CellEdit[]
   /** Row/column structural operations, replayed by the engine BEFORE edits. */
   readonly structuralOps?: readonly BrowserSheetStructuralOps[]
+  /**
+   * Per-sheet page-setup states (freeze panes, …). Replayed by the engine
+   * AFTER structural ops and edits. Only `frozenRows`/`frozenColumns` are
+   * emitted by the web shell today.
+   */
+  readonly pageSetupStates?: readonly BrowserSheetPageSetupState[]
   readonly [key: string]: unknown
 }
 

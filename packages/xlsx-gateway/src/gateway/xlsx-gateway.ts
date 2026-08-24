@@ -419,6 +419,7 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
       ...(presentation.colWidths && Object.keys(presentation.colWidths).length > 0
         ? { colWidths: presentation.colWidths }
         : {}),
+      ...(presentation.freeze ? { freeze: presentation.freeze } : {}),
     })
     sheetNamesById[id] = decodedName
   }
@@ -444,6 +445,7 @@ function parseWorksheetPresentation(
   merges: readonly string[]
   rowHeights: Readonly<Record<string, number>>
   colWidths: Readonly<Record<string, number>>
+  freeze: { frozenRows: number; frozenColumns: number } | undefined
 } {
   const styles: Record<string, CellFormatState> = {}
   if (styleReader) {
@@ -492,7 +494,38 @@ function parseWorksheetPresentation(
       colWidths[columnLabel(column)] = px
     }
   }
-  return { styles, merges, rowHeights, colWidths }
+  const freeze = parseFrozenPane(worksheetXml)
+  return { styles, merges, rowHeights, colWidths, freeze }
+}
+
+/**
+ * Parse the frozen-pane state from a worksheet's <sheetView><pane>.
+ *
+ * The OOXML <pane> element carries:
+ *   - xSplit: number of frozen columns (0 when absent)
+ *   - ySplit: number of frozen rows    (0 when absent)
+ *   - state: "frozen" | "frozenSplit" | "split" (only "frozen" counts)
+ *   - topLeftCell: the first scrollable cell (e.g. "A4" for 3 frozen rows)
+ *
+ * Only a pane with state="frozen" represents a real freeze. The engine's
+ * applyPageSetupState writes the same shape (xlsx-freeze.test.ts), so this
+ * parser is the read-side counterpart. Returns undefined when no frozen
+ * pane is present (so the WorksheetState stays minimal).
+ */
+function parseFrozenPane(
+  worksheetXml: string,
+): { frozenRows: number; frozenColumns: number } | undefined {
+  const paneMatch = /<pane\b([^>]*)\/?>/.exec(worksheetXml)
+  if (!paneMatch) return undefined
+  const attrs = paneMatch[1] ?? ''
+  const state = readXmlAttribute(attrs, 'state')
+  if (state !== 'frozen' && state !== 'frozenSplit') return undefined
+  const ySplit = Number(readXmlAttribute(attrs, 'ySplit') ?? '0')
+  const xSplit = Number(readXmlAttribute(attrs, 'xSplit') ?? '0')
+  const frozenRows = Number.isInteger(ySplit) && ySplit > 0 ? ySplit : 0
+  const frozenColumns = Number.isInteger(xSplit) && xSplit > 0 ? xSplit : 0
+  if (frozenRows === 0 && frozenColumns === 0) return undefined
+  return { frozenRows, frozenColumns }
 }
 
 /** 1-based column index → A1 column label (1 → "A", 27 → "AA"). */

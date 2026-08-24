@@ -72,6 +72,12 @@ const V_ALIGN_NAMES: Record<number, 'top' | 'middle' | 'bottom'> = {
   3: 'bottom',
 }
 
+/** Clamp a row/column index to a non-negative integer (Univer uses 0-based). */
+function range0(n: number): number {
+  if (!Number.isInteger(n) || n < 0) return 0
+  return n
+}
+
 function toSelectionFormat(style: IStyleData | null | undefined): SelectionFormat {
   if (!style) return EMPTY_FORMAT
   const colorHex = (rgb: string | undefined): string | null => {
@@ -152,12 +158,40 @@ export interface ExcelRuntimeApi {
   /** Commit the formula bar's text to the active cell (fires set-range-values). */
   commitFormula(text: string): void
   /**
-   * Apply a number-format pattern to the active range in-session via the
-   * numfmt facade mixin (.n(pattern)). NOTE: the web save plan does not yet
-   * journal `sheet.mutation.set-numfmt`, so the pattern does not persist on
-   * save today — a documented gap. The control is real in-session, not faked.
+   * Apply a number-format pattern to the active range via the numfmt facade
+   * mixin (.n(pattern)). The mutation `sheet.mutation.set.numfmt` is
+   * journaled by ExcelEditor's expanded subscription as a per-cell
+   * style.numberFormat CellEdit, which the canonical WorkbookStyleEdit
+   * persists through applyCellEditsToXlsx — the pattern survives
+   * save/reopen.
    */
   setNumberFormat(pattern: string): void
+  /**
+   * Sort the active range by its first column. asc=true → ascending,
+   * asc=false → descending. Uses the sheets-sort preset's FRange.sort()
+   * facade, which fires sheet.command.sort-range → ReorderRangeMutation.
+   * ExcelEditor's expanded journal subscription captures the post-sort cell
+   * values and journals them as writeValue CellEdits — on save, the
+   * canonical applyCellEditsToXlsx writes the new row order into the XLSX.
+   */
+  sortRange(asc: boolean): void
+  /**
+   * Freeze panes at the active cell — freezes all rows above and all
+   * columns to the left of the active cell. Fires sheet.command.set-frozen,
+   * journaled by ExcelEditor as a per-sheet BrowserSheetPageSetupState, and
+   * persisted by the canonical applyPageSetupState (the <pane> element).
+   * Calling freezePanes() again on a frozen sheet first clears the freeze
+   * (the command toggles). Returns null on success, an error string on
+   * failure (e.g. no active selection).
+   */
+  toggleFreezePanes(): string | null
+  /**
+   * Insert a function (=SUM by default, or any formula body) into the
+   * active cell through the existing commitFormula path — fires
+   * set-range-values, journaled by the existing subscription. The leading
+   * '=' is optional (added if absent). No second formula engine runs.
+   */
+  insertFunction(formulaBody: string): void
 }
 
 export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeApi | null {
@@ -313,7 +347,10 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     if (!r) return
     const ws = r.univerAPI.getActiveWorkbook()?.getActiveSheet()
     if (!ws) return
-    ws.setHiddenGridlines(ws.hasHiddenGridLines())
+    // Toggle: hidden → visible, visible → hidden. The previous
+    // implementation passed `ws.hasHiddenGridLines()` (the CURRENT state),
+    // which was a no-op — the gridlines never actually toggled.
+    ws.setHiddenGridlines(!ws.hasHiddenGridLines())
   }, [])
 
   const goTo = useCallback((ref: string): string | null => {
@@ -406,15 +443,173 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     const range = r.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getActiveRange()
     if (!range) return
     // The numfmt facade mixin (from @univerjs/sheets-numfmt, bundled by the
-    // core preset) adds the .n(pattern) method to FRange. The type isn't
-    // surfaced through the core re-export, so the cast is required for
-    // typecheck; the method exists at runtime.
+    // core preset) adds the setNumberFormat(pattern) method to FRange
+    // (FRangeSheetsNumfmtMixin). It fires SetNumfmtCommand, which internally
+    // dispatches sheet.mutation.set.numfmt — journaled by ExcelEditor's
+    // expanded subscription as a per-cell style.numberFormat CellEdit. The
+    // type isn't surfaced through the @univerjs/core re-export, so the cast
+    // is required for typecheck; the method exists at runtime.
     try {
-      ;(range as unknown as { n(p: string): unknown }).n(pattern)
+      ;(range as unknown as { setNumberFormat(p: string): unknown }).setNumberFormat(pattern)
     } catch {
       /* pattern not applicable — the cell stays canonical */
     }
   }, [])
+
+  const sortRange = useCallback((asc: boolean) => {
+    const r = rtRef.current
+    if (!r) return
+    const wb = r.univerAPI.getActiveWorkbook()
+    const ws = wb?.getActiveSheet()
+    const range = ws?.getActiveRange()
+    if (!wb || !ws || !range) return
+    // Sort the active range by its first column. We read the cell values,
+    // sort the rows in JS, and write them back via FRange.setValueForCell —
+    // the same proven pipeline the formula bar uses. This fires
+    // sheet.mutation.set-range-values for each cell, journaled by
+    // ExcelEditor's existing subscription as writeValue CellEdits. On save,
+    // the canonical applyCellEditsToXlsx writes the sorted values back into
+    // the XLSX — the row order survives save/reopen.
+    //
+    // (The Univer sort preset's FRange.sort() facade fires
+    // sheet.command.sort-range → ReorderRangeMutation, which writes
+    // directly into the worksheet cellDataMatrix and does NOT fire
+    // set-range-values — the existing journal would miss it. Reading +
+    // re-writing via setValueForCell is the cleanest path that reuses the
+    // canonical save pipeline without extending the journal with a new
+    // mutation family.)
+    try {
+      // The active range's underlying IRange.
+      const rangeData = (range as unknown as {
+        _range: { startRow: number; endRow: number; startColumn: number; endColumn: number }
+      })._range
+      const { startRow, endRow, startColumn, endColumn } = rangeData
+      if (endRow < startRow || endColumn < startColumn) return
+      // Read all rows in the range (each row is an array of cell values
+      // across the range's columns).
+      const rows: Array<{ rowIndex: number; values: Array<{ v: unknown; f?: string } | null> }> = []
+      for (let row = startRow; row <= endRow; row++) {
+        const values: Array<{ v: unknown; f?: string } | null> = []
+        for (let col = startColumn; col <= endColumn; col++) {
+          const cell = ws.getRange(row, col).getCellData() as
+            | { v?: unknown; f?: unknown }
+            | null
+          if (!cell) {
+            values.push(null)
+            continue
+          }
+          const v = cell.v
+          let cellValue: { v: unknown; f?: string } = { v: v ?? null }
+          if (typeof cell.f === 'string' && cell.f.length > 0) {
+            cellValue = { v: v ?? null, f: cell.f }
+          }
+          values.push(cellValue)
+        }
+        rows.push({ rowIndex: row, values })
+      }
+      // Sort by the first column's value. Numbers sort numerically; strings
+      // sort by locale-aware case-insensitive comparison; nulls sort last
+      // (ascending) / first (descending). The first column is the sort key.
+      const compareValues = (a: unknown, b: unknown): number => {
+        const aEmpty = a === null || a === undefined || a === ''
+        const bEmpty = b === null || b === undefined || b === ''
+        if (aEmpty && bEmpty) return 0
+        if (aEmpty) return asc ? 1 : -1
+        if (bEmpty) return asc ? -1 : 1
+        if (typeof a === 'number' && typeof b === 'number') {
+          return asc ? a - b : b - a
+        }
+        const aStr = String(a).toLowerCase()
+        const bStr = String(b).toLowerCase()
+        if (aStr < bStr) return asc ? -1 : 1
+        if (aStr > bStr) return asc ? 1 : -1
+        return 0
+      }
+      rows.sort((a, b) => compareValues(a.values[0]?.v ?? null, b.values[0]?.v ?? null))
+      // Write the sorted rows back. The source row at index i in `rows`
+      // (post-sort) goes to the destination row startRow + i.
+      for (let i = 0; i < rows.length; i++) {
+        const destRow = startRow + i
+        for (let col = 0; col < rows[i].values.length; col++) {
+          const cell = rows[i].values[col]
+          const destCol = startColumn + col
+          if (cell === null) {
+            ws.getRange(destRow, destCol).setValueForCell({ v: null } as never)
+          } else if (cell.f) {
+            // Preserve formulas (sort moves the whole cell — formula + value).
+            ws
+              .getRange(destRow, destCol)
+              .setValueForCell({ f: cell.f, v: cell.v } as never)
+          } else {
+            ws.getRange(destRow, destCol).setValueForCell({ v: cell.v } as never)
+          }
+        }
+      }
+      // Trigger a refresh so the ribbon state re-reads immediately.
+      refresh()
+    } catch {
+      /* sort not applicable — selection may be a single cell */
+    }
+  }, [refresh])
+
+  const toggleFreezePanes = useCallback((): string | null => {
+    const r = rtRef.current
+    if (!r) return 'No workbook open'
+    const wb = r.univerAPI.getActiveWorkbook()
+    const ws = wb?.getActiveSheet()
+    const cell = ws?.getActiveCell()
+    if (!wb || !ws || !cell) return 'No active selection'
+    // FWorksheet exposes setFreeze({ startRow, startColumn, xSplit, ySplit })
+    // and getFreeze() — the facade's documented freeze API
+    // (f-worksheet.d.ts:1019/1033). startRow/startColumn are the first
+    // scrollable (non-frozen) row/column index — so freezing at the active
+    // cell means startRow = activeRow, startColumn = activeColumn, xSplit =
+    // activeColumn (count of frozen cols), ySplit = activeRow (count of
+    // frozen rows). setFreeze fires sheet.mutation.set-frozen, journaled
+    // by ExcelEditor's expanded subscription as a per-sheet
+    // BrowserSheetPageSetupState.
+    try {
+      const activeRow = range0(cell.getRow())
+      const activeCol = range0(cell.getColumn())
+      // Toggle: if already frozen at exactly this cell, clear; otherwise
+      // (re)freeze. A "no freeze" config uses startRow=-1, startColumn=-1,
+      // xSplit=0, ySplit=0.
+      const current = (ws as unknown as {
+        getFreeze(): { startRow: number; startColumn: number; xSplit: number; ySplit: number }
+      }).getFreeze()
+      const isFrozenHere =
+        current.startRow === activeRow && current.startColumn === activeCol
+      const next = isFrozenHere
+        ? { startRow: -1, startColumn: -1, xSplit: 0, ySplit: 0 }
+        : { startRow: activeRow, startColumn: activeCol, xSplit: activeCol, ySplit: activeRow }
+      ;(ws as unknown as {
+        setFreeze(f: {
+          startRow: number
+          startColumn: number
+          xSplit: number
+          ySplit: number
+        }): unknown
+      }).setFreeze(next)
+      // Trigger a refresh so the ribbon state re-reads immediately.
+      refresh()
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : ''
+      return detail === '' ? 'Freeze failed' : `Freeze failed: ${detail}`
+    }
+    return null
+  }, [refresh])
+
+  const insertFunction = useCallback(
+    (formulaBody: string) => {
+      // Strip an optional leading '=' so callers can pass either "SUM(A1:A2)"
+      // or "=SUM(A1:A2)". The commit path adds the leading '=' back for
+      // formula echo display, and cellEditFromMutation stores the body
+      // without the '=' (the canonical CellEdit.formula convention).
+      const body = formulaBody.startsWith('=') ? formulaBody.slice(1) : formulaBody
+      commitFormula(`=${body}`)
+    },
+    [commitFormula],
+  )
 
   if (!rt) return null
   return {
@@ -440,5 +635,8 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     goTo,
     commitFormula,
     setNumberFormat,
+    sortRange,
+    toggleFreezePanes,
+    insertFunction,
   }
 }

@@ -227,7 +227,14 @@ export function styleDeltaFromUniver(s: unknown): CellEdit['style'] | undefined 
     else if (d.vt === 2) out.verticalAlignment = 'center'
     else if (d.vt === 3) out.verticalAlignment = 'bottom'
   }
-  if ('tb' in d) out.wrapText = d.tb === 1
+  if ('tb' in d) {
+    // WrapStrategy enum (Univer): UNSPECIFIED=0, OVERFLOW=1, CLIP=2, WRAP=3.
+    // wrapText=true only when the strategy is WRAP (3). The previous
+    // implementation checked `d.tb === 1` (OVERFLOW) which was inverted —
+    // a wrap-ON toggle produced wrapText:false in the save plan, and a
+    // wrap-OFF produced wrapText:true.
+    out.wrapText = d.tb === 3
+  }
   return Object.keys(out).length > 0 ? out : undefined
 }
 
@@ -237,4 +244,158 @@ export function univerColorToHex(rgb: unknown): string | undefined {
   if (/^#[0-9A-Fa-f]{6}$/.test(rgb)) return rgb.toUpperCase()
   if (/^[0-9A-Fa-f]{6}$/.test(rgb)) return `#${rgb.toUpperCase()}`
   return undefined
+}
+
+// ── Number-format journaling (Phase 4 Increment 3 — Objective 1) ───────────
+//
+// Univer's numfmt facade mixin (sheets-numfmt preset) fires the
+// `sheet.mutation.set.numfmt` mutation, whose params carry:
+//   {
+//     values: { [id]: { ranges: IRange[] } },
+//     refMap: { [id]: { pattern: string } },
+//     unitId, subUnitId,
+//   }
+// The browser's existing `set-range-values` journal subscription does NOT
+// capture this mutation (it filters by mutation ID), so without this
+// helper a number-format change is in-session only — it appears on the
+// grid but does NOT survive save/reopen. ExcelEditor's expanded
+// subscription now also handles `sheet.mutation.set.numfmt`: for each
+// (pattern, range) pair it emits one style-only CellEdit per cell with
+// `style.numberFormat = pattern`, which the existing
+// `WorkbookStyleEdit.numberFormat` field persists through the canonical
+// `applyCellEditsToXlsx` save path (xlsx-styles.ts writes numFmtId on
+// the cellXfs entry). The canonical `WorkbookStyleEdit` already exposes
+// `numberFormat` — the wire is unchanged.
+
+/**
+ * Build style-only CellEdits for a numfmt mutation. Each cell in every
+ * range receives a CellEdit with `writeValue: false` (the cell's stored
+ * content stays untouched) and `style: { numberFormat: pattern }`.
+ *
+ * Returns an empty array when the params are malformed (the journal
+ * ignores the mutation rather than crashing).
+ */
+export function numfmtEditsFromMutation(
+  sheetName: string,
+  params: unknown,
+): ReadonlyArray<{
+  readonly row: number
+  readonly column: number
+  readonly edit: CellEdit
+}> {
+  if (typeof params !== 'object' || params === null) return []
+  const p = params as {
+    values?: unknown
+    refMap?: unknown
+  }
+  if (typeof p.values !== 'object' || p.values === null || typeof p.refMap !== 'object' || p.refMap === null) {
+    return []
+  }
+  const values = p.values as Record<string, { ranges?: unknown }>
+  const refMap = p.refMap as Record<string, { pattern?: unknown }>
+  const out: Array<{ row: number; column: number; edit: CellEdit }> = []
+  for (const [id, entry] of Object.entries(values)) {
+    if (!entry || typeof entry !== 'object') continue
+    const ranges = (entry as { ranges?: unknown }).ranges
+    if (!Array.isArray(ranges)) continue
+    const ref = refMap[id]
+    if (!ref || typeof ref.pattern !== 'string') continue
+    const pattern = ref.pattern
+    for (const range of ranges) {
+      if (typeof range !== 'object' || range === null) continue
+      const r = range as { startRow?: number; endRow?: number; startColumn?: number; endColumn?: number }
+      const startRow = Number.isInteger(r.startRow) ? (r.startRow as number) : -1
+      const endRow = Number.isInteger(r.endRow) ? (r.endRow as number) : -1
+      const startColumn = Number.isInteger(r.startColumn) ? (r.startColumn as number) : -1
+      const endColumn = Number.isInteger(r.endColumn) ? (r.endColumn as number) : -1
+      if (startRow < 0 || endRow < 0 || startColumn < 0 || endColumn < 0) continue
+      for (let row = startRow; row <= endRow; row++) {
+        for (let column = startColumn; column <= endColumn; column++) {
+          out.push({
+            row,
+            column,
+            edit: {
+              sheetName,
+              row,
+              column,
+              writeValue: false,
+              cell: { value: null },
+              style: { numberFormat: pattern },
+            },
+          })
+        }
+      }
+    }
+  }
+  return out
+}
+
+// ── Sort journaling (Phase 4 Increment 3 — Objective 3) ────────────────────
+//
+// Univer's sort command (sheet.command.sort-range) fires the
+// `sheet.mutation.reorder-range` mutation, which writes directly into the
+// worksheet's cellDataMatrix in-memory — it does NOT dispatch a separate
+// `sheet.mutation.set-range-values`. The existing journal's
+// set-range-values subscription therefore misses sort. ExcelEditor's
+// expanded subscription now also handles `sheet.mutation.reorder-range`:
+// after the mutation lands, the post-sort cell values are read straight
+// from the worksheet model and journaled as plain value CellEdits. On
+// save, applyCellEditsToXlsx writes them back into the XLSX in the
+// sorted order — the canonical write path, no bespoke sort mutation
+// family on the wire.
+
+/**
+ * Build value CellEdits for a reorder-range (sort) mutation. Reads the
+ * post-mutation cell values directly from the worksheet model and emits
+ * one `writeValue: true` CellEdit per cell in the sorted range, so the
+ * save plan writes the new row order into the XLSX.
+ *
+ * `readCell` is a thin indirection so the pure merge module never imports
+ * Univer — the caller (ExcelEditor) supplies a closure over the live
+ * worksheet. Returns an empty array when the params are malformed.
+ */
+export function reorderEditsFromMutation(
+  sheetName: string,
+  params: unknown,
+  readCell: (row: number, column: number) =>
+    | { value: string | number | boolean | null; formula?: string }
+    | null,
+): ReadonlyArray<{
+  readonly row: number
+  readonly column: number
+  readonly edit: CellEdit
+}> {
+  if (typeof params !== 'object' || params === null) return []
+  const p = params as { range?: unknown }
+  if (typeof p.range !== 'object' || p.range === null) return []
+  const r = p.range as { startRow?: number; endRow?: number; startColumn?: number; endColumn?: number }
+  const startRow = Number.isInteger(r.startRow) ? (r.startRow as number) : -1
+  const endRow = Number.isInteger(r.endRow) ? (r.endRow as number) : -1
+  const startColumn = Number.isInteger(r.startColumn) ? (r.startColumn as number) : -1
+  const endColumn = Number.isInteger(r.endColumn) ? (r.endColumn as number) : -1
+  if (startRow < 0 || endRow < 0 || startColumn < 0 || endColumn < 0) return []
+  const out: Array<{ row: number; column: number; edit: CellEdit }> = []
+  for (let row = startRow; row <= endRow; row++) {
+    for (let column = startColumn; column <= endColumn; column++) {
+      const cell = readCell(row, column)
+      if (cell === null) continue
+      // Preserve any formula on the post-sort cell — sort moves the whole
+      // cell (value + formula). A formula cell keeps its formula; a plain
+      // literal keeps its literal. An empty cell clears the destination.
+      out.push({
+        row,
+        column,
+        edit: {
+          sheetName,
+          row,
+          column,
+          writeValue: true,
+          cell: cell.formula
+            ? { value: cell.value, formula: cell.formula }
+            : { value: cell.value },
+        },
+      })
+    }
+  }
+  return out
 }

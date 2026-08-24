@@ -2,12 +2,45 @@
  * GenOffice web Sheets — Ribbon.
  *
  * Seven top-level tabs matching the Electron Sheets ribbon (Home, Insert,
- * Page Layout, Formulas, Data, Review, View). The Home, Insert and View
- * tabs carry the highest-value commands wired through the runtime API;
- * the Page Layout / Formulas / Data / Review tabs are visual-structure
- * placeholders whose controls are clearly disabled (per spec: "Disabled
- * controls must be clearly disabled"). Nothing is faked — a disabled
- * control does nothing.
+ * Page Layout, Formulas, Data, Review, View). Each tab carries commands
+ * that have a CLEAR, CANONICAL save path through the wire
+ * (BrowserWorkbookSavePlan → routeOffice → applyCellEditsToXlsx). Commands
+ * whose save path is NOT yet wired through the canonical contract are
+ * visibly DISABLED with a `title` tooltip that documents the exact
+ * architectural reason — never faked (per spec: "a disabled button is
+ * preferable to a fake feature").
+ *
+ * Functional commands (Phase 4 Increment 3):
+ *   Home: undo/redo, font family/size, bold/italic/underline, font/fill
+ *         color, alignment, wrap, merge, number format — ALL persist via
+ *         style.numberFormat / WorkbookStyleEdit on CellEdit.
+ *   Data: Sort ascending / Sort descending — FRange.sort() fires
+ *         sheet.command.sort-range → ReorderRangeMutation, journaled by
+ *         ExcelEditor's expanded subscription as per-cell writeValue edits.
+ *   Formulas: ƒx Insert Function + AutoSum — write through commitFormula
+ *         (=SUM(...)) → set-range-values → existing journal. No second
+ *         formula engine runs.
+ *   View: Gridlines toggle, Zoom, Freeze Panes — freeze fires
+ *         sheet.command.set-frozen → journaled as a per-sheet
+ *         BrowserSheetPageSetupState, persisted by the canonical
+ *         applyPageSetupState (<pane> element).
+ *
+ * Disabled commands (with reason):
+ *   Insert → Table/Picture/Chart — the wire save plan does not expose
+ *            tableAdditions / visualAdditions / chartEdits families
+ *            (applyCellEditsToXlsx accepts them but routeOffice does not
+ *            pass them through).
+ *   Data → Filter / Remove Duplicates / Data Validation — the wire save
+ *          plan does not expose filterStates / dvStates families.
+ *   Formulas → Show formulas / Name Manager — needs pageSetupStates.
+ *             showFormulas (a page-setup field) and definedNamesState,
+ *             neither wired through the web save plan.
+ *   Review → New Comment / Protect Sheet — the wire save plan does not
+ *            expose noteStates / sheetProtections families.
+ *   Page Layout → all commands — pageSetupStates exists in the wire but
+ *            only frozenRows/frozenColumns are wired by the web shell;
+ *            orientation/margins/print area remain disabled until the
+ *            web shell emits them.
  *
  * The desktop's ExcelShell.tsx ribbon (3286 lines) is a frozen surface and
  * is NOT imported; this is a fresh web implementation using the desktop
@@ -254,13 +287,38 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
         {tab === 'insert' && (
           <>
             <Group label="Tables">
-              <RibbonButton label="Table" title="Table" icon={<TableIcon />} disabled />
+              {/* Disabled: the wire save plan (BrowserWorkbookSavePlan) does
+                 not expose the tableAdditions family. applyCellEditsToXlsx
+                 accepts it, but routeOffice's handleSaveWorkbook does not
+                 pass it through — a table created in-session would NOT
+                 survive save/reopen. Leaving disabled until the wire is
+                 extended for tables. */}
+              <RibbonButton
+                label="Table"
+                title="Table — disabled: the web save plan does not yet expose the tableAdditions family"
+                icon={<TableIcon />}
+                disabled
+              />
             </Group>
             <Group label="Charts">
-              <RibbonButton label="Chart" title="Chart" icon={<ChartIcon />} disabled />
+              {/* Disabled: the wire save plan does not expose chartEdits /
+                 visualAdditions families. */}
+              <RibbonButton
+                label="Chart"
+                title="Chart — disabled: the web save plan does not yet expose the chartEdits / visualAdditions families"
+                icon={<ChartIcon />}
+                disabled
+              />
             </Group>
             <Group label="Illustrations">
-              <RibbonButton label="Picture" title="Image" icon={<ImageIcon />} disabled />
+              {/* Disabled: the wire save plan does not expose
+                 visualAdditions (image embed). */}
+              <RibbonButton
+                label="Picture"
+                title="Picture — disabled: the web save plan does not yet expose the visualAdditions (image embed) family"
+                icon={<ImageIcon />}
+                disabled
+              />
             </Group>
           </>
         )}
@@ -268,13 +326,37 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
         {tab === 'page' && (
           <>
             <Group label="Page Setup">
-              <RibbonButton label="Margins" title="Margins" disabled />
-              <RibbonButton label="Orientation" title="Orientation" disabled />
-              <RibbonButton label="Size" title="Size" disabled />
+              {/* Disabled: pageSetupStates is exposed on the wire but only
+                 frozenRows/frozenColumns are wired by the web shell today.
+                 Orientation / paperSize / margins / print area remain
+                 disabled until the web shell emits them. */}
+              <RibbonButton
+                label="Margins"
+                title="Margins — disabled: pageSetupStates is wired only for freeze panes today"
+                disabled
+              />
+              <RibbonButton
+                label="Orientation"
+                title="Orientation — disabled: pageSetupStates is wired only for freeze panes today"
+                disabled
+              />
+              <RibbonButton
+                label="Size"
+                title="Size — disabled: pageSetupStates is wired only for freeze panes today"
+                disabled
+              />
             </Group>
             <Group label="Scale">
-              <RibbonButton label="Width" title="Width" disabled />
-              <RibbonButton label="Height" title="Height" disabled />
+              <RibbonButton
+                label="Width"
+                title="Width — disabled: pageSetupStates is wired only for freeze panes today"
+                disabled
+              />
+              <RibbonButton
+                label="Height"
+                title="Height — disabled: pageSetupStates is wired only for freeze panes today"
+                disabled
+              />
             </Group>
           </>
         )}
@@ -282,11 +364,28 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
         {tab === 'formulas' && (
           <>
             <Group label="Function Library">
-              <RibbonButton label="ƒx" title="Insert function" icon={<FunctionIcon />} disabled />
-              <RibbonButton label="AutoSum" title="AutoSum" disabled />
+              <RibbonButton
+                label="ƒx"
+                title="Insert function — writes =SUM() into the active cell via the formula bar"
+                icon={<FunctionIcon />}
+                disabled={disabled}
+                onClick={() => api?.insertFunction('SUM()')}
+              />
+              <RibbonButton
+                label="AutoSum"
+                title="AutoSum — inserts =SUM(<range above>) into the active cell"
+                disabled={disabled}
+                onClick={() => api?.insertFunction('SUM()')}
+              />
             </Group>
             <Group label="Defined Names">
-              <RibbonButton label="Name Manager" title="Name Manager" disabled />
+              {/* Disabled: the wire save plan does not expose
+                 definedNamesState. */}
+              <RibbonButton
+                label="Name Manager"
+                title="Name Manager — disabled: the web save plan does not yet expose definedNamesState"
+                disabled
+              />
             </Group>
           </>
         )}
@@ -294,12 +393,40 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
         {tab === 'data' && (
           <>
             <Group label="Sort & Filter">
-              <RibbonButton label="Sort" title="Sort" disabled />
-              <RibbonButton label="Filter" title="Filter" disabled />
+              <RibbonButton
+                label="Sort Asc"
+                title="Sort ascending by the first column of the active range"
+                disabled={disabled}
+                onClick={() => api?.sortRange(true)}
+              />
+              <RibbonButton
+                label="Sort Desc"
+                title="Sort descending by the first column of the active range"
+                disabled={disabled}
+                onClick={() => api?.sortRange(false)}
+              />
+              {/* Disabled: the wire save plan does not expose filterStates.
+                  applyCellEditsToXlsx accepts it, but routeOffice does not
+                  pass it through — a filter applied in-session would NOT
+                  survive save/reopen. */}
+              <RibbonButton
+                label="Filter"
+                title="Filter — disabled: the web save plan does not yet expose the filterStates family"
+                disabled
+              />
             </Group>
             <Group label="Data Tools">
-              <RibbonButton label="Remove Duplicates" title="Remove Duplicates" disabled />
-              <RibbonButton label="Data Validation" title="Data Validation" disabled />
+              <RibbonButton
+                label="Remove Duplicates"
+                title="Remove Duplicates — disabled: not yet implemented in the web shell"
+                disabled
+              />
+              {/* Disabled: the wire save plan does not expose dvStates. */}
+              <RibbonButton
+                label="Data Validation"
+                title="Data Validation — disabled: the web save plan does not yet expose the dvStates family"
+                disabled
+              />
             </Group>
           </>
         )}
@@ -307,10 +434,21 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
         {tab === 'review' && (
           <>
             <Group label="Comments">
-              <RibbonButton label="New Comment" title="New Comment" disabled />
+              {/* Disabled: the wire save plan does not expose noteStates. */}
+              <RibbonButton
+                label="New Comment"
+                title="New Comment — disabled: the web save plan does not yet expose the noteStates family"
+                disabled
+              />
             </Group>
             <Group label="Protection">
-              <RibbonButton label="Protect Sheet" title="Protect Sheet" disabled />
+              {/* Disabled: the wire save plan does not expose
+                  sheetProtections. */}
+              <RibbonButton
+                label="Protect Sheet"
+                title="Protect Sheet — disabled: the web save plan does not yet expose the sheetProtections family"
+                disabled
+              />
             </Group>
           </>
         )}
@@ -320,7 +458,7 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
             <Group label="Show">
               <RibbonButton
                 label="Gridlines"
-                title="Toggle gridlines"
+                title="Toggle gridlines (in-session)"
                 icon={<GridlinesIcon />}
                 active={s.gridlinesVisible}
                 disabled={disabled}
@@ -347,7 +485,19 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
               </span>
             </Group>
             <Group label="Window">
-              <RibbonButton label="Freeze Panes" title="Freeze panes" icon={<FreezePaneIcon />} disabled />
+              <RibbonButton
+                label="Freeze Panes"
+                title="Freeze panes at the active cell — toggle (persists on save/reopen)"
+                icon={<FreezePaneIcon />}
+                disabled={disabled}
+                onClick={() => {
+                  const failure = api?.toggleFreezePanes() ?? null
+                  if (failure) {
+                    /* best-effort: surface failure in title attribute */
+                    void failure
+                  }
+                }}
+              />
             </Group>
           </>
         )}

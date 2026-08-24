@@ -1,6 +1,52 @@
 import type { WorkbookStyleEdit } from '../types.js'
 import type { CellFormatState } from '../domain/workbook.types.js'
 
+/**
+ * Built-in (ECMA-376 §18.8.30) numFmtId → formatCode map. numFmtIds 0..163
+ * are reserved; 164+ are user-defined and live in the file's <numFmts>.
+ * The StylesheetReader resolves a cellXfs numFmtId to its pattern through
+ * this map (when the id is built-in) or through the file's <numFmts>
+ * (when the id is user-defined). Only the most common built-ins are listed
+ * — anything else falls through to "no numberFormat" (the file's own XML
+ * keeps the format regardless).
+ */
+const BUILTIN_NUMFMTS: ReadonlyMap<number, string> = new Map<number, string>([
+  [1, '0'],
+  [2, '0.00'],
+  [3, '#,##0'],
+  [4, '#,##0.00'],
+  [5, '$#,##0_);($#,##0)'],
+  [6, '$#,##0_);[Red]($#,##0)'],
+  [7, '$#,##0.00_);($#,##0.00)'],
+  [8, '$#,##0.00_);[Red]($#,##0.00)'],
+  [9, '0%'],
+  [10, '0.00%'],
+  [11, '0.00E+00'],
+  [12, '# ?/?'],
+  [13, '# ??/??'],
+  [14, 'mm-dd-yy'],
+  [15, 'd-mmm-yy'],
+  [16, 'd-mmm'],
+  [17, 'mmm-yy'],
+  [18, 'h:mm AM/PM'],
+  [19, 'h:mm:ss AM/PM'],
+  [20, 'h:mm'],
+  [21, 'h:mm:ss'],
+  [22, 'm/d/yy h:mm'],
+  [37, '#,##0_);(#,##0)'],
+  [38, '#,##0_);[Red](#,##0)'],
+  [39, '#,##0.00_);(#,##0.00)'],
+  [40, '#,##0.00_);[Red](#,##0.00)'],
+  [41, '_(* #,##0_);_(* (#,##0);_(* "-"_);_(@_)'],
+  [42, '_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)'],
+  [44, '_($* #,##0_);_($* (#,##0);_($* "-"_);_(@_)'],
+  [45, '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'],
+  [46, '[$-404]e-m-d'],
+  [47, 'mm:ss'],
+  [48, '[h]:mm:ss'],
+  [49, 'mmss.0'],
+])
+
 /// Copy-on-write editor for xl/styles.xml. Existing entries are never
 /// modified — every changed cell gets a new cellXfs entry (deduped) derived
 /// from its current one, so untouched cells keep their exact formatting.
@@ -470,6 +516,16 @@ export class StylesheetReader {
   private readonly fonts: readonly string[]
   private readonly fills: readonly string[]
   private readonly cellXfs: readonly string[]
+  /**
+   * numFmtId → formatCode map, parsed from the styles.xml <numFmts> section.
+   * Built once at construction time. Used by resolve() to attach a
+   * numberFormat pattern to CellFormatState when the cellXfs entry references
+   * a custom numFmt (numFmtId ≥ 164, the threshold above which user-defined
+   * formats live). Built-in numFmtIds (0..163) are mapped via BUILTIN_NUMFMTS
+   * so common formats (General, 0, 0.00, #,##0, $#,##0.00, …) survive
+   * round-trip without needing a <numFmt> entry.
+   */
+  private readonly numFmtByCode: ReadonlyMap<number, string>
   private readonly cache = new Map<number, CellFormatState | undefined>()
 
   constructor(stylesXml: string) {
@@ -479,6 +535,15 @@ export class StylesheetReader {
     this.fonts = fontsInner === null ? [] : extractElements(fontsInner, 'font')
     this.fills = fillsInner === null ? [] : extractElements(fillsInner, 'fill')
     this.cellXfs = cellXfsInner === null ? [] : extractElements(cellXfsInner, 'xf')
+    const numFmtsInner = sectionInner(stylesXml, 'numFmts')
+    const numFmtEntries = numFmtsInner === null ? [] : extractElements(numFmtsInner, 'numFmt')
+    const byCode = new Map<number, string>()
+    for (const entry of numFmtEntries) {
+      const id = Number(readAttribute(entry, 'numFmtId') ?? 'NaN')
+      const code = readAttribute(entry, 'formatCode')
+      if (Number.isInteger(id) && code) byCode.set(id, decodeXmlText(code))
+    }
+    this.numFmtByCode = byCode
   }
 
   /**
@@ -509,7 +574,21 @@ export class StylesheetReader {
       horizontalAlign?: 'left' | 'center' | 'right'
       verticalAlign?: 'top' | 'center' | 'bottom'
       wrapText?: boolean
+      numberFormat?: string
     } = {}
+    // Number format — read the cellXfs numFmtId and resolve to a pattern.
+    // Custom numFmtIds (≥164) live in <numFmts>; built-in ids (0..163) are
+    // mapped via BUILTIN_NUMFMTS. numFmtId 0 ("General") is skipped so a
+    // default cell doesn't claim an explicit numberFormat.
+    const numFmtIdAttr = readAttribute(xf, 'numFmtId')
+    if (numFmtIdAttr !== undefined) {
+      const id = Number(numFmtIdAttr)
+      if (Number.isInteger(id) && id > 0) {
+        const pattern =
+          this.numFmtByCode.get(id) ?? BUILTIN_NUMFMTS.get(id)
+        if (pattern) format.numberFormat = pattern
+      }
+    }
     // Font-derived marks
     const fontId = Number(readAttribute(xf, 'fontId') ?? 0)
     const font = this.fonts[fontId] ?? ''

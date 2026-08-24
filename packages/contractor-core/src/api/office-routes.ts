@@ -28,6 +28,7 @@ import {
   readBasicWorkbook,
   type CellEdit,
   type EditableBorderStyle,
+  type SheetPageSetupState,
   type SheetStructuralOps,
   type StructuralOp,
   type WorkbookSnapshot,
@@ -80,6 +81,14 @@ export interface BrowserWorkbookSavePlan {
    * browser's mutation-captured dirty map produces.
    */
   readonly structuralOps?: readonly SheetStructuralOps[]
+  /**
+   * Per-sheet page-setup states (freeze panes, …). The engine applies these
+   * AFTER structural ops and cell edits. Only `frozenRows`/`frozenColumns`
+   * are emitted by the web shell today; the underlying `SheetPageSetupState`
+   * carries the full page-setup model so future View commands can land here
+   * without a wire-breaking change.
+   */
+  readonly pageSetupStates?: readonly SheetPageSetupState[]
   // Extensibility seam — future mutation families land here as optional
   // readonly fields (chartEdits?, hyperlinkEdits?, …).
   // The route handler ignores unknown keys, so adding a field is a
@@ -1669,13 +1678,16 @@ function parseOpenWorkbookRequest(
  */
 // ── StructuralOp validation (row/column insert/delete) ──────────────────────
 
-const STRUCTURAL_KINDS = ['insert-rows', 'remove-rows', 'insert-cols', 'remove-cols'] as const
+const ROWCOL_STRUCTURAL_KINDS = ['insert-rows', 'remove-rows', 'insert-cols', 'remove-cols'] as const
+const MERGE_STRUCTURAL_KINDS = ['merge-cells', 'unmerge-cells'] as const
+const STRUCTURAL_KINDS = [...ROWCOL_STRUCTURAL_KINDS, ...MERGE_STRUCTURAL_KINDS]
 const MAX_STRUCTURAL_COUNT = 10_000
 
 /**
- * Validate a StructuralOp from the wire (the browser only emits
- * insert/remove row/column ops this increment). Malformed ops throw
- * OfficeValidationError → the existing 400 validation error shape.
+ * Validate a StructuralOp from the wire. The browser emits
+ * insert/remove row/column ops (with index/count) AND merge/unmerge ops
+ * (with range). Malformed ops throw OfficeValidationError → the existing
+ * 400 validation error shape.
  */
 function expectStructuralOp(value: unknown, field: string): StructuralOp {
   if (!isRecord(value)) {
@@ -1687,6 +1699,12 @@ function expectStructuralOp(value: unknown, field: string): StructuralOp {
       'validation',
       `${field}.kind must be one of: ${STRUCTURAL_KINDS.join(', ')}`,
     )
+  }
+  // merge-cells / unmerge-cells carry a range (not index/count). The
+  // canonical StructuralOp uses the same range shape as the wire.
+  if (kind === 'merge-cells' || kind === 'unmerge-cells') {
+    const range = expectStructuralRange(value.range, `${field}.range`)
+    return { kind, range } as unknown as StructuralOp
   }
   const index = expectNumber(value.index, `${field}.index`)
   if (!Number.isInteger(index) || index < 0 || index > 1_048_576) {
@@ -1702,7 +1720,35 @@ function expectStructuralOp(value: unknown, field: string): StructuralOp {
       `${field}.count must be an integer 1..${MAX_STRUCTURAL_COUNT}`,
     )
   }
-  return { kind: kind as (typeof STRUCTURAL_KINDS)[number], index, count }
+  return { kind: kind as (typeof ROWCOL_STRUCTURAL_KINDS)[number], index, count }
+}
+
+/** Validate a range (startRow/endRow/startColumn/endColumn, 0-based integers). */
+function expectStructuralRange(
+  value: unknown,
+  field: string,
+): { startRow: number; endRow: number; startColumn: number; endColumn: number } {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const startRow = expectNumber(value.startRow, `${field}.startRow`)
+  const endRow = expectNumber(value.endRow, `${field}.endRow`)
+  const startColumn = expectNumber(value.startColumn, `${field}.startColumn`)
+  const endColumn = expectNumber(value.endColumn, `${field}.endColumn`)
+  for (const [n, label] of [
+    [startRow, `${field}.startRow`],
+    [endRow, `${field}.endRow`],
+    [startColumn, `${field}.startColumn`],
+    [endColumn, `${field}.endColumn`],
+  ] as const) {
+    if (!Number.isInteger(n) || n < 0) {
+      throw new OfficeValidationError('validation', `${label} must be a non-negative integer`)
+    }
+  }
+  if (endRow < startRow || endColumn < startColumn) {
+    throw new OfficeValidationError('validation', `${field} end must be >= start`)
+  }
+  return { startRow, endRow, startColumn, endColumn }
 }
 
 function expectSheetStructuralOps(value: unknown, index: number): SheetStructuralOps {
@@ -1719,6 +1765,52 @@ function expectSheetStructuralOps(value: unknown, index: number): SheetStructura
   return { sheetName, ops }
 }
 
+/**
+ * Validate one per-sheet page-setup state from the wire. Only the
+ * `frozenRows` / `frozenColumns` fields are wired by the web shell today;
+ * the remaining optional SheetPageSetupState fields are accepted (and
+ * type-validated) so future View commands can land here without a
+ * wire-breaking change. Frozen-row/column counts are bounded by the
+ * OOXML maximum row/column counts.
+ */
+function expectSheetPageSetupState(value: unknown, index: number): SheetPageSetupState {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `pageSetupStates[${index}] must be an object`)
+  }
+  const sheetName = expectString(value.sheetName, `pageSetupStates[${index}].sheetName`)
+  const out: {
+    sheetName: string
+    frozenRows?: number
+    frozenColumns?: number
+    [k: string]: unknown
+  } = { sheetName }
+  if (value.frozenRows !== undefined) {
+    const n = expectNumber(value.frozenRows, `pageSetupStates[${index}].frozenRows`)
+    if (!Number.isInteger(n) || n < 0 || n > 1_048_576) {
+      throw new OfficeValidationError(
+        'validation',
+        `pageSetupStates[${index}].frozenRows must be a non-negative integer`,
+      )
+    }
+    out.frozenRows = n
+  }
+  if (value.frozenColumns !== undefined) {
+    const n = expectNumber(value.frozenColumns, `pageSetupStates[${index}].frozenColumns`)
+    if (!Number.isInteger(n) || n < 0 || n > 16_384) {
+      throw new OfficeValidationError(
+        'validation',
+        `pageSetupStates[${index}].frozenColumns must be a non-negative integer`,
+      )
+    }
+    out.frozenColumns = n
+  }
+  // Forward-compatibility seam: ignore unknown keys (the canonical
+  // SheetPageSetupState carries many optional fields — orientation,
+  // paperSize, margins, … — that the web shell does not yet emit; future
+  // increments can add validated readers here without bumping the wire).
+  return out as SheetPageSetupState
+}
+
 function parseSaveWorkbookRequest(
   body: unknown,
   codec: OfficeBinaryCodec,
@@ -1729,7 +1821,7 @@ function parseSaveWorkbookRequest(
   const fileName = validateFileName(body.fileName)
   const fileBytes = decodeFileBytes(body.fileBytes, codec)
 
-  // Canonical path: savePlan.edits (+ optional structuralOps).
+  // Canonical path: savePlan.edits (+ optional structuralOps + pageSetupStates).
   if (body.savePlan !== undefined) {
     if (!isRecord(body.savePlan)) {
       throw new OfficeValidationError('validation', 'savePlan must be an object')
@@ -1743,7 +1835,23 @@ function parseSaveWorkbookRequest(
             expectSheetStructuralOps,
           )
         : undefined
-    return { fileName, fileBytes, savePlan: { edits, ...(structuralOps ? { structuralOps } : {}) } }
+    const pageSetupStates =
+      body.savePlan.pageSetupStates !== undefined && body.savePlan.pageSetupStates !== null
+        ? expectArray(
+            body.savePlan.pageSetupStates,
+            'savePlan.pageSetupStates',
+            expectSheetPageSetupState,
+          )
+        : undefined
+    return {
+      fileName,
+      fileBytes,
+      savePlan: {
+        edits,
+        ...(structuralOps ? { structuralOps } : {}),
+        ...(pageSetupStates ? { pageSetupStates } : {}),
+      },
+    }
   }
 
   // Legacy path: top-level cellEdits.
@@ -1811,9 +1919,10 @@ async function handleSaveWorkbook(
   const buf = Buffer.from(req.fileBytes)
   const edits = req.savePlan.edits
   const structuralOps = req.savePlan.structuralOps ?? []
+  const pageSetupStates = req.savePlan.pageSetupStates ?? []
   let mutation
   try {
-    mutation = await applyCellEditsToXlsx(buf, edits, structuralOps)
+    mutation = await applyCellEditsToXlsx(buf, edits, structuralOps, [], undefined, [], [], [], [], [], null, pageSetupStates)
   } catch (e) {
     throw new OfficeValidationError(
       'malformed',

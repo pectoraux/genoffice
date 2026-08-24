@@ -46,6 +46,15 @@ export interface WorksheetState {
   readonly colWidths?: Readonly<Record<string, number>> | undefined
   /** demo-mode charts added by AI add_chart, replayed on rebuild */
   readonly visuals?: readonly SheetVisual[] | undefined
+  /**
+   * Frozen-pane state parsed from the worksheet's <sheetView><pane>.
+   * Absent (undefined) means "no pane / frozen rows and columns are 0";
+   * present with `frozenRows` and `frozenColumns` both 0 also means no
+   * freeze. The web Sheets shell (View → Freeze Panes) journals freeze
+   * changes through the canonical `SheetPageSetupState` save family, and
+   * reads it back via this field on reopen so freeze survives round-trip.
+   */
+  readonly freeze?: Readonly<{ readonly frozenRows: number; readonly frozenColumns: number }> | undefined
 }
 
 export interface WorkbookSnapshot {
