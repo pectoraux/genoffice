@@ -20,7 +20,12 @@
  */
 import { test, expect } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
-import { loginAsDemoOwner, gotoHashRoute, waitForGridCanvas, clickSaveAndCaptureDownload } from './helpers'
+import {
+  loginAsDemoOwner,
+  gotoHashRoute,
+  waitForGridCanvas,
+  clickSaveAndCaptureDownload,
+} from './helpers'
 import { buildExcelFixture, readZipEntry } from './fixtures'
 
 test.describe('View tab — Gridlines/Zoom in-session, Freeze Panes persists', () => {
@@ -58,7 +63,24 @@ test.describe('View tab — Gridlines/Zoom in-session, Freeze Panes persists', (
 
     // Verify the freeze was applied in the live Univer model.
     const freezeInUniver = await page.evaluate(() => {
-      const rt = (window as { __genofficeExcelRuntime?: { univerAPI: { getActiveWorkbook: () => { getActiveSheet: () => { getFreeze: () => { startRow: number; startColumn: number; xSplit: number; ySplit: number } } } } } }).__genofficeExcelRuntime
+      const rt = (
+        window as {
+          __genofficeExcelRuntime?: {
+            univerAPI: {
+              getActiveWorkbook: () => {
+                getActiveSheet: () => {
+                  getFreeze: () => {
+                    startRow: number
+                    startColumn: number
+                    xSplit: number
+                    ySplit: number
+                  }
+                }
+              }
+            }
+          }
+        }
+      ).__genofficeExcelRuntime
       return rt?.univerAPI?.getActiveWorkbook?.()?.getActiveSheet?.()?.getFreeze?.() ?? null
     })
     expect(freezeInUniver, 'Univer model carries the freeze').not.toBeNull()
@@ -86,9 +108,7 @@ test.describe('View tab — Gridlines/Zoom in-session, Freeze Panes persists', (
       saveBody.savePlan.pageSetupStates,
       'save plan includes pageSetupStates for freeze',
     ).toBeDefined()
-    const freezeState = saveBody.savePlan.pageSetupStates!.find(
-      (s) => s.sheetName === 'Data',
-    )
+    const freezeState = saveBody.savePlan.pageSetupStates!.find((s) => s.sheetName === 'Data')
     expect(freezeState, 'freeze state for Data sheet').toBeDefined()
     expect(freezeState!.frozenRows, '2 frozen rows in save plan').toBe(2)
     expect(freezeState!.frozenColumns, '2 frozen columns in save plan').toBe(2)
@@ -125,7 +145,24 @@ test.describe('View tab — Gridlines/Zoom in-session, Freeze Panes persists', (
     // The reopened freeze should also be reflected in the live Univer model.
     await page.waitForTimeout(1500)
     const reopenedFreeze = await page.evaluate(() => {
-      const rt = (window as { __genofficeExcelRuntime?: { univerAPI: { getActiveWorkbook: () => { getActiveSheet: () => { getFreeze: () => { startRow: number; startColumn: number; xSplit: number; ySplit: number } } } } } }).__genofficeExcelRuntime
+      const rt = (
+        window as {
+          __genofficeExcelRuntime?: {
+            univerAPI: {
+              getActiveWorkbook: () => {
+                getActiveSheet: () => {
+                  getFreeze: () => {
+                    startRow: number
+                    startColumn: number
+                    xSplit: number
+                    ySplit: number
+                  }
+                }
+              }
+            }
+          }
+        }
+      ).__genofficeExcelRuntime
       return rt?.univerAPI?.getActiveWorkbook?.()?.getActiveSheet?.()?.getFreeze?.() ?? null
     })
     expect(reopenedFreeze, 'reopened Univer model carries the freeze').not.toBeNull()
@@ -170,7 +207,10 @@ test.describe('View tab — Gridlines/Zoom in-session, Freeze Panes persists', (
     expect(initialPct).toMatch(/\d+%/)
 
     // Zoom in (scope to the ribbon — the status bar also has a zoom-in button).
-    await page.locator('[data-testid="excel-ribbon"]').getByRole('button', { name: 'Zoom in' }).click()
+    await page
+      .locator('[data-testid="excel-ribbon"]')
+      .getByRole('button', { name: 'Zoom in' })
+      .click()
     await page.waitForTimeout(300)
     const afterInPct = await page.locator('.excel-zoom-value').first().textContent()
     const afterInNum = parseInt((afterInPct ?? '').replace('%', ''), 10)
@@ -178,7 +218,10 @@ test.describe('View tab — Gridlines/Zoom in-session, Freeze Panes persists', (
     expect(afterInNum, 'zoom in increased percent').toBeGreaterThan(initialNum)
 
     // Zoom out.
-    await page.locator('[data-testid="excel-ribbon"]').getByRole('button', { name: 'Zoom out' }).click()
+    await page
+      .locator('[data-testid="excel-ribbon"]')
+      .getByRole('button', { name: 'Zoom out' })
+      .click()
     await page.waitForTimeout(300)
     const afterOutPct = await page.locator('.excel-zoom-value').first().textContent()
     const afterOutNum = parseInt((afterOutPct ?? '').replace('%', ''), 10)

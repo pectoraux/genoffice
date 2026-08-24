@@ -584,8 +584,7 @@ export class StylesheetReader {
     if (numFmtIdAttr !== undefined) {
       const id = Number(numFmtIdAttr)
       if (Number.isInteger(id) && id > 0) {
-        const pattern =
-          this.numFmtByCode.get(id) ?? BUILTIN_NUMFMTS.get(id)
+        const pattern = this.numFmtByCode.get(id) ?? BUILTIN_NUMFMTS.get(id)
         if (pattern) format.numberFormat = pattern
       }
     }

@@ -42,13 +42,31 @@ export type StructuralOp =
       readonly level: number
       readonly collapsed?: boolean
     }
+  /// Sort / row permutation: rows inside `range` relocate to the dest row
+  /// given by `order[srcRow]` (a bijection over the range's rows). Univer's
+  /// ReorderRangeMutation deepClones the entire cell record (v/f/s/p/si/t)
+  /// via getCellRaw, so styles, numfmt, fills, borders, hyperlinks, comments
+  /// and any other cell metadata travel atomically with the row. The
+  /// gateway mirrors that by permuting <row> blocks wholesale — only the
+  /// r= attributes are renumbered, never the cell contents. Excel does not
+  /// rewrite external formula references for sort (formulas recalculate
+  /// against current cell positions on reopen), so transformFormulas and
+  /// transformRangedFeatures are skipped for this op.
+  | {
+      readonly kind: 'reorder-rows'
+      readonly range: CellArea
+      readonly order: Readonly<Record<number, number>>
+    }
 
 export type AxisAttributeOp = Extract<StructuralOp, { start: number }>
 
 /// True for operations that shift coordinates or reshape merges — the ones
 /// whose sibling parts (drawing anchors, table ranges, calcChain) must move
-/// with the sheet. Sizing and visibility changes don't move anything.
+/// with the sheet. Sizing, visibility, and reorder-rows (which preserves
+/// range bounds — Univer's sort leaves external references untouched) don't
+/// move anything.
 export function isShiftingOp(op: StructuralOp): boolean {
+  if (op.kind === 'reorder-rows') return false
   return 'index' in op || 'range' in op
 }
 
@@ -71,6 +89,17 @@ export function applyStructuralOps(
   let xml = worksheetXml
   let outlineTouched = false
   for (const op of ops) {
+    // reorder-rows (sort) is handled before the index/range/start dispatch
+    // because it carries BOTH `range` (CellArea) and `order`, and would
+    // otherwise be misrouted to applyMergeOp via the `!('index' in op)`
+    // branch. The permutation renumbers <row> r= and inner <c> r= wholesale
+    // (the cell contents — value, formula, style ref, hyperlink, comment
+    // pointer — travel untouched inside their <c> elements, mirroring
+    // Univer's ReorderRangeMutation deepClone of getCellRaw).
+    if (op.kind === 'reorder-rows') {
+      xml = transformSheetRowsByPermutation(xml, op)
+      continue
+    }
     if ('start' in op) {
       outlineTouched ||= 'level' in op
       xml =
@@ -803,6 +832,145 @@ function transformSheetRows(xml: string, shift: Shift): string {
   // Inserts and deletes renumber monotonically, so document order survives;
   // a swap does not — Excel requires sheetData rows in ascending order.
   return shift.swap ? sortSheetDataRows(renumbered) : renumbered
+}
+
+/// Sort / row permutation. Mirrors Univer's ReorderRangeMutation exactly:
+/// for every (row, col) INSIDE the op's range, NEW[row][col] =
+/// OLD[order[row]][col] — the order map is DEST→SRC (the mutation source
+/// reads `getCellRaw(order[row])` and writes it to `row`). Cells at columns
+/// OUTSIDE the range's column span stay at their original row (a
+/// single-column sort moves only that column's cells); row attributes
+/// (height, hidden, outline) stay with the row number (Univer's mutation
+/// only touches cellData). The entire cell record — <v>, <f>, <is>, style
+/// ref via s=, hyperlink rich-text inside <is>, comment pointer,
+/// shared-formula si= — travels untouched inside its <c> element. Rows
+/// inside the range's row span but absent from the order map (Univer skips
+/// filtered/hidden/merge-child rows) keep their content in place. Finally,
+/// the sheetData section is re-sorted so rows land in ascending order
+/// (Excel's required layout).
+function transformSheetRowsByPermutation(
+  xml: string,
+  op: Extract<StructuralOp, { kind: 'reorder-rows' }>,
+): string {
+  const { startRow, endRow, startColumn, endColumn } = op.range
+  const section = /<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/.exec(xml)
+  if (!section?.[1]) return xml
+
+  interface SpanRow {
+    /// The full attribute text between "<row " and the tag end, e.g.
+    /// 'r="2" spans="1:4" ht="30"' — includes the row's own r=.
+    readonly attrs: string
+    /// Cells keyed by 0-based column index → the full <c …>…</c> XML.
+    readonly cells: ReadonlyMap<number, string>
+    /// The original <row …>…</row> block, verbatim (for untouched rows).
+    readonly originalText: string
+  }
+
+  const spanRows = new Map<number, SpanRow>()
+  const outsideRows: Array<{ index: number; text: string }> = []
+  const leftover = section[1].replace(
+    /<row\b[^>]*?\br="([0-9]+)"[^>]*?(?:\/>|>[\s\S]*?<\/row>)/g,
+    (full, rowNumStr: string) => {
+      const rowIdx = Number(rowNumStr) - 1
+      if (rowIdx < startRow || rowIdx > endRow) {
+        outsideRows.push({ index: rowIdx, text: full })
+        return ''
+      }
+      const openEnd = full.indexOf('>')
+      const openTag = full.slice(0, openEnd + 1)
+      const selfClosing = openTag.endsWith('/>')
+      // attrs = everything between "<row " and the tag end, e.g.
+      // 'r="2" spans="1:4" ht="30"' — the r= attribute stays in attrs and
+      // reassembleRow re-emits it verbatim (the dest row keeps its own
+      // row number and its own row attributes).
+      const attrs = selfClosing ? openTag.slice(5, -2) : openTag.slice(5, -1)
+      const cells = new Map<number, string>()
+      if (!selfClosing) {
+        const inner = full.slice(openEnd + 1, full.length - '</row>'.length)
+        for (const match of inner.matchAll(
+          /<c\b[^>]*?\br="([A-Z]{1,3})[0-9]+"[^>]*?(?:\/>|>[\s\S]*?<\/c>)/g,
+        )) {
+          cells.set(lettersToColumn(match[1]!), match[0])
+        }
+      }
+      spanRows.set(rowIdx, { attrs, cells, originalText: full })
+      return ''
+    },
+  )
+  if (leftover.trim() !== '') {
+    throw new StructuralShiftError('sheetData holds content other than rows — sort aborted.')
+  }
+
+  // Rebuild each DEST row in the order map: outside-span cells from the
+  // dest row's own cells, inside-span cells from the src row's cells
+  // (renumbered to the dest row). Univer replaces the dest row's
+  // inside-span cells wholesale — an absent src cell CLEARS the dest cell.
+  const rebuilt = new Map<number, { attrs: string; cells: Map<number, string> }>()
+  for (const [destKey, srcRow] of Object.entries(op.order)) {
+    const dest = Number(destKey)
+    if (!Number.isInteger(dest) || !Number.isInteger(srcRow)) continue
+    if (dest < startRow || dest > endRow) continue
+    const destRow = spanRows.get(dest)
+    const srcParsed = spanRows.get(srcRow)
+    const newCells = new Map<number, string>()
+    if (destRow) {
+      for (const [col, cellXml] of destRow.cells) {
+        if (col < startColumn || col > endColumn) newCells.set(col, cellXml)
+      }
+    }
+    if (srcParsed) {
+      for (const [col, cellXml] of srcParsed.cells) {
+        if (col >= startColumn && col <= endColumn) {
+          // Renumber the cell's r= row part from the src row to the dest
+          // row (the column letters are preserved).
+          newCells.set(
+            col,
+            cellXml.replace(
+              /(<c\b[^>]*?\br="[A-Z]{1,3})[0-9]+(")/,
+              (_m, prefix: string, suffix: string) => `${prefix}${dest + 1}${suffix}`,
+            ),
+          )
+        }
+      }
+    }
+    rebuilt.set(dest, {
+      // Drop the stale spans hint on rebuilt rows — the cell extent may
+      // change; Excel rebuilds spans on save (same policy as the column
+      // ops above). Keep every other row attribute (height, hidden, …).
+      attrs: (destRow?.attrs ?? `r="${dest + 1}"`).replace(/\s+spans="[^"]*"/g, ''),
+      cells: newCells,
+    })
+  }
+
+  // Assemble: outside-span rows verbatim, in-span non-rebuilt rows
+  // verbatim, rebuilt rows re-emitted; everything in ascending row order.
+  const parts: Array<{ index: number; text: string }> = [...outsideRows]
+  for (const [rowIdx, parsed] of spanRows) {
+    if (rebuilt.has(rowIdx)) continue
+    parts.push({ index: rowIdx, text: parsed.originalText })
+  }
+  for (const [dest, parsed] of rebuilt) {
+    parts.push({ index: dest, text: reassembleRow(parsed) })
+  }
+  parts.sort((a, b) => a.index - b.index)
+  return (
+    xml.slice(0, section.index) +
+    `${section[0].slice(0, section[0].indexOf('>') + 1)}${parts
+      .map((part) => part.text)
+      .join('')}</sheetData>` +
+    xml.slice(section.index + section[0].length)
+  )
+}
+
+/// Re-emit one <row> block from its parsed attrs + cells. Cells emit in
+/// ascending column order (Excel's required layout within a row). The
+/// attrs string already carries the row's own r= attribute.
+function reassembleRow(parsed: { attrs: string; cells: ReadonlyMap<number, string> }): string {
+  const sortedCells = [...parsed.cells.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, cellXml]) => cellXml)
+  if (sortedCells.length === 0) return `<row ${parsed.attrs}/>`
+  return `<row ${parsed.attrs}>${sortedCells.join('')}</row>`
 }
 
 function sortSheetDataRows(xml: string): string {

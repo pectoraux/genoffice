@@ -7,10 +7,12 @@
  * set-range-values`, journaled by ExcelEditor's existing subscription through
  * cell-mutation-merge.ts. The browser never runs a second formula engine.
  *
- * The display mirrors the formula-priority invariant: a leading '=' is
- * stored as the formula body (without the '='), exactly like buildCellDataMatrix
- * in ExcelEditor. The recalc-echo merge in cell-mutation-merge.ts guarantees
- * the displayed formula cannot be silently converted back into a literal.
+ * Univer's INTERNAL cell.f convention INCLUDES the leading '=' (isFormulaString
+ * requires it — see buildCellDataMatrix/commitFormula): the display passes a
+ * stored f through unchanged when it already starts with '=', and prepends
+ * one otherwise, so the bar always shows `=BODY`. The recalc-echo merge in
+ * cell-mutation-merge.ts guarantees the displayed formula cannot be silently
+ * converted back into a literal.
  */
 import { useEffect, useRef, useState } from 'react'
 import type { BrowserUniverRuntime } from '../../office/create-browser-univer'
@@ -39,7 +41,9 @@ export function FormulaBar({ runtime, selectionStamp, onCommit }: FormulaBarProp
     }
     const data = cell.getCellData()
     if (data?.f) {
-      setText(`=${data.f}`)
+      // Univer stores f WITH the leading '=' (live formulas); tolerate
+      // an '='-less legacy value by prepending one.
+      setText(data.f.startsWith('=') ? data.f : `=${data.f}`)
     } else if (data?.v !== undefined && data?.v !== null) {
       setText(String(data.v))
     } else {

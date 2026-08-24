@@ -1678,16 +1678,31 @@ function parseOpenWorkbookRequest(
  */
 // ── StructuralOp validation (row/column insert/delete) ──────────────────────
 
-const ROWCOL_STRUCTURAL_KINDS = ['insert-rows', 'remove-rows', 'insert-cols', 'remove-cols'] as const
+const ROWCOL_STRUCTURAL_KINDS = [
+  'insert-rows',
+  'remove-rows',
+  'insert-cols',
+  'remove-cols',
+] as const
 const MERGE_STRUCTURAL_KINDS = ['merge-cells', 'unmerge-cells'] as const
-const STRUCTURAL_KINDS = [...ROWCOL_STRUCTURAL_KINDS, ...MERGE_STRUCTURAL_KINDS]
+const SORT_STRUCTURAL_KIND = 'reorder-rows' as const
+const STRUCTURAL_KINDS = [
+  ...ROWCOL_STRUCTURAL_KINDS,
+  ...MERGE_STRUCTURAL_KINDS,
+  SORT_STRUCTURAL_KIND,
+]
 const MAX_STRUCTURAL_COUNT = 10_000
+/// Upper bound on the sort-range row count — keeps the wire payload small
+/// and matches Excel's hard 1,048,576-row ceiling without inviting a
+/// multi-megabyte permutation map to block the event loop.
+const MAX_REORDER_ROWS = 1_048_576
 
 /**
  * Validate a StructuralOp from the wire. The browser emits
- * insert/remove row/column ops (with index/count) AND merge/unmerge ops
- * (with range). Malformed ops throw OfficeValidationError → the existing
- * 400 validation error shape.
+ * insert/remove row/column ops (with index/count), merge/unmerge ops
+ * (with range), and sort/reorder-rows ops (with range + order permutation
+ * map). Malformed ops throw OfficeValidationError → the existing 400
+ * validation error shape.
  */
 function expectStructuralOp(value: unknown, field: string): StructuralOp {
   if (!isRecord(value)) {
@@ -1706,6 +1721,18 @@ function expectStructuralOp(value: unknown, field: string): StructuralOp {
     const range = expectStructuralRange(value.range, `${field}.range`)
     return { kind, range } as unknown as StructuralOp
   }
+  // reorder-rows (sort) carries a range + an order permutation map. The
+  // map is in UNIVER'S NATIVE DEST→SRC shape: NEW[destRow] =
+  // OLD[order[destRow]] (the ReorderRangeMutation reads getCellRaw(order
+  // [row]) and writes it to row). Passed through verbatim — the gateway
+  // inverts it internally. The gateway permutes <row> blocks atomically;
+  // the entire cell record (styles, numfmt, formulas, hyperlinks) travels
+  // with the row.
+  if (kind === SORT_STRUCTURAL_KIND) {
+    const range = expectStructuralRange(value.range, `${field}.range`)
+    const order = expectReorderOrder(value.order, `${field}.order`, range)
+    return { kind: SORT_STRUCTURAL_KIND, range, order } as unknown as StructuralOp
+  }
   const index = expectNumber(value.index, `${field}.index`)
   if (!Number.isInteger(index) || index < 0 || index > 1_048_576) {
     throw new OfficeValidationError(
@@ -1721,6 +1748,77 @@ function expectStructuralOp(value: unknown, field: string): StructuralOp {
     )
   }
   return { kind: kind as (typeof ROWCOL_STRUCTURAL_KINDS)[number], index, count }
+}
+
+/**
+ * Validate a reorder-rows `order` permutation map. The map is in Univer's
+ * native DEST→SRC shape: keys are 0-based DESTINATION row indices inside
+ * the sort range; values are 0-based SOURCE row indices inside the same
+ * range (NEW[dest] = OLD[order[dest]]). The map must be a bijection over a
+ * subset of the range's rows (every key and value sits inside
+ * [startRow, endRow], no duplicates among values). Rows in the range
+ * absent from the map stay put (Univer skips filtered/hidden/merge-child
+ * rows — those are omitted from the order map and the gateway leaves them
+ * alone).
+ */
+function expectReorderOrder(
+  value: unknown,
+  field: string,
+  range: { startRow: number; endRow: number; startColumn: number; endColumn: number },
+): Record<number, number> {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const { startRow, endRow } = range
+  if (endRow < startRow) {
+    throw new OfficeValidationError('validation', `${field}: range endRow < startRow`)
+  }
+  const rangeRowCount = endRow - startRow + 1
+  if (rangeRowCount > MAX_REORDER_ROWS) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}: sort range exceeds ${MAX_REORDER_ROWS} rows`,
+    )
+  }
+  const out: Record<number, number> = {}
+  const seenDest = new Set<number>()
+  for (const key of Object.keys(value)) {
+    const src = Number(key)
+    if (!Number.isInteger(src) || src < 0) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}: source row "${key}" must be a non-negative integer`,
+      )
+    }
+    if (src < startRow || src > endRow) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}: source row ${src} is outside the sort range [${startRow}, ${endRow}]`,
+      )
+    }
+    const dest = expectNumber((value as Record<string, unknown>)[key], `${field}[${src}]`)
+    if (!Number.isInteger(dest) || dest < 0) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}[${src}] must be a non-negative integer`,
+      )
+    }
+    if (dest < startRow || dest > endRow) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}[${src}] = ${dest} is outside the sort range [${startRow}, ${endRow}]`,
+      )
+    }
+    if (seenDest.has(dest)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}: destination row ${dest} is targeted by more than one source row (not a bijection)`,
+      )
+    }
+    seenDest.add(dest)
+    out[src] = dest
+  }
+  return out
 }
 
 /** Validate a range (startRow/endRow/startColumn/endColumn, 0-based integers). */
@@ -1922,7 +2020,20 @@ async function handleSaveWorkbook(
   const pageSetupStates = req.savePlan.pageSetupStates ?? []
   let mutation
   try {
-    mutation = await applyCellEditsToXlsx(buf, edits, structuralOps, [], undefined, [], [], [], [], [], null, pageSetupStates)
+    mutation = await applyCellEditsToXlsx(
+      buf,
+      edits,
+      structuralOps,
+      [],
+      undefined,
+      [],
+      [],
+      [],
+      [],
+      [],
+      null,
+      pageSetupStates,
+    )
   } catch (e) {
     throw new OfficeValidationError(
       'malformed',

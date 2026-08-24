@@ -2,6 +2,10 @@ import { LogLevel, LocaleType, ThemeService, IUndoRedoService, Univer } from '@u
 import type { Plugin, PluginCtor } from '@univerjs/core'
 import { FUniver } from '@univerjs/core/lib/facade'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
+// Re-exported by the core preset from @univerjs/sheets-formula-ui — the
+// sheet-interceptor that rewrites formula references during sort (see the
+// force-instantiation comment in createBrowserUniver).
+import { FormulaReorderController } from '@univerjs/preset-sheets-core'
 import { UniverSheetsConditionalFormattingPreset } from '@univerjs/preset-sheets-conditional-formatting'
 import { UniverSheetsDrawingPreset } from '@univerjs/preset-sheets-drawing'
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation'
@@ -36,8 +40,7 @@ import '@univerjs/preset-sheets-sort/lib/index.css'
 import '@univerjs/preset-sheets-table/lib/index.css'
 
 type PluginEntry =
-  | PluginCtor<Plugin>
-  | [PluginCtor<Plugin>, ConstructorParameters<PluginCtor<Plugin>>[0]]
+  PluginCtor<Plugin> | [PluginCtor<Plugin>, ConstructorParameters<PluginCtor<Plugin>>[0]]
 type BrowserPreset = { plugins: PluginEntry[] }
 
 export interface BrowserUniverRuntime {
@@ -87,7 +90,8 @@ const EN_US_LOCALES = {
   'sheets-ui': {
     ...(sheetsCoreEnUS as Record<string, Record<string, unknown>>)['sheets-ui'],
     info: {
-      ...((sheetsCoreEnUS as Record<string, Record<string, Record<string, string>>>)['sheets-ui']?.info),
+      ...(sheetsCoreEnUS as Record<string, Record<string, Record<string, string>>>)['sheets-ui']
+        ?.info,
       error: 'Number stored as text',
       forceStringInfo:
         'The value in this cell is stored as text — it will not be treated as a ' +
@@ -183,4 +187,34 @@ export function createBrowserUniver(container: string): BrowserUniverRuntime {
   const themeService = injector.get(ThemeService)
   const undoRedoService = injector.get(IUndoRedoService)
   return { univer, univerAPI: FUniver.newAPI(univer), themeService, undoRedoService }
+}
+
+/**
+ * Force-instantiate the sort's formula interceptor. Univer registers
+ * FormulaReorderController (the sheet-interceptor that Excel-style
+ * REWRITES relative formula references during sort — `=B4*C4` moving up
+ * two rows becomes `=B2*C2`) only in UniverSheetsFormulaUIPlugin's
+ * onSteady() — the LAST async lifecycle stage. Without this touch, the
+ * FIRST sort after a fresh page load races the controller's
+ * registration: when the sort wins the race, the rows reorder with
+ * VERBATIM formula text and stale cached values — a formula that
+ * silently miscalculates on Excel's recalc (the exact class of bug the
+ * architect flagged in the Increment 3 review).
+ *
+ * MUST be called AFTER the first workbook creation: Univer loads sheet
+ * plugins lazily per-type at the FIRST unit creation
+ * (startPluginsForType from Univer.__createUnit), so the controller's
+ * DI registration does not exist before that. DI get() then constructs
+ * the controller (registering its interceptor synchronously); the
+ * plugin's later onSteady get() resolves to the same singleton.
+ *
+ * Best-effort: if a preset update renames the controller, sort still
+ * works — only the first-sort formula rewrite would race again.
+ */
+export function primeSortFormulaInterceptor(univer: Univer): void {
+  try {
+    univer.__getInjector().get(FormulaReorderController)
+  } catch {
+    /* preset no longer exports the controller — sort degrades gracefully */
+  }
 }

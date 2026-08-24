@@ -197,8 +197,18 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
         {tab === 'home' && (
           <>
             <Group label="Undo">
-              <RibbonButton title="Undo" icon={<UndoIcon />} disabled={!s.canUndo} onClick={() => api?.undo()} />
-              <RibbonButton title="Redo" icon={<RedoIcon />} disabled={!s.canRedo} onClick={() => api?.redo()} />
+              <RibbonButton
+                title="Undo"
+                icon={<UndoIcon />}
+                disabled={!s.canUndo}
+                onClick={() => api?.undo()}
+              />
+              <RibbonButton
+                title="Redo"
+                icon={<RedoIcon />}
+                disabled={!s.canRedo}
+                onClick={() => api?.redo()}
+              />
             </Group>
             <Group label="Font">
               <select
@@ -228,28 +238,76 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
                   </option>
                 ))}
               </select>
-              <RibbonButton title="Bold" icon={<BoldIcon />} active={s.selectionFormat.bold} disabled={disabled} onClick={() => api?.toggleBold()} />
-              <RibbonButton title="Italic" icon={<ItalicIcon />} active={s.selectionFormat.italic} disabled={disabled} onClick={() => api?.toggleItalic()} />
-              <RibbonButton title="Underline" icon={<UnderlineIcon />} active={s.selectionFormat.underline} disabled={disabled} onClick={() => api?.toggleUnderline()} />
-              <label className="rb-btn" title="Font color" aria-label="Font color" style={{ position: 'relative', padding: 0 }}>
+              <RibbonButton
+                title="Bold"
+                icon={<BoldIcon />}
+                active={s.selectionFormat.bold}
+                disabled={disabled}
+                onClick={() => api?.toggleBold()}
+              />
+              <RibbonButton
+                title="Italic"
+                icon={<ItalicIcon />}
+                active={s.selectionFormat.italic}
+                disabled={disabled}
+                onClick={() => api?.toggleItalic()}
+              />
+              <RibbonButton
+                title="Underline"
+                icon={<UnderlineIcon />}
+                active={s.selectionFormat.underline}
+                disabled={disabled}
+                onClick={() => api?.toggleUnderline()}
+              />
+              <label
+                className="rb-btn"
+                title="Font color"
+                aria-label="Font color"
+                style={{ position: 'relative', padding: 0 }}
+              >
                 <FontColorIcon />
                 <input
                   type="color"
                   aria-label="Font color picker"
                   className="rb-color"
-                  style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%', padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    opacity: 0,
+                    width: '100%',
+                    height: '100%',
+                    padding: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    cursor: 'pointer',
+                  }}
                   value={s.selectionFormat.fontColor ?? '#000000'}
                   disabled={disabled}
                   onChange={(e) => api?.setFontColor(e.target.value)}
                 />
               </label>
-              <label className="rb-btn" title="Fill color" aria-label="Fill color" style={{ position: 'relative', padding: 0 }}>
+              <label
+                className="rb-btn"
+                title="Fill color"
+                aria-label="Fill color"
+                style={{ position: 'relative', padding: 0 }}
+              >
                 <FillColorIcon />
                 <input
                   type="color"
                   aria-label="Fill color picker"
                   className="rb-color"
-                  style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%', padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    opacity: 0,
+                    width: '100%',
+                    height: '100%',
+                    padding: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    cursor: 'pointer',
+                  }}
                   value={s.selectionFormat.fillColor ?? '#ffffff'}
                   disabled={disabled}
                   onChange={(e) => api?.setFillColor(e.target.value)}
@@ -257,14 +315,61 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
               </label>
             </Group>
             <Group label="Alignment">
-              <RibbonButton title="Align left" icon={<AlignLeftIcon />} active={s.selectionFormat.hAlign === 'left'} disabled={disabled} onClick={() => api?.setHAlign(1)} />
-              <RibbonButton title="Align center" icon={<AlignCenterIcon />} active={s.selectionFormat.hAlign === 'center'} disabled={disabled} onClick={() => api?.setHAlign(2)} />
-              <RibbonButton title="Align right" icon={<AlignRightIcon />} active={s.selectionFormat.hAlign === 'right'} disabled={disabled} onClick={() => api?.setHAlign(3)} />
-              <RibbonButton title="Align top" icon={<AlignTopIcon />} active={s.selectionFormat.vAlign === 'top'} disabled={disabled} onClick={() => api?.setVAlign(1)} />
-              <RibbonButton title="Align middle" icon={<AlignMiddleIcon />} active={s.selectionFormat.vAlign === 'middle'} disabled={disabled} onClick={() => api?.setVAlign(2)} />
-              <RibbonButton title="Align bottom" icon={<AlignBottomIcon />} active={s.selectionFormat.vAlign === 'bottom'} disabled={disabled} onClick={() => api?.setVAlign(3)} />
-              <RibbonButton title="Wrap text" icon={<WrapIcon />} active={s.selectionFormat.wrap} disabled={disabled} onClick={() => api?.toggleWrap()} />
-              <RibbonButton title="Merge & center" icon={<MergeIcon />} disabled={disabled} onClick={() => api?.toggleMerge()} />
+              <RibbonButton
+                title="Align left"
+                icon={<AlignLeftIcon />}
+                active={s.selectionFormat.hAlign === 'left'}
+                disabled={disabled}
+                onClick={() => api?.setHAlign(1)}
+              />
+              <RibbonButton
+                title="Align center"
+                icon={<AlignCenterIcon />}
+                active={s.selectionFormat.hAlign === 'center'}
+                disabled={disabled}
+                onClick={() => api?.setHAlign(2)}
+              />
+              <RibbonButton
+                title="Align right"
+                icon={<AlignRightIcon />}
+                active={s.selectionFormat.hAlign === 'right'}
+                disabled={disabled}
+                onClick={() => api?.setHAlign(3)}
+              />
+              <RibbonButton
+                title="Align top"
+                icon={<AlignTopIcon />}
+                active={s.selectionFormat.vAlign === 'top'}
+                disabled={disabled}
+                onClick={() => api?.setVAlign(1)}
+              />
+              <RibbonButton
+                title="Align middle"
+                icon={<AlignMiddleIcon />}
+                active={s.selectionFormat.vAlign === 'middle'}
+                disabled={disabled}
+                onClick={() => api?.setVAlign(2)}
+              />
+              <RibbonButton
+                title="Align bottom"
+                icon={<AlignBottomIcon />}
+                active={s.selectionFormat.vAlign === 'bottom'}
+                disabled={disabled}
+                onClick={() => api?.setVAlign(3)}
+              />
+              <RibbonButton
+                title="Wrap text"
+                icon={<WrapIcon />}
+                active={s.selectionFormat.wrap}
+                disabled={disabled}
+                onClick={() => api?.toggleWrap()}
+              />
+              <RibbonButton
+                title="Merge & center"
+                icon={<MergeIcon />}
+                disabled={disabled}
+                onClick={() => api?.toggleMerge()}
+              />
             </Group>
             <Group label="Number">
               <select
@@ -466,7 +571,12 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
               />
             </Group>
             <Group label="Zoom">
-              <RibbonButton title="Zoom out" label="−" disabled={disabled} onClick={() => api?.zoomOut()} />
+              <RibbonButton
+                title="Zoom out"
+                label="−"
+                disabled={disabled}
+                onClick={() => api?.zoomOut()}
+              />
               <input
                 className="rb-select"
                 type="range"
@@ -479,8 +589,20 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
                 onChange={(e) => api?.setZoom(Number(e.target.value) / 100)}
                 style={{ width: 100, accentColor: 'var(--accent)' }}
               />
-              <RibbonButton title="Zoom in" label="+" disabled={disabled} onClick={() => api?.zoomIn()} />
-              <span style={{ fontSize: 11, color: 'var(--text-secondary)', minWidth: 38, textAlign: 'right' }}>
+              <RibbonButton
+                title="Zoom in"
+                label="+"
+                disabled={disabled}
+                onClick={() => api?.zoomIn()}
+              />
+              <span
+                style={{
+                  fontSize: 11,
+                  color: 'var(--text-secondary)',
+                  minWidth: 38,
+                  textAlign: 'right',
+                }}
+              >
                 {s.zoomPercent}%
               </span>
             </Group>

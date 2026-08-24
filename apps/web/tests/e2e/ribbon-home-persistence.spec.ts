@@ -15,7 +15,12 @@
  */
 import { test, expect } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
-import { loginAsDemoOwner, gotoHashRoute, waitForGridCanvas, clickSaveAndCaptureDownload } from './helpers'
+import {
+  loginAsDemoOwner,
+  gotoHashRoute,
+  waitForGridCanvas,
+  clickSaveAndCaptureDownload,
+} from './helpers'
 import { buildExcelFormatFixture, readZipEntry } from './fixtures'
 
 test.describe('Home ribbon persistence (real HTTP + real engine)', () => {
@@ -231,13 +236,16 @@ test.describe('Home ribbon persistence (real HTTP + real engine)', () => {
     expect(reopenResponse.status()).toBe(200)
     const reopened = (await reopenResponse.json()).snapshot.sheets as Array<{
       name: string
-      styles?: Record<string, {
-        bold?: boolean
-        fontColor?: string
-        fillColor?: string
-        horizontalAlign?: string
-        wrapText?: boolean
-      }>
+      styles?: Record<
+        string,
+        {
+          bold?: boolean
+          fontColor?: string
+          fillColor?: string
+          horizontalAlign?: string
+          wrapText?: boolean
+        }
+      >
     }>
     const b4Fmt = reopened[0].styles?.B4
     expect(b4Fmt?.bold, 'bold survived reopen').toBe(true)

@@ -9,7 +9,6 @@
  */
 import { describe, test, expect } from 'vitest'
 import * as ts from 'typescript'
-import { extractImports } from './dep-scanner.js'
 
 /**
  * Helper: extract imports from an in-memory source string.
@@ -141,25 +140,25 @@ require('${FORBIDDEN}')
 })
 
 describe('AST dependency scanner — negative cases (comments/strings ignored)', () => {
-  test("// comment with import is NOT detected", () => {
+  test('// comment with import is NOT detected', () => {
     const source = `// import '${FORBIDDEN}'`
     const hits = extractFromString(source)
     expect(hits).toHaveLength(0)
   })
 
-  test("/* block comment with export is NOT detected */", () => {
+  test('/* block comment with export is NOT detected */', () => {
     const source = `/* export * from '${FORBIDDEN}' */`
     const hits = extractFromString(source)
     expect(hits).toHaveLength(0)
   })
 
-  test("string literal assignment is NOT detected", () => {
+  test('string literal assignment is NOT detected', () => {
     const source = `const documentation = "${FORBIDDEN}"`
     const hits = extractFromString(source)
     expect(hits).toHaveLength(0)
   })
 
-  test("JSDoc comment with import is NOT detected", () => {
+  test('JSDoc comment with import is NOT detected', () => {
     const source = `/**
  * import '${FORBIDDEN}'
  * export * from '${FORBIDDEN}'
@@ -175,7 +174,7 @@ const x = 1`
     expect(hits).toHaveLength(0)
   })
 
-  test("string that looks like import inside a function body is NOT detected", () => {
+  test('string that looks like import inside a function body is NOT detected', () => {
     const source = `function foo() {
   return "import { x } from '${FORBIDDEN}'"
 }`
@@ -183,20 +182,20 @@ const x = 1`
     expect(hits).toHaveLength(0)
   })
 
-  test("comment with require is NOT detected", () => {
+  test('comment with require is NOT detected', () => {
     const source = `// require('${FORBIDDEN}')`
     const hits = extractFromString(source)
     expect(hits).toHaveLength(0)
   })
 
-  test("line comment after real import does NOT create false positive", () => {
+  test('line comment after real import does NOT create false positive', () => {
     const source = `import { real } from '@genoffice/xlsx-gateway' // not '${FORBIDDEN}'`
     const hits = extractFromString(source)
     expect(hits).toHaveLength(1)
     expect(hits[0]!.specifier).toBe('@genoffice/xlsx-gateway')
   })
 
-  test("multi-line comment spanning import syntax is NOT detected", () => {
+  test('multi-line comment spanning import syntax is NOT detected', () => {
     const source = `/*
 import { fake } from '${FORBIDDEN}'
 */`
@@ -206,19 +205,19 @@ import { fake } from '${FORBIDDEN}'
 })
 
 describe('AST dependency scanner — edge cases', () => {
-  test("import with trailing semicolon is detected", () => {
+  test('import with trailing semicolon is detected', () => {
     const source = `import '${FORBIDDEN}';`
     const hits = extractFromString(source)
     expect(hits).toHaveLength(1)
   })
 
-  test("import with double quotes is detected", () => {
+  test('import with double quotes is detected', () => {
     const source = `import "${FORBIDDEN}"`
     const hits = extractFromString(source)
     expect(hits).toHaveLength(1)
   })
 
-  test("import with backticks is detected (if valid TS)", () => {
+  test('import with backticks is detected (if valid TS)', () => {
     // Note: backtick imports are not standard TS/ESM, but the scanner
     // should handle them gracefully (they won't be StringLiteral nodes).
     const source = 'import `' + FORBIDDEN + '`'
@@ -229,20 +228,20 @@ describe('AST dependency scanner — edge cases', () => {
     expect(hits).toHaveLength(0)
   })
 
-  test("import with subpath is detected (prefix match)", () => {
+  test('import with subpath is detected (prefix match)', () => {
     const source = `import { foo } from '${FORBIDDEN}/src/capabilities/xlsx-archive-io.js'`
     const hits = extractFromString(source)
     expect(hits).toHaveLength(1)
     expect(hits[0]!.specifier.startsWith(FORBIDDEN)).toBe(true)
   })
 
-  test("empty file has zero imports", () => {
+  test('empty file has zero imports', () => {
     const source = ''
     const hits = extractFromString(source)
     expect(hits).toHaveLength(0)
   })
 
-  test("file with only comments has zero imports", () => {
+  test('file with only comments has zero imports', () => {
     const source = `// just a comment
 /* another comment */
 /**

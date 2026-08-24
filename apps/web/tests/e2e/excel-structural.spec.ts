@@ -127,7 +127,12 @@ test.describe('Excel structural operations (real HTTP + real engine)', () => {
 
     const saveBody = JSON.parse(req.postData() ?? '{}') as {
       savePlan: {
-        edits: unknown[]
+        edits: Array<{
+          sheetName: string
+          row: number
+          column: number
+          cell?: { formula?: string; value?: unknown }
+        }>
         structuralOps?: Array<{
           sheetName: string
           ops: Array<{ kind: string; index: number; count: number }>
@@ -138,8 +143,18 @@ test.describe('Excel structural operations (real HTTP + real engine)', () => {
     expect(saveBody.savePlan.structuralOps).toEqual([
       { sheetName: 'Data', ops: [{ kind: 'insert-rows', index: 0, count: 2 }] },
     ])
-    // No cell edits (nothing typed into the new rows).
-    expect(saveBody.savePlan.edits).toEqual([])
+    // The journal also carries the formula engine's post-shift rewrites:
+    // with LIVE seeded formulas (f includes the leading '='), inserting
+    // rows makes the engine rewrite the affected formula cells (relative
+    // refs shifted). Desktop parity — the desktop journal ingests the
+    // same engine mutations through the same fromFormula filter. The
+    // C1 formula `SUM(B1:B1)` shifts to C3 and the engine's token-stream
+    // re-serialization normalizes the single-cell range to `SUM(B3)`.
+    const c3Edit = saveBody.savePlan.edits.find(
+      (e) => e.sheetName === 'Data' && e.row === 2 && e.column === 2,
+    )
+    expect(c3Edit, 'C3 formula rewrite journaled').toBeDefined()
+    expect(c3Edit?.cell?.formula, 'C3 formula normalized by the engine').toBe('SUM(B3)')
 
     // ── Saved XML: rows shifted, content preserved ───────────────────────
     const stream = await download.createReadStream()
@@ -149,8 +164,11 @@ test.describe('Excel structural operations (real HTTP + real engine)', () => {
     const sheet1 = await readZipEntry(saved, 'xl/worksheets/sheet1.xml')
     // The original A1 content is now at A3.
     expect(sheet1).toContain('<c r="A3"')
-    // The formula shifted from C1 to C3.
-    expect(sheet1).toContain('<f>SUM(B3:B3)</f>')
+    // The formula shifted from C1 to C3 — the engine's rewrite (journaled
+    // as a CellEdit) wins over the structural op's textual shift, so the
+    // normalized single-cell form lands in the XML. Semantically identical
+    // to SUM(B3:B3); a journaled formula edit carries no stale cached <v>.
+    expect(sheet1).toContain('<f>SUM(B3)</f>')
     // The merge shifted from A3:B3 to A5:B5.
     expect(sheet1).toContain('<mergeCell ref="A5:B5"/>')
 
@@ -169,7 +187,9 @@ test.describe('Excel structural operations (real HTTP + real engine)', () => {
     const data = reopened[0]
     expect(data.cells.A3?.value).toBe('Original Text')
     expect(data.cells.B3?.value).toBe(10)
-    expect(data.cells.C3?.formula).toBe('=SUM(B3:B3)')
+    // The engine-normalized formula round-trips (semantically identical to
+    // =SUM(B3:B3) — see the save-plan note above).
+    expect(data.cells.C3?.formula).toBe('=SUM(B3)')
     expect(data.merges).toEqual(['A5:B5'])
     expect(data.rowHeights).toEqual({ '7': 30 })
     expect(data.colWidths).toEqual({ A: 173 })

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { CellValueType } from '@univerjs/core'
 import type {
   BooleanNumber,
   ICellData,
@@ -13,9 +14,12 @@ import type {
   CellFormatState,
   CellState,
   WorkbookSnapshot,
-  WorksheetState,
 } from '@genoffice/xlsx-gateway'
-import { createBrowserUniver, type BrowserUniverRuntime } from '../office/create-browser-univer'
+import {
+  createBrowserUniver,
+  primeSortFormulaInterceptor,
+  type BrowserUniverRuntime,
+} from '../office/create-browser-univer'
 import {
   createWorkbookHandle,
   openWorkbook,
@@ -28,7 +32,6 @@ import {
   cellEditFromMutation,
   mergeCellEdit,
   numfmtEditsFromMutation,
-  reorderEditsFromMutation,
 } from '../office/cell-mutation-merge'
 import { Ribbon } from './excel/Ribbon'
 import { NameBox } from './excel/NameBox'
@@ -81,10 +84,18 @@ interface JournaledStructuralOp {
     | 'remove-cols'
     | 'merge-cells'
     | 'unmerge-cells'
+    | 'reorder-rows'
   readonly index: number
   readonly count: number
-  /** Range for merge/unmerge ops (startRow/endRow/startColumn/endColumn). */
-  readonly range?: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number }
+  /** Range for merge/unmerge/reorder-rows ops (startRow/endRow/startColumn/endColumn). */
+  readonly range?: {
+    readonly startRow: number
+    readonly endRow: number
+    readonly startColumn: number
+    readonly endColumn: number
+  }
+  /** Permutation map for reorder-rows ops ({ srcRow: destRow }, 0-based). */
+  readonly order?: Readonly<Record<number, number>>
 }
 
 function shiftIndex(index: number, boundary: number, delta: number): number | null {
@@ -130,6 +141,7 @@ function formatToUniverStyle(fmt: CellFormatState): IStyleData | null {
 
 function buildCellDataMatrix(
   cells: Readonly<Record<string, CellState>>,
+  styles?: Readonly<Record<string, CellFormatState>>,
 ): IObjectMatrixPrimitiveType<ICellData> {
   const matrix: IObjectMatrixPrimitiveType<ICellData> = {}
   for (const [addr, cell] of Object.entries(cells)) {
@@ -141,9 +153,52 @@ function buildCellDataMatrix(
     }
     const rowData = matrix[coords.row] ?? {}
     const formula = cell.formula
+    const value = cell.value ?? ''
+    // Seed the explicit value TYPE alongside the value. Univer's general
+    // type system (getCellValueType) infers the same types from typeof v,
+    // so display behavior is unchanged — but the canonical SORT
+    // comparator (SheetsSortController._getCommonValue) branches on the
+    // EXPLICIT `t` field and falls through to `String(v)` when it is
+    // absent, which would sort numbers as strings ("10" < "9") and
+    // diverge from Excel. Univer's own cell-editing path
+    // (FRange.setValueForCell) always sets `t`; the snapshot seeding now
+    // mirrors that so canonical sort sees typed cells.
+    const valueType =
+      typeof value === 'number'
+        ? CellValueType.NUMBER
+        : typeof value === 'boolean'
+          ? CellValueType.BOOLEAN
+          : typeof value === 'string' && value !== ''
+            ? CellValueType.STRING
+            : undefined
+    // Inline the snapshot's resolved format INTO the cellData at create
+    // time (ICellData.s accepts an inline IStyleData — Univer registers
+    // it and swaps in the style ID). The previous post-create
+    // applyCellStyles pass fired setValue({s}) mutations AFTER the
+    // formula engine had started processing the live formulas; the
+    // mutation/recalc interplay clobbered styled formula cells (the f
+    // disappeared — see the Phase 4 Inc. 3 revision). Seeding styles
+    // inline eliminates that race entirely: no style mutations fire
+    // during load.
+    const univerStyle = styles?.[addr] ? formatToUniverStyle(styles[addr]) : null
     const cellData: ICellData = {
-      v: cell.value ?? '',
-      ...(formula ? { f: formula.startsWith('=') ? formula.slice(1) : formula } : {}),
+      v: value,
+      ...(valueType !== undefined ? { t: valueType } : {}),
+      // Univer's INTERNAL cell.f convention INCLUDES the leading '='
+      // (isFormulaString requires `value.substring(0, 1) === "="`). The
+      // snapshot's CellState.formula already carries the '=' (see
+      // readBasicWorkbook's parse: `formula: \`=${...}\``), so it is
+      // seeded VERBATIM — stripping it here would seed a dead formula
+      // the engine never calculates (v stays the raw cached value) and
+      // the canonical sort's FormulaReorderController would crash on
+      // (getFormulaStringByCell returns null for an '='-less f, then
+      // moveFormulaRefOffset(null) throws
+      // "Cannot read properties of null (reading 'length')" — silently
+      // swallowed by sequence(), aborting the sort). The JOURNAL's
+      // CellEdit wire format strips the '=' (XLSX <f> elements have no
+      // '='); that stripping stays in cellEditFromMutation, untouched.
+      ...(formula ? { f: formula.startsWith('=') ? formula : `=${formula}` } : {}),
+      ...(univerStyle ? { s: univerStyle } : {}),
     }
     rowData[coords.column] = cellData
     matrix[coords.row] = rowData
@@ -200,24 +255,11 @@ function buildColumnData(
   return out
 }
 
-function applyCellStyles(
-  wb: ReturnType<BrowserUniverRuntime['univerAPI']['createWorkbook']>,
-  sheet: WorksheetState,
-): void {
-  if (!sheet.styles) return
-  const ws = wb.getSheetByName(sheet.name)
-  if (!ws) return
-  for (const [addr, fmt] of Object.entries(sheet.styles)) {
-    const univerStyle = formatToUniverStyle(fmt)
-    if (!univerStyle) continue
-    try {
-      ws.getRange(addr).setValue({ s: univerStyle })
-    } catch {
-      // setStyle may reject some style combinations; the file's XML
-      // preserves the canonical format regardless.
-    }
-  }
-}
+// applyCellStyles was REMOVED in the Phase 4 Inc. 3 revision: seeding styles
+// via post-create setValue({s}) mutations raced the formula engine's live
+// recalculation and clobbered styled formula cells (their f disappeared).
+// Styles are now inlined into the cellData at create time by
+// buildCellDataMatrix — no style mutations fire during load.
 
 export interface ExcelEditorProps {
   onRoute: (route: string) => void
@@ -233,6 +275,14 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   const handleRef = useRef<OfficeWorkbookHandle | null>(null)
   const dirtyCellsRef = useRef<Map<string, CellEdit>>(new Map())
   const structuralOpsRef = useRef<Map<string, JournaledStructuralOp[]>>(new Map())
+  /// Load-time journal suppression — the SAME convention the desktop's
+  /// univer-sync.ts applies via journalSuppression: createWorkbook on a
+  /// snapshot with LIVE formulas (f carries the leading '=', so the
+  /// formula engine calculates them) fires synchronous set-range-values
+  /// recalc echoes; without suppression those load echoes would pollute
+  /// the journal and mark a freshly opened workbook "dirty". A load is
+  /// not an edit.
+  const journalSuppressionRef = useRef(false)
   // Per-sheet journaled freeze state. Seeded from the snapshot on open,
   // updated when the user changes View → Freeze Panes (the journal
   // subscription captures sheet.mutation.set-frozen), and emitted on save
@@ -291,11 +341,19 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         },
       },
     })
+    // The blank workbook above was the FIRST unit creation — Univer loaded
+    // all sheet plugins for it (lazily, per-type). NOW the sort's formula
+    // interceptor can be force-instantiated: without this, its
+    // registration waits for the async onSteady lifecycle stage and the
+    // FIRST sort of a session races it (rows reorder with verbatim,
+    // un-rewritten formula references — see primeSortFormulaInterceptor).
+    primeSortFormulaInterceptor(rt.univer)
     const sub = subscribeToCellMutations(
       rt,
       dirtyCellsRef,
       structuralOpsRef,
       freezeStateRef,
+      journalSuppressionRef,
       () => setDirty(true),
     )
     const w = window as { __genofficeExcelRuntime?: unknown }
@@ -359,7 +417,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         scrollLeft: 0,
         defaultColumnWidth: 100,
         defaultRowHeight: 20,
-        cellData: buildCellDataMatrix(sheet.cells),
+        cellData: buildCellDataMatrix(sheet.cells, sheet.styles),
         mergeData: buildMergeData(sheet.merges),
         rowData: buildRowData(sheet.rowHeights),
         columnData: buildColumnData(sheet.colWidths),
@@ -369,23 +427,34 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         rightToLeft: 0 as BooleanNumber,
       }
     }
-    const newWb = rt.univerAPI.createWorkbook({
-      id: WORKBOOK_UNIT_ID,
-      name: fileNameRef.current.replace(/\.[^.]+$/, ''),
-      sheets: sheetsConfig,
-    })
-    for (const sheet of snapshot.sheets) {
-      applyCellStyles(newWb, sheet)
-      // Seed the freeze-state journal from the snapshot — so a save
-      // without any freeze change still round-trips the file's existing
-      // freeze. The journal subscription updates this map when the user
-      // toggles freeze interactively.
-      if (sheet.freeze && (sheet.freeze.frozenRows > 0 || sheet.freeze.frozenColumns > 0)) {
-        freezeStateRef.current.set(sheet.name, {
-          frozenRows: sheet.freeze.frozenRows,
-          frozenColumns: sheet.freeze.frozenColumns,
-        })
+    // Suppress the journal for the whole load (desktop
+    // journalSuppression parity): createWorkbook on a live-formula
+    // snapshot fires set-range-values mutations (the engine registering
+    // and calculating formulas) — none of them are user edits, so none
+    // of them may dirty the workbook. Cell styles are inlined INTO the
+    // cellData (see buildCellDataMatrix) — no post-create style
+    // mutations fire during load.
+    journalSuppressionRef.current = true
+    try {
+      rt.univerAPI.createWorkbook({
+        id: WORKBOOK_UNIT_ID,
+        name: fileNameRef.current.replace(/\.[^.]+$/, ''),
+        sheets: sheetsConfig,
+      })
+      for (const sheet of snapshot.sheets) {
+        // Seed the freeze-state journal from the snapshot — so a save
+        // without any freeze change still round-trips the file's existing
+        // freeze. The journal subscription updates this map when the user
+        // toggles freeze interactively.
+        if (sheet.freeze && (sheet.freeze.frozenRows > 0 || sheet.freeze.frozenColumns > 0)) {
+          freezeStateRef.current.set(sheet.name, {
+            frozenRows: sheet.freeze.frozenRows,
+            frozenColumns: sheet.freeze.frozenColumns,
+          })
+        }
       }
+    } finally {
+      journalSuppressionRef.current = false
     }
     dirtyCellsRef.current.clear()
     structuralOpsRef.current.clear()
@@ -512,7 +581,11 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             Save As
           </button>
           <ThemeToggle mode={theme.mode} setMode={theme.setMode} />
-          <button className="tlb-btn" onClick={() => onRoute('/office')} title="Back to Office home">
+          <button
+            className="tlb-btn"
+            onClick={() => onRoute('/office')}
+            title="Back to Office home"
+          >
             Office
           </button>
           <button
@@ -576,15 +649,33 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
  *   - `sheet.mutation.set-frozen`    → per-sheet freeze state, emitted on
  *      save as a BrowserSheetPageSetupState (the canonical SheetPageSetupState
  *      family in applyCellEditsToXlsx writes the <pane> element)
+ *
+ * `suppressionRef` mirrors the desktop's journalSuppression: while a
+ * snapshot load is in progress, every mutation is ignored — a load is not
+ * an edit. createWorkbook on a live-formula snapshot fires synchronous
+ * recalc echoes that must never reach the journal.
  */
 function subscribeToCellMutations(
   runtime: BrowserUniverRuntime,
   dirtyRef: React.MutableRefObject<Map<string, CellEdit>>,
   structuralRef: React.MutableRefObject<Map<string, JournaledStructuralOp[]>>,
   freezeRef: React.MutableRefObject<Map<string, { frozenRows: number; frozenColumns: number }>>,
+  suppressionRef: React.MutableRefObject<boolean>,
   onDirty: () => void,
 ): { dispose(): void } {
   const sub = runtime.univerAPI.addEvent(runtime.univerAPI.Event.CommandExecuted, (event) => {
+    // Load-time suppression (desktop journalSuppression parity): a load
+    // is not an edit — skip journaling entirely while a snapshot load is
+    // in progress.
+    if (suppressionRef.current) return
+    // The formula engine re-applies calculation results with these
+    // execution options; they are derived state, never user edits
+    // (desktop App.tsx parity — the same filter keeps load-time and
+    // edit-time recalc echoes out of the journal). The sort's
+    // FormulaReorderController mutations carry NO options, so the
+    // Excel-style formula rewrites still journal.
+    const options = (event as { options?: { fromFormula?: boolean } }).options
+    if (options?.fromFormula) return
     if (STRUCTURAL_MUTATION_IDS.has(event.id)) {
       const params = event.params as
         | {
@@ -648,8 +739,7 @@ function subscribeToCellMutations(
     //    this handler, a number-format change is in-session only.
     if (event.id === SET_NUMFMT_MUTATION_ID) {
       const params = event.params as
-        | { subUnitId?: string; values?: unknown; refMap?: unknown; unitId?: string }
-        | undefined
+        { subUnitId?: string; values?: unknown; refMap?: unknown; unitId?: string } | undefined
       if (!params?.subUnitId) return
       const wb = runtime.univerAPI.getActiveWorkbook()
       if (!wb) return
@@ -664,26 +754,51 @@ function subscribeToCellMutations(
         // Wrap as a ParsedMutation so mergeCellEdit applies the formula-
         // priority merge rule (style-only edits never overwrite a
         // journaled formula; they only merge their style fields).
-        dirtyRef.current.set(
-          key,
-          mergeCellEdit(existing, { edit, replacesFormula: false }),
-        )
+        dirtyRef.current.set(key, mergeCellEdit(existing, { edit, replacesFormula: false }))
       }
       onDirty()
       return
     }
 
     // ── Sort / reorder-range mutation (sheets-sort preset). Univer's sort
-    //    command fires sheet.command.sort-range → ReorderRangeMutation,
-    //    which writes directly into the worksheet cellDataMatrix in-memory
-    //    (it does NOT dispatch a separate set-range-values). The existing
-    //    set-range-values journal therefore misses sort. We re-read every
-    //    cell in the sorted range from the worksheet model post-mutation
-    //    and journal each as a writeValue CellEdit — on save, the canonical
-    //    applyCellEditsToXlsx writes the new row order into the XLSX.
+    //    command (FRange.sort, the public facade mixin from
+    //    @univerjs/sheets-sort) fires sheet.command.sort-range →
+    //    ReorderRangeMutation (sheet.mutation.reorder-range), which
+    //    deepClones the entire cell record (v/f/s/p/si/t) via getCellRaw
+    //    and writes it into the worksheet cellDataMatrix in-memory. It
+    //    does NOT dispatch a separate set-range-values mutation, so the
+    //    set-range-values journal above would miss sort.
+    //
+    //    The journal captures the row permutation directly as a
+    //    `reorder-rows` structural op — `{ range, order }`. NOTE: Univer's
+    //    order map is DEST→SRC (NEW[destRow] = OLD[order[destRow]]; the
+    //    mutation source reads `getCellRaw(order[row])` and writes it to
+    //    `row`) — journaled verbatim, NOT inverted here. The gateway
+    //    (transformSheetRowsByPermutation) inverts it internally before
+    //    renumbering <row> blocks. On save, the canonical
+    //    applyStructuralOps path permutes <row> blocks atomically: the r=
+    //    attributes on <row> and inner <c> renumber, but the cell
+    //    contents (value, formula text, style ref, hyperlink rich-text,
+    //    shared-formula si=, comment pointer) travel UNTOUCHED inside
+    //    their <c> elements. This mirrors Univer's deepClone exactly —
+    //    styles, numfmt, fills, borders, hyperlinks, and any other cell
+    //    metadata survive save/reopen.
+    //
+    //    Excel does not rewrite external formula references for sort
+    //    (formulas recalculated against current cell positions on
+    //    reopen), so the gateway skips transformFormulas and
+    //    transformRangedFeatures for this op. Formula text inside the
+    //    sorted range travels verbatim — Univer's live state has the
+    //    same verbatim formula text, so the saved XLSX matches Univer's
+    //    pre-save state and Excel recalculates the same displayed values.
     if (event.id === REORDER_RANGE_MUTATION_ID) {
       const params = event.params as
-        | { subUnitId?: string; range?: unknown; unitId?: string }
+        | {
+            subUnitId?: string
+            range?: { startRow?: number; endRow?: number; startColumn?: number; endColumn?: number }
+            order?: Record<string, number>
+            unitId?: string
+          }
         | undefined
       if (!params?.subUnitId) return
       const wb = runtime.univerAPI.getActiveWorkbook()
@@ -691,41 +806,93 @@ function subscribeToCellMutations(
       const ws = wb.getSheetBySheetId(params.subUnitId)
       if (!ws) return
       const sheetName = ws.getSheetName()
-      const readCell = (row: number, column: number) => {
-        try {
-          // FWorksheet.getCellData doesn't exist on the facade — use
-          // getRange(row, column).getCellData() (FRange facade, the same
-          // path the desktop reads cell values for the save plan).
-          const cell = ws.getRange(row, column).getCellData() as
-            | { v?: unknown; f?: unknown }
-            | null
-            | undefined
-          if (!cell) return { value: null }
-          const v = cell.v
-          let value: string | number | boolean | null = null
-          if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') value = v
-          else if (v === null || v === undefined) value = null
-          else value = String(v)
-          const formula = typeof cell.f === 'string' && cell.f.length > 0 ? cell.f : undefined
-          return { value, ...(formula ? { formula } : {}) }
-        } catch {
-          return null
+      const range = params.range
+      if (
+        !range ||
+        !Number.isInteger(range.startRow) ||
+        !Number.isInteger(range.endRow) ||
+        !Number.isInteger(range.startColumn) ||
+        !Number.isInteger(range.endColumn)
+      ) {
+        return
+      }
+      if (
+        range.startRow! < 0 ||
+        range.endRow! < range.startRow! ||
+        range.startColumn! < 0 ||
+        range.endColumn! < range.startColumn!
+      ) {
+        return
+      }
+      const orderMap = params.order
+      if (!orderMap || typeof orderMap !== 'object') return
+      // Normalize the order map. Univer's order is DEST→SRC
+      // (NEW[destRow] = OLD[order[destRow]] — the mutation source reads
+      // getCellRaw(order[row]) and writes it to row). JSON object keys
+      // are strings, so normalize to number-keyed records; the gateway
+      // inverts the map internally before permuting <row> blocks.
+      const order: Record<number, number> = {}
+      for (const [k, v] of Object.entries(orderMap)) {
+        const dest = Number(k)
+        const src = Number(v)
+        if (!Number.isInteger(dest) || !Number.isInteger(src)) continue
+        order[dest] = src
+      }
+      if (Object.keys(order).length === 0) return
+      const startRow = range.startRow!
+      const endRow = range.endRow!
+      const startColumn = range.startColumn!
+      const endColumn = range.endColumn!
+      // ── Rebase previously-journaled cell edits into post-sort
+      //    coordinates. The sort moved cells inside the range: an edit
+      //    journaled at pre-sort position (srcRow, col) now describes the
+      //    cell at (destRow, col), where order[destRow] === srcRow. The
+      //    gateway replays structural ops BEFORE cell edits, so without
+      //    rebasing the pre-sort edits would land on the wrong rows (the
+      //    e2e "type then sort" scenario). Rebasing is a permutation of
+      //    the dirty keys (the order map is a bijection over the
+      //    participating rows), so no collisions are possible.
+      const srcToDest = new Map<number, number>()
+      for (const [destKey, srcRow] of Object.entries(order)) {
+        srcToDest.set(srcRow, Number(destKey))
+      }
+      const rebasedDirty = new Map<string, CellEdit>()
+      for (const [key, edit] of dirtyRef.current) {
+        // key = `${sheetName}:${row}:${column}` — parse from the right so
+        // sheet names containing colons could never confuse the split
+        // (OOXML forbids colons in sheet names, but be robust anyway).
+        const lastColon = key.lastIndexOf(':')
+        const secondLastColon = key.lastIndexOf(':', lastColon - 1)
+        const editSheet = key.slice(0, secondLastColon)
+        const editRow = Number(key.slice(secondLastColon + 1, lastColon))
+        const editColumn = Number(key.slice(lastColon + 1))
+        if (
+          editSheet === sheetName &&
+          editRow >= startRow &&
+          editRow <= endRow &&
+          editColumn >= startColumn &&
+          editColumn <= endColumn &&
+          srcToDest.has(editRow)
+        ) {
+          const destRow = srcToDest.get(editRow)!
+          rebasedDirty.set(dirtyKey(sheetName, destRow, editColumn), {
+            ...edit,
+            row: destRow,
+          })
+        } else {
+          rebasedDirty.set(key, edit)
         }
       }
-      const edits = reorderEditsFromMutation(sheetName, params, readCell)
-      if (edits.length === 0) return
-      for (const { row, column, edit } of edits) {
-        const key = dirtyKey(sheetName, row, column)
-        const existing = dirtyRef.current.get(key)
-        // replacesFormula=false: a literal value edit on a cell with NO
-        // journaled formula wins; a literal on a cell WITH a journaled
-        // formula is preserved (the post-sort cell keeps its formula if
-        // it had one). This mirrors the existing value-edit merge rule.
-        dirtyRef.current.set(
-          key,
-          mergeCellEdit(existing, { edit, replacesFormula: false }),
-        )
-      }
+      dirtyRef.current = rebasedDirty
+      const ops = structuralRef.current.get(sheetName) ?? []
+      ops.push({
+        kind: 'reorder-rows',
+        index: 0,
+        count: 1,
+        range: { startRow, endRow, startColumn, endColumn },
+        order,
+      })
+      structuralRef.current.set(sheetName, ops)
       onDirty()
       return
     }
@@ -738,8 +905,7 @@ function subscribeToCellMutations(
     //    family in applyCellEditsToXlsx writes the <mergeCells> entries.
     if (event.id === ADD_MERGE_MUTATION_ID || event.id === REMOVE_MERGE_MUTATION_ID) {
       const params = event.params as
-        | { subUnitId?: string; ranges?: unknown; unitId?: string }
-        | undefined
+        { subUnitId?: string; ranges?: unknown; unitId?: string } | undefined
       if (!params?.subUnitId) return
       const wb = runtime.univerAPI.getActiveWorkbook()
       if (!wb) return
@@ -800,9 +966,7 @@ function subscribeToCellMutations(
       if (!ws) return
       const sheetName = ws.getSheetName()
       const startRow = Number.isInteger(params.startRow) ? (params.startRow as number) : -1
-      const startColumn = Number.isInteger(params.startColumn)
-        ? (params.startColumn as number)
-        : -1
+      const startColumn = Number.isInteger(params.startColumn) ? (params.startColumn as number) : -1
       const frozenRows = startRow > 0 ? startRow : 0
       const frozenColumns = startColumn > 0 ? startColumn : 0
       if (frozenRows === 0 && frozenColumns === 0) {
@@ -819,8 +983,7 @@ function subscribeToCellMutations(
 
     if (event.id !== SET_RANGE_VALUES_MUTATION_ID) return
     const params = event.params as
-      | { subUnitId?: string; cellValue?: unknown; unitId?: string }
-      | undefined
+      { subUnitId?: string; cellValue?: unknown; unitId?: string } | undefined
     if (!params?.subUnitId) return
     const cellValue = params.cellValue
     if (typeof cellValue !== 'object' || cellValue === null) return

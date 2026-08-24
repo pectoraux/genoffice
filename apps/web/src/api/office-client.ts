@@ -38,7 +38,15 @@ export interface OpenWorkbookResponse {
  * and the open index signature lets future mutation families land without
  * a wire-breaking change.
  */
-/** One journaled structural operation (insert/remove rows/columns, merge/unmerge). */
+/**
+ * One journaled structural operation (insert/remove rows/columns, merge/unmerge,
+ * or sort/reorder-rows). The `reorder-rows` kind carries a `range` (the
+ * permuted row range) and an `order` map in UNIVER'S NATIVE DEST→SRC SHAPE
+ * (NEW[destRow] = OLD[order[destRow]]; journaled verbatim from Univer's
+ * ReorderRangeMutation — the gateway inverts it internally before permuting
+ * <row> blocks). The gateway permutes <row> blocks atomically, so the entire
+ * cell record (styles, numfmt, formulas, hyperlinks) travels with the row.
+ */
 export interface BrowserStructuralOp {
   readonly kind:
     | 'insert-rows'
@@ -47,10 +55,18 @@ export interface BrowserStructuralOp {
     | 'remove-cols'
     | 'merge-cells'
     | 'unmerge-cells'
+    | 'reorder-rows'
   readonly index: number
   readonly count: number
-  /** Range for merge/unmerge ops (0-based startRow/endRow/startColumn/endColumn). */
-  readonly range?: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number }
+  /** Range for merge/unmerge/reorder-rows ops (0-based startRow/endRow/startColumn/endColumn). */
+  readonly range?: {
+    readonly startRow: number
+    readonly endRow: number
+    readonly startColumn: number
+    readonly endColumn: number
+  }
+  /** Permutation map for reorder-rows ops (Univer's DEST→SRC shape: NEW[destRow] = OLD[order[destRow]], 0-based, bijection over range's rows). */
+  readonly order?: Readonly<Record<number, number>>
 }
 
 /** Per-sheet structural operations for a save plan. */

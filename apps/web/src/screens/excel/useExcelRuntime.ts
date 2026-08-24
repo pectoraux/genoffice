@@ -18,6 +18,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { BooleanNumber, WrapStrategy } from '@univerjs/core'
 import type { IStyleData } from '@univerjs/core'
 import { ILayoutService } from '@univerjs/ui'
+// Side-effect import — loads the @univerjs/sheets-sort facade types, which
+// augment `FRange` (from @univerjs/sheets/facade) with the public
+// `sort(column: SortColumnSpec | SortColumnSpec[]): FRange` method declared
+// by `FRangeSheetsSortMixin`. The runtime side is already wired by the
+// `UniverSheetsSortPreset` in create-browser-univer.ts; this import only
+// surfaces the TypeScript signature so `range.sort(...)` typechecks with
+// NO `as unknown as` / `as never` cast and NO private-field reach. The
+// method on FRange is the canonical Univer sort facade — the same path
+// the desktop's renderer uses.
+import '@univerjs/sheets-sort/facade'
 import type { BrowserUniverRuntime } from '../../office/create-browser-univer'
 import { parseAddress, parseRange } from '../../office/cell-address'
 
@@ -238,9 +248,11 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     // Style/numfmt edits surface as commands — refresh so the ribbon toggles
     // re-toggle after the mutation lands.
     track(univerAPI.addEvent(E.CommandExecuted, () => refresh()))
-    const undoSub = undoRedoService.undoRedoStatus$.subscribe((s: { undos: number; redos: number }) => {
-      setState((prev) => ({ ...prev, canUndo: s.undos > 0, canRedo: s.redos > 0 }))
-    })
+    const undoSub = undoRedoService.undoRedoStatus$.subscribe(
+      (s: { undos: number; redos: number }) => {
+        setState((prev) => ({ ...prev, canUndo: s.undos > 0, canRedo: s.redos > 0 }))
+      },
+    )
     subs.push(() => undoSub.unsubscribe())
     refresh()
     return () => subs.forEach((fn) => fn())
@@ -263,35 +275,47 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
   const toggleBold = useCallback(() => {
     const r = rtRef.current
     if (!r) return
-    const style = r.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getActiveRange()?.getCellStyleData() ?? null
+    const style =
+      r.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getActiveRange()?.getCellStyleData() ??
+      null
     applyStyle({ bl: style?.bl === BooleanNumber.TRUE ? BooleanNumber.FALSE : BooleanNumber.TRUE })
   }, [applyStyle])
 
   const toggleItalic = useCallback(() => {
     const r = rtRef.current
     if (!r) return
-    const style = r.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getActiveRange()?.getCellStyleData() ?? null
+    const style =
+      r.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getActiveRange()?.getCellStyleData() ??
+      null
     applyStyle({ it: style?.it === BooleanNumber.TRUE ? BooleanNumber.FALSE : BooleanNumber.TRUE })
   }, [applyStyle])
 
   const toggleUnderline = useCallback(() => {
     const r = rtRef.current
     if (!r) return
-    const style = r.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getActiveRange()?.getCellStyleData() ?? null
+    const style =
+      r.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getActiveRange()?.getCellStyleData() ??
+      null
     const on = style?.ul?.s === BooleanNumber.TRUE
     applyStyle({ ul: { s: on ? BooleanNumber.FALSE : BooleanNumber.TRUE } })
   }, [applyStyle])
 
   const setFontFamily = useCallback((ff: string) => applyStyle({ ff }), [applyStyle])
   const setFontSize = useCallback((fs: number) => applyStyle({ fs }), [applyStyle])
-  const setFontColor = useCallback((hex: string) => {
-    const rgb = hex.startsWith('#') ? hex : `#${hex}`
-    applyStyle({ cl: { rgb } })
-  }, [applyStyle])
-  const setFillColor = useCallback((hex: string) => {
-    const rgb = hex.startsWith('#') ? hex : `#${hex}`
-    applyStyle({ bg: { rgb } })
-  }, [applyStyle])
+  const setFontColor = useCallback(
+    (hex: string) => {
+      const rgb = hex.startsWith('#') ? hex : `#${hex}`
+      applyStyle({ cl: { rgb } })
+    },
+    [applyStyle],
+  )
+  const setFillColor = useCallback(
+    (hex: string) => {
+      const rgb = hex.startsWith('#') ? hex : `#${hex}`
+      applyStyle({ bg: { rgb } })
+    },
+    [applyStyle],
+  )
 
   const setHAlign = useCallback((v: 1 | 2 | 3) => applyStyle({ ht: v }), [applyStyle])
   const setVAlign = useCallback((v: 1 | 2 | 3) => applyStyle({ vt: v }), [applyStyle])
@@ -299,7 +323,9 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
   const toggleWrap = useCallback(() => {
     const r = rtRef.current
     if (!r) return
-    const style = r.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getActiveRange()?.getCellStyleData() ?? null
+    const style =
+      r.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getActiveRange()?.getCellStyleData() ??
+      null
     // WrapStrategy: 1=WRAP, 2=OVERFLOW (default). Toggle between them.
     const next = style?.tb === WrapStrategy.WRAP ? WrapStrategy.OVERFLOW : WrapStrategy.WRAP
     applyStyle({ tb: next })
@@ -353,69 +379,72 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     ws.setHiddenGridlines(!ws.hasHiddenGridLines())
   }, [])
 
-  const goTo = useCallback((ref: string): string | null => {
-    const r = rtRef.current
-    if (!r) return 'No workbook open'
-    const wb = r.univerAPI.getActiveWorkbook()
-    const ws = wb?.getActiveSheet()
-    if (!wb || !ws) return 'No active sheet'
-    const trimmed = ref.trim()
-    if (!trimmed) return null
-    // Validate A1 / range syntax first (the web has no defined-names layer,
-    // so plain syntax validation is the resolution step the desktop's
-    // resolveGoToRef performs for named refs).
-    try {
+  const goTo = useCallback(
+    (ref: string): string | null => {
+      const r = rtRef.current
+      if (!r) return 'No workbook open'
+      const wb = r.univerAPI.getActiveWorkbook()
+      const ws = wb?.getActiveSheet()
+      if (!wb || !ws) return 'No active sheet'
+      const trimmed = ref.trim()
+      if (!trimmed) return null
+      // Validate A1 / range syntax first (the web has no defined-names layer,
+      // so plain syntax validation is the resolution step the desktop's
+      // resolveGoToRef performs for named refs).
       try {
-        parseRange(trimmed)
+        try {
+          parseRange(trimmed)
+        } catch {
+          parseAddress(trimmed)
+        }
       } catch {
-        parseAddress(trimmed)
+        return 'Invalid reference'
       }
-    } catch {
-      return 'Invalid reference'
-    }
-    // The FWorkbook facade carries the authoritative selection API
-    // (setActiveRange, declared at @univerjs/sheets f-workbook.d.ts:384) —
-    // the SAME path the desktop's goToReference (apps/sheets/src/renderer/
-    // data-tools-actions.ts:134-180) uses. The previous implementation
-    // called ws.setActiveSelection(range) + range.activate()/activateAs-
-    // CurrentCell() (FWorksheet/FRange facades), which throw silently under
-    // the toolbar:false config and never move the active cell. workbook.
-    // setActiveRange is the correct, proven entry point.
-    try {
-      // A jump must not leave an editor open on the previous cell — later
-      // keystrokes would land there. Commit it before moving (fire-and-
-      // forget; matches the desktop's `void endEditingAsync(true)`).
-      if (wb.isCellEditing()) void wb.endEditingAsync(true)
-      const range = ws.getRange(trimmed)
-      // If the ref named a different sheet (e.g. "Sheet2!B5"), switch to it;
-      // otherwise stay on the active sheet.
-      const target = wb.getSheetBySheetId(range.getSheetId()) ?? ws
-      wb.setActiveRange(range)
-      target.scrollToCell(range.getRow(), range.getColumn())
-      // Hand keyboard focus back to the grid (Univer's hidden editor host,
-      // the same handoff the desktop performs via ILayoutService.focus()).
-      // Without this, the browser keeps focus on the Name Box <input> and
-      // typing after a jump lands in the input, not the target cell.
+      // The FWorkbook facade carries the authoritative selection API
+      // (setActiveRange, declared at @univerjs/sheets f-workbook.d.ts:384) —
+      // the SAME path the desktop's goToReference (apps/sheets/src/renderer/
+      // data-tools-actions.ts:134-180) uses. The previous implementation
+      // called ws.setActiveSelection(range) + range.activate()/activateAs-
+      // CurrentCell() (FWorksheet/FRange facades), which throw silently under
+      // the toolbar:false config and never move the active cell. workbook.
+      // setActiveRange is the correct, proven entry point.
       try {
-        r.univer.__getInjector().get(ILayoutService).focus()
-      } catch {
-        /* ILayoutService not registered in this build — grid click + name
+        // A jump must not leave an editor open on the previous cell — later
+        // keystrokes would land there. Commit it before moving (fire-and-
+        // forget; matches the desktop's `void endEditingAsync(true)`).
+        if (wb.isCellEditing()) void wb.endEditingAsync(true)
+        const range = ws.getRange(trimmed)
+        // If the ref named a different sheet (e.g. "Sheet2!B5"), switch to it;
+        // otherwise stay on the active sheet.
+        const target = wb.getSheetBySheetId(range.getSheetId()) ?? ws
+        wb.setActiveRange(range)
+        target.scrollToCell(range.getRow(), range.getColumn())
+        // Hand keyboard focus back to the grid (Univer's hidden editor host,
+        // the same handoff the desktop performs via ILayoutService.focus()).
+        // Without this, the browser keeps focus on the Name Box <input> and
+        // typing after a jump lands in the input, not the target cell.
+        try {
+          r.univer.__getInjector().get(ILayoutService).focus()
+        } catch {
+          /* ILayoutService not registered in this build — grid click + name
            box echo still work; only direct keyboard entry after a jump
            would land on <body> instead of the target cell. Best-effort. */
+        }
+        // Trigger a refresh so the Name Box echoes the new active cell
+        // immediately (the SelectionChanged event fires asynchronously).
+        refresh()
+      } catch (error: unknown) {
+        const detail = error instanceof Error ? error.message : ''
+        if (detail.includes('out of bounds') || detail.includes('out of range')) {
+          return 'Reference out of range'
+        }
+        if (detail.includes('Range not found')) return 'Sheet not found'
+        return detail === '' ? 'Invalid reference' : `Navigation failed: ${detail}`
       }
-      // Trigger a refresh so the Name Box echoes the new active cell
-      // immediately (the SelectionChanged event fires asynchronously).
-      refresh()
-    } catch (error: unknown) {
-      const detail = error instanceof Error ? error.message : ''
-      if (detail.includes('out of bounds') || detail.includes('out of range')) {
-        return 'Reference out of range'
-      }
-      if (detail.includes('Range not found')) return 'Sheet not found'
-      return detail === '' ? 'Invalid reference' : `Navigation failed: ${detail}`
-    }
-    return null
-  }, [refresh])
+      return null
+    },
+    [refresh],
+  )
 
   const commitFormula = useCallback((text: string) => {
     const r = rtRef.current
@@ -426,8 +455,14 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     const trimmed = text
     try {
       if (trimmed.startsWith('=')) {
-        // Formula commit — strip the leading '=' (Univer stores the body).
-        cell.setValueForCell({ f: trimmed.slice(1) } as never)
+        // Formula commit — KEEP the leading '='. Univer's internal cell.f
+        // convention INCLUDES it (isFormulaString requires
+        // `value.substring(0, 1) === "="`): setValueForCell({f:'=SUM(..)'})
+        // stores a LIVE formula the engine calculates (v gets the result);
+        // stripping the '=' would seed a dead formula that never
+        // calculates. The JOURNAL's CellEdit wire format strips the '=' in
+        // cellEditFromMutation (XLSX <f> elements have no '=') — untouched.
+        cell.setValueForCell({ f: trimmed } as never)
       } else {
         // Literal value commit. An empty string clears the cell value.
         cell.setValueForCell((trimmed === '' ? { v: '' } : { v: trimmed }) as never)
@@ -456,101 +491,43 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     }
   }, [])
 
-  const sortRange = useCallback((asc: boolean) => {
-    const r = rtRef.current
-    if (!r) return
-    const wb = r.univerAPI.getActiveWorkbook()
-    const ws = wb?.getActiveSheet()
-    const range = ws?.getActiveRange()
-    if (!wb || !ws || !range) return
-    // Sort the active range by its first column. We read the cell values,
-    // sort the rows in JS, and write them back via FRange.setValueForCell —
-    // the same proven pipeline the formula bar uses. This fires
-    // sheet.mutation.set-range-values for each cell, journaled by
-    // ExcelEditor's existing subscription as writeValue CellEdits. On save,
-    // the canonical applyCellEditsToXlsx writes the sorted values back into
-    // the XLSX — the row order survives save/reopen.
-    //
-    // (The Univer sort preset's FRange.sort() facade fires
-    // sheet.command.sort-range → ReorderRangeMutation, which writes
-    // directly into the worksheet cellDataMatrix and does NOT fire
-    // set-range-values — the existing journal would miss it. Reading +
-    // re-writing via setValueForCell is the cleanest path that reuses the
-    // canonical save pipeline without extending the journal with a new
-    // mutation family.)
-    try {
-      // The active range's underlying IRange.
-      const rangeData = (range as unknown as {
-        _range: { startRow: number; endRow: number; startColumn: number; endColumn: number }
-      })._range
-      const { startRow, endRow, startColumn, endColumn } = rangeData
-      if (endRow < startRow || endColumn < startColumn) return
-      // Read all rows in the range (each row is an array of cell values
-      // across the range's columns).
-      const rows: Array<{ rowIndex: number; values: Array<{ v: unknown; f?: string } | null> }> = []
-      for (let row = startRow; row <= endRow; row++) {
-        const values: Array<{ v: unknown; f?: string } | null> = []
-        for (let col = startColumn; col <= endColumn; col++) {
-          const cell = ws.getRange(row, col).getCellData() as
-            | { v?: unknown; f?: unknown }
-            | null
-          if (!cell) {
-            values.push(null)
-            continue
-          }
-          const v = cell.v
-          let cellValue: { v: unknown; f?: string } = { v: v ?? null }
-          if (typeof cell.f === 'string' && cell.f.length > 0) {
-            cellValue = { v: v ?? null, f: cell.f }
-          }
-          values.push(cellValue)
-        }
-        rows.push({ rowIndex: row, values })
+  const sortRange = useCallback(
+    (asc: boolean) => {
+      const r = rtRef.current
+      if (!r) return
+      const wb = r.univerAPI.getActiveWorkbook()
+      const ws = wb?.getActiveSheet()
+      const range = ws?.getActiveRange()
+      if (!wb || !ws || !range) return
+      // Canonical Univer sort path: FRange.sort (the public facade mixin from
+      // @univerjs/sheets-sort, surfaced via the side-effect import at the top
+      // of this module). The mixin delegates to SortRangeCommand →
+      // ReorderRangeCommand → ReorderRangeMutation (sheet.mutation.reorder-
+      // range), which deepClones the entire cell record (v/f/s/p/si/t) via
+      // getCellRaw and writes it into the worksheet cellDataMatrix. Styles,
+      // numfmt, fills, borders, hyperlinks, comments, validation, and any
+      // other cell metadata travel atomically with the row — the cardinal
+      // requirement the previous JS-sort implementation violated.
+      //
+      // ExcelEditor's `sheet.mutation.reorder-range` subscription journals
+      // the row permutation as a `reorder-rows` structural op (range + order
+      // map). On save, the canonical applyStructuralOps path in xlsx-gateway
+      // permutes <row> blocks atomically — only the r= attributes on <row>
+      // and inner <c> renumber, the cell contents travel UNTOUCHED inside
+      // their <c> elements. Save/reopen is faithful to Univer's live state.
+      //
+      // No `_range` private-field access, no `as never` cast, no
+      // `as unknown as` cast — `range.sort(...)` typechecks directly via
+      // the FRangeSheetsSortMixin augmentation.
+      try {
+        range.sort({ column: 0, ascending: asc })
+        refresh()
+      } catch {
+        /* sort not applicable — selection may be a single cell */
       }
-      // Sort by the first column's value. Numbers sort numerically; strings
-      // sort by locale-aware case-insensitive comparison; nulls sort last
-      // (ascending) / first (descending). The first column is the sort key.
-      const compareValues = (a: unknown, b: unknown): number => {
-        const aEmpty = a === null || a === undefined || a === ''
-        const bEmpty = b === null || b === undefined || b === ''
-        if (aEmpty && bEmpty) return 0
-        if (aEmpty) return asc ? 1 : -1
-        if (bEmpty) return asc ? -1 : 1
-        if (typeof a === 'number' && typeof b === 'number') {
-          return asc ? a - b : b - a
-        }
-        const aStr = String(a).toLowerCase()
-        const bStr = String(b).toLowerCase()
-        if (aStr < bStr) return asc ? -1 : 1
-        if (aStr > bStr) return asc ? 1 : -1
-        return 0
-      }
-      rows.sort((a, b) => compareValues(a.values[0]?.v ?? null, b.values[0]?.v ?? null))
-      // Write the sorted rows back. The source row at index i in `rows`
-      // (post-sort) goes to the destination row startRow + i.
-      for (let i = 0; i < rows.length; i++) {
-        const destRow = startRow + i
-        for (let col = 0; col < rows[i].values.length; col++) {
-          const cell = rows[i].values[col]
-          const destCol = startColumn + col
-          if (cell === null) {
-            ws.getRange(destRow, destCol).setValueForCell({ v: null } as never)
-          } else if (cell.f) {
-            // Preserve formulas (sort moves the whole cell — formula + value).
-            ws
-              .getRange(destRow, destCol)
-              .setValueForCell({ f: cell.f, v: cell.v } as never)
-          } else {
-            ws.getRange(destRow, destCol).setValueForCell({ v: cell.v } as never)
-          }
-        }
-      }
-      // Trigger a refresh so the ribbon state re-reads immediately.
-      refresh()
-    } catch {
-      /* sort not applicable — selection may be a single cell */
-    }
-  }, [refresh])
+    },
+    [refresh],
+  )
 
   const toggleFreezePanes = useCallback((): string | null => {
     const r = rtRef.current
@@ -574,22 +551,25 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
       // Toggle: if already frozen at exactly this cell, clear; otherwise
       // (re)freeze. A "no freeze" config uses startRow=-1, startColumn=-1,
       // xSplit=0, ySplit=0.
-      const current = (ws as unknown as {
-        getFreeze(): { startRow: number; startColumn: number; xSplit: number; ySplit: number }
-      }).getFreeze()
-      const isFrozenHere =
-        current.startRow === activeRow && current.startColumn === activeCol
+      const current = (
+        ws as unknown as {
+          getFreeze(): { startRow: number; startColumn: number; xSplit: number; ySplit: number }
+        }
+      ).getFreeze()
+      const isFrozenHere = current.startRow === activeRow && current.startColumn === activeCol
       const next = isFrozenHere
         ? { startRow: -1, startColumn: -1, xSplit: 0, ySplit: 0 }
         : { startRow: activeRow, startColumn: activeCol, xSplit: activeCol, ySplit: activeRow }
-      ;(ws as unknown as {
-        setFreeze(f: {
-          startRow: number
-          startColumn: number
-          xSplit: number
-          ySplit: number
-        }): unknown
-      }).setFreeze(next)
+      ;(
+        ws as unknown as {
+          setFreeze(f: {
+            startRow: number
+            startColumn: number
+            xSplit: number
+            ySplit: number
+          }): unknown
+        }
+      ).setFreeze(next)
       // Trigger a refresh so the ribbon state re-reads immediately.
       refresh()
     } catch (error: unknown) {

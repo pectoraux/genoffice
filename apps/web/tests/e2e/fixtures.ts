@@ -491,6 +491,194 @@ export async function buildExcelFixture(): Promise<Buffer> {
   return toBytes(zip)
 }
 
+// ── Excel sort fidelity fixture (ribbon-data E2E) ───────────────────────────
+
+/**
+ * Deterministic XLSX exercising the canonical sort save path's fidelity
+ * surfaces — the regression fixture the architect mandated:
+ *
+ *   Sheet "Sort" (visible):
+ *     Row 1 — header (bold + light-yellow fill via xf 1, NOT in sort range)
+ *       A1="Name" (bold + fill, xf 1), B1="Qty", C1="Price", D1="Subtotal"
+ *     Row 2 — Banana (italic via font 2 → xf 2)
+ *       A2="Banana" (italic, xf 2), B2=30, C2=1.50 (currency numfmt via
+ *         xf 3 / numFmtId 164), D2=`=B2*C2` (formula with RELATIVE refs,
+ *         cached value 45), hyperlink on A2 → rId1
+ *     Row 3 — Cherry (regular, xf 0)
+ *       A3="Cherry", B3=10, C3=3.00 (currency numfmt, xf 3),
+ *         D3=`=B3*C3` (cached value 30)
+ *     Row 4 — Apple (bold via font 1 → xf 4)
+ *       A4="Apple" (bold, xf 4), B4=20, C4=2.00 (currency numfmt, xf 3),
+ *         D4=`=B4*C4` (cached value 40)
+ *   Worksheet-level <hyperlinks>:
+ *     <hyperlink ref="A2" r:id="rId1"/> (banana hyperlink — Univer's
+ *       ReorderRangeMutation does NOT move worksheet-level hyperlink
+ *       definitions; the gateway mirrors that, so the hyperlink ref
+ *       stays at A2 while the cell content at A2 changes)
+ *
+ * When the user selects A2:D4 and clicks Sort Asc (alphabetical by
+ * column A), the rows reorder to [Apple, Banana, Cherry]. The gateway's
+ * `reorder-rows` structural op permutes the <row> blocks atomically —
+ * styles (italic on Banana, bold on Apple), numfmt (currency on C
+ * column), formula text (verbatim `=B2*C2` etc. — Univer's deepClone
+ * does NOT rewrite relative refs, matching Univer's live state), and
+ * worksheet-level hyperlink definitions all travel verbatim.
+ */
+export async function buildExcelSortFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Sort" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  // Shared strings: header labels + fruit names (A column values).
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="7" uniqueCount="7">
+  <si><t>Name</t></si>
+  <si><t>Qty</t></si>
+  <si><t>Price</t></si>
+  <si><t>Subtotal</t></si>
+  <si><t>Banana</t></si>
+  <si><t>Cherry</t></si>
+  <si><t>Apple</t></si>
+</sst>`,
+  )
+
+  // Styles: 5 cellXfs.
+  //   xf 0 — default (regular)
+  //   xf 1 — header (bold font 1 + light-yellow fill 2)
+  //   xf 2 — italic (font 2 italic)
+  //   xf 3 — currency numfmt (numFmtId 164, applied via applyNumberFormat)
+  //   xf 4 — bold (font 1 bold)
+  // Custom numFmt 164 = "$"#,##0.00 (currency).
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1">
+    <numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00"/>
+  </numFmts>
+  <fonts count="3">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><color rgb="FF9C3B00"/><name val="Calibri"/></font>
+    <font><i/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="5">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`,
+  )
+
+  // Worksheet: header row 1, data rows 2-4. The <hyperlinks> element
+  // (worksheet-level) carries the banana hyperlink on A2 — Univer's
+  // ReorderRangeMutation does NOT move it, and the gateway mirrors that.
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s" s="1"><v>0</v></c>
+      <c r="B1" t="s" s="1"><v>1</v></c>
+      <c r="C1" t="s" s="1"><v>2</v></c>
+      <c r="D1" t="s" s="1"><v>3</v></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s" s="2"><v>4</v></c>
+      <c r="B2"><v>30</v></c>
+      <c r="C2" s="3"><v>1.5</v></c>
+      <c r="D2"><f>B2*C2</f><v>45</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="s"><v>5</v></c>
+      <c r="B3"><v>10</v></c>
+      <c r="C3" s="3"><v>3</v></c>
+      <c r="D3"><f>B3*C3</f><v>30</v></c>
+    </row>
+    <row r="4">
+      <c r="A4" t="s" s="4"><v>6</v></c>
+      <c r="B4"><v>20</v></c>
+      <c r="C4" s="3"><v>2</v></c>
+      <c r="D4"><f>B4*C4</f><v>40</v></c>
+    </row>
+  </sheetData>
+  <hyperlinks count="1">
+    <hyperlink ref="A2" r:id="rId1"/>
+  </hyperlinks>
+</worksheet>`,
+  )
+
+  // Worksheet rels — carry the banana hyperlink relationship target.
+  addFile(
+    zip,
+    'xl/_rels/sheet1.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/banana" TargetMode="External"/>
+</Relationships>`,
+  )
+
+  return toBytes(zip)
+}
+
 // ── DOCX fixture ────────────────────────────────────────────────────────────
 
 /**

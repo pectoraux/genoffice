@@ -54,7 +54,8 @@ export interface WorksheetState {
    * changes through the canonical `SheetPageSetupState` save family, and
    * reads it back via this field on reopen so freeze survives round-trip.
    */
-  readonly freeze?: Readonly<{ readonly frozenRows: number; readonly frozenColumns: number }> | undefined
+  readonly freeze?:
+    Readonly<{ readonly frozenRows: number; readonly frozenColumns: number }> | undefined
 }
 
 export interface WorkbookSnapshot {

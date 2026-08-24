@@ -288,7 +288,12 @@ export function numfmtEditsFromMutation(
     values?: unknown
     refMap?: unknown
   }
-  if (typeof p.values !== 'object' || p.values === null || typeof p.refMap !== 'object' || p.refMap === null) {
+  if (
+    typeof p.values !== 'object' ||
+    p.values === null ||
+    typeof p.refMap !== 'object' ||
+    p.refMap === null
+  ) {
     return []
   }
   const values = p.values as Record<string, { ranges?: unknown }>
@@ -303,7 +308,12 @@ export function numfmtEditsFromMutation(
     const pattern = ref.pattern
     for (const range of ranges) {
       if (typeof range !== 'object' || range === null) continue
-      const r = range as { startRow?: number; endRow?: number; startColumn?: number; endColumn?: number }
+      const r = range as {
+        startRow?: number
+        endRow?: number
+        startColumn?: number
+        endColumn?: number
+      }
       const startRow = Number.isInteger(r.startRow) ? (r.startRow as number) : -1
       const endRow = Number.isInteger(r.endRow) ? (r.endRow as number) : -1
       const startColumn = Number.isInteger(r.startColumn) ? (r.startColumn as number) : -1
@@ -332,70 +342,23 @@ export function numfmtEditsFromMutation(
 
 // ── Sort journaling (Phase 4 Increment 3 — Objective 3) ────────────────────
 //
-// Univer's sort command (sheet.command.sort-range) fires the
-// `sheet.mutation.reorder-range` mutation, which writes directly into the
-// worksheet's cellDataMatrix in-memory — it does NOT dispatch a separate
-// `sheet.mutation.set-range-values`. The existing journal's
-// set-range-values subscription therefore misses sort. ExcelEditor's
-// expanded subscription now also handles `sheet.mutation.reorder-range`:
-// after the mutation lands, the post-sort cell values are read straight
-// from the worksheet model and journaled as plain value CellEdits. On
-// save, applyCellEditsToXlsx writes them back into the XLSX in the
-// sorted order — the canonical write path, no bespoke sort mutation
-// family on the wire.
-
-/**
- * Build value CellEdits for a reorder-range (sort) mutation. Reads the
- * post-mutation cell values directly from the worksheet model and emits
- * one `writeValue: true` CellEdit per cell in the sorted range, so the
- * save plan writes the new row order into the XLSX.
- *
- * `readCell` is a thin indirection so the pure merge module never imports
- * Univer — the caller (ExcelEditor) supplies a closure over the live
- * worksheet. Returns an empty array when the params are malformed.
- */
-export function reorderEditsFromMutation(
-  sheetName: string,
-  params: unknown,
-  readCell: (row: number, column: number) =>
-    | { value: string | number | boolean | null; formula?: string }
-    | null,
-): ReadonlyArray<{
-  readonly row: number
-  readonly column: number
-  readonly edit: CellEdit
-}> {
-  if (typeof params !== 'object' || params === null) return []
-  const p = params as { range?: unknown }
-  if (typeof p.range !== 'object' || p.range === null) return []
-  const r = p.range as { startRow?: number; endRow?: number; startColumn?: number; endColumn?: number }
-  const startRow = Number.isInteger(r.startRow) ? (r.startRow as number) : -1
-  const endRow = Number.isInteger(r.endRow) ? (r.endRow as number) : -1
-  const startColumn = Number.isInteger(r.startColumn) ? (r.startColumn as number) : -1
-  const endColumn = Number.isInteger(r.endColumn) ? (r.endColumn as number) : -1
-  if (startRow < 0 || endRow < 0 || startColumn < 0 || endColumn < 0) return []
-  const out: Array<{ row: number; column: number; edit: CellEdit }> = []
-  for (let row = startRow; row <= endRow; row++) {
-    for (let column = startColumn; column <= endColumn; column++) {
-      const cell = readCell(row, column)
-      if (cell === null) continue
-      // Preserve any formula on the post-sort cell — sort moves the whole
-      // cell (value + formula). A formula cell keeps its formula; a plain
-      // literal keeps its literal. An empty cell clears the destination.
-      out.push({
-        row,
-        column,
-        edit: {
-          sheetName,
-          row,
-          column,
-          writeValue: true,
-          cell: cell.formula
-            ? { value: cell.value, formula: cell.formula }
-            : { value: cell.value },
-        },
-      })
-    }
-  }
-  return out
-}
+// Sort is now journaled as a `reorder-rows` structural op directly in
+// ExcelEditor's `sheet.mutation.reorder-range` subscription — the
+// permutation map (Univer's `order: { srcRow: destRow }`) is captured
+// verbatim and pushed into `structuralRef`. The canonical
+// `applyStructuralOps` path in xlsx-gateway permutes `<row>` blocks
+// atomically: only the r= attributes on `<row>` and inner `<c>` are
+// renumbered, the cell contents (value, formula text, style ref,
+// hyperlink rich-text, shared-formula si=, comment pointer) travel
+// UNTOUCHED inside their <c> elements. This mirrors Univer's
+// ReorderRangeMutation deepClone of getCellRaw exactly — styles, numfmt,
+// fills, borders, hyperlinks, and any other cell metadata survive
+// save/reopen.
+//
+// The previous per-cell `reorderEditsFromMutation` helper (which read
+// post-sort cell values into JS and emitted `writeValue` CellEdits,
+// stripping styles/numfmt/fills/borders/hyperlinks) is removed — that
+// approach lost cell metadata and was the cardinal bug the architect
+// flagged: "the implementation explicitly abandons Univer's canonical
+// sort mutation and instead reads cell values/formulas into JavaScript,
+// sorts them, and writes them back with setValueForCell()."

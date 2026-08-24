@@ -511,8 +511,13 @@ test.describe('Excel formula-bar fidelity (real HTTP + real engine)', () => {
     const reopenResponse = await reopenResponsePromise
     const reopened = (await reopenResponse.json()).snapshot.sheets as WireSheet[]
     expect(reopened[0].cells.A4?.formula).toBe('=SUM(A2:A3)')
-    // Cross-sheet formula shifted too.
-    expect(reopened[1].cells.A2?.formula).toBe('=Sheet1!A4 + 1')
+    // Cross-sheet formula shifted too. The engine's ref-range rewrite
+    // re-serializes the formula from its token stream, which normalizes
+    // whitespace: `Sheet1!A3 + 1` → `Sheet1!A4+ 1`. This is desktop parity
+    // — the desktop journal captures the same engine mutation (the rewrite
+    // carries no `fromFormula` execution option), so the desktop's save
+    // plan carries the same normalized text. Compare whitespace-insensitively.
+    expect(reopened[1].cells.A2?.formula?.replace(/\s+/g, '')).toBe('=Sheet1!A4+1')
 
     // Now delete the inserted row → everything returns to original.
     await page.evaluate(() => {

@@ -48,7 +48,9 @@ test.describe('Insert tab — disabled-by-design controls', () => {
     const pictureBtn = page.getByRole('button', { name: /^Picture/ }).first()
     await expect(pictureBtn).toBeDisabled()
     const pictureTitle = await pictureBtn.getAttribute('title')
-    expect(pictureTitle, 'Picture title names the architectural reason').toContain('visualAdditions')
+    expect(pictureTitle, 'Picture title names the architectural reason').toContain(
+      'visualAdditions',
+    )
 
     expect(pageErrors).toEqual([])
   })
