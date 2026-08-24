@@ -20135,6 +20135,8 @@ function escapeAttribute2(input) {
 // packages/xlsx-gateway/src/gateway/xlsx-filter.ts
 var FilterEditError = class extends Error {
 };
+var FilterReadError = class extends Error {
+};
 var CUSTOM_OPERATORS = /* @__PURE__ */ new Set([
   "equal",
   "notEqual",
@@ -20143,9 +20145,20 @@ var CUSTOM_OPERATORS = /* @__PURE__ */ new Set([
   "lessThan",
   "lessThanOrEqual"
 ]);
+var UNSUPPORTED_FILTER_COLUMN_CHILDREN = [
+  "top10",
+  "dynamicFilter",
+  "iconFilter",
+  "colorFilters",
+  "dateGroup",
+  "dateFilters",
+  "customFilters10"
+];
 function applyFilterState(worksheetXml, state) {
   const element = state.filter === null ? "" : serializeAutoFilter(state.filter);
-  const existing = /<autoFilter\b[^>]*\/>|<autoFilter\b[^>]*>[\s\S]*?<\/autoFilter>/.exec(worksheetXml);
+  const existing = /<autoFilter\b[^>]*\/>|<autoFilter\b[^>]*>[\s\S]*?<\/autoFilter>/.exec(
+    worksheetXml
+  );
   let xml = worksheetXml;
   if (existing) {
     xml = worksheetXml.slice(0, existing.index) + element + worksheetXml.slice(existing.index + existing[0].length);
@@ -20153,6 +20166,134 @@ function applyFilterState(worksheetXml, state) {
     xml = insertAfterSheetData(worksheetXml, element);
   }
   return applyRowVisibility(xml, state.visibilityRange, new Set(state.hiddenRows));
+}
+function parseAutoFilter(worksheetXml, sheetName) {
+  const element = /<autoFilter\b([^>]*)\/>|<autoFilter\b([^>]*)>[\s\S]*?<\/autoFilter>/.exec(
+    worksheetXml
+  );
+  if (!element) {
+    return null;
+  }
+  const attributes2 = element[1] ?? element[2] ?? "";
+  const ref = /(?:^|\s)ref="([^"]+)"/.exec(attributes2)?.[1];
+  const range = ref === void 0 ? null : parseRefRange(ref);
+  if (range === null) {
+    throw new FilterReadError(`autoFilter has no readable ref (${ref ?? "none"}).`);
+  }
+  const inner = element[2] === void 0 ? "" : element[0].slice(element[0].indexOf(">") + 1, element[0].length - "</autoFilter>".length);
+  const columns = [];
+  for (const columnMatch of inner.matchAll(/<filterColumn\b([^>]*)>([\s\S]*?)<\/filterColumn>/g)) {
+    columns.push(parseFilterColumn(columnMatch[1] ?? "", columnMatch[2] ?? ""));
+  }
+  if (/<filterColumn\b/g.test(inner) && columns.length !== countFilterColumns(inner)) {
+    throw new FilterReadError("autoFilter carries a filterColumn without readable criteria.");
+  }
+  const hiddenRows = parseHiddenRows(worksheetXml, range);
+  return {
+    sheetName,
+    filter: { range, columns },
+    hiddenRows,
+    visibilityRange: range
+  };
+}
+function countFilterColumns(inner) {
+  const matches = [...inner.matchAll(/<filterColumn\b[^>]*(?:\/>|>)/g)];
+  return matches.length;
+}
+function parseFilterColumn(attributes2, inner) {
+  const colIdText = /(?:^|\s)colId="([0-9]+)"/.exec(attributes2)?.[1];
+  if (colIdText === void 0) {
+    throw new FilterReadError("filterColumn has no colId attribute.");
+  }
+  const colId = Number(colIdText);
+  if (inner.trim() === "") throw new FilterReadError("filterColumn carries no criteria.");
+  for (const unsupported of UNSUPPORTED_FILTER_COLUMN_CHILDREN) {
+    if (inner.includes(`<${unsupported}`)) {
+      throw new FilterReadError(
+        `Filter criteria "${unsupported}" cannot be represented in the canonical filter model.`
+      );
+    }
+  }
+  const valuesMatch = /<filters\b([^>]*)>([\s\S]*?)<\/filters>|<filters\b([^>]*)\/>/.exec(inner);
+  const customMatch = /<customFilters\b([^>]*)>([\s\S]*?)<\/customFilters>|<customFilters\b([^>]*)\/>/.exec(inner);
+  if (!valuesMatch && !customMatch) {
+    throw new FilterReadError("filterColumn carries no readable criteria.");
+  }
+  const column = { colId };
+  if (valuesMatch) {
+    const filterAttrs = valuesMatch[1] ?? valuesMatch[3] ?? "";
+    const valuesInner = valuesMatch[2] ?? "";
+    const values = [...valuesInner.matchAll(/<filter\b[^>]*?\/>/g)].map(
+      (m) => /(?:^|\s)val="([^"]*)"/.exec(m[0])?.[1] ?? ""
+    );
+    const blank = /(?:^|\s)blank="([^"]*)"/.exec(filterAttrs)?.[1] === "1";
+    if (values.length > 0) column.values = values;
+    if (blank) column.blank = true;
+    if (values.length === 0 && !blank) {
+      throw new FilterReadError("filters element carries no values and no blank flag.");
+    }
+  }
+  if (customMatch) {
+    const customAttrs = customMatch[1] ?? customMatch[3] ?? "";
+    const customsInner = customMatch[2] ?? "";
+    const filters = [];
+    for (const custom of customsInner.matchAll(
+      /<customFilter\b([^>]*?)(?:\/|><\/customFilter)>/g
+    )) {
+      const attrs = custom[1] ?? "";
+      const valText = /(?:^|\s)val="([^"]*)"/.exec(attrs)?.[1];
+      if (valText === void 0) {
+        throw new FilterReadError("customFilter has no val attribute.");
+      }
+      const operator = /(?:^|\s)operator="([^"]+)"/.exec(attrs)?.[1];
+      if (operator !== void 0 && !CUSTOM_OPERATORS.has(operator)) {
+        throw new FilterReadError(`Filter condition "${operator}" cannot be saved as XLSX yet.`);
+      }
+      const asNumber2 = Number(valText);
+      const val = valText.trim() !== "" && Number.isFinite(asNumber2) ? asNumber2 : decodeXmlText(valText);
+      filters.push(operator === void 0 ? { val } : { val, operator });
+    }
+    if (filters.length === 0) {
+      throw new FilterReadError("customFilters element carries no customFilter entries.");
+    }
+    const and = /(?:^|\s)and="([^"]*)"/.exec(customAttrs)?.[1] === "1";
+    column.customs = and ? { and: true, filters } : { filters };
+  }
+  return column;
+}
+function parseHiddenRows(worksheetXml, range) {
+  const hidden = [];
+  const rowPattern = /<row\b([^>]*)\/?>/g;
+  let match;
+  while ((match = rowPattern.exec(worksheetXml)) !== null) {
+    const attrs = match[1] ?? "";
+    if (/(?:^|\s)hidden="(?:1|true)"/.test(attrs) === false) continue;
+    const rowNumber = /(?:^|\s)r="([0-9]+)"/.exec(attrs)?.[1];
+    if (rowNumber === void 0) continue;
+    const rowIndex = Number(rowNumber) - 1;
+    if (rowIndex > range.startRow && rowIndex <= range.endRow) hidden.push(rowIndex);
+  }
+  return hidden;
+}
+function parseRefRange(ref) {
+  const [startRef, endRef] = ref.split(":");
+  const start = parseA12(startRef ?? "");
+  const end = parseA12(endRef ?? startRef ?? "");
+  if (!start || !end) return null;
+  return {
+    startRow: start.row,
+    endRow: end.row,
+    startColumn: start.column,
+    endColumn: end.column
+  };
+}
+function parseA12(address) {
+  const match = /^([A-Z]{1,3})([0-9]+)$/.exec(address);
+  if (!match) return null;
+  return { column: lettersToColumn2(match[1]), row: Number(match[2]) - 1 };
+}
+function decodeXmlText(input) {
+  return input.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
 }
 function serializeAutoFilter(filter) {
   const ref = toRef2(filter.range);
@@ -20214,7 +20355,9 @@ function applyRowVisibility(worksheetXml, range, hiddenRows) {
       return `<row${withoutHidden}${hidden}${close}`;
     }
   );
-  const missing = [...hiddenRows].filter((rowIndex) => !seen.has(rowIndex) && rowIndex >= firstDataRow && rowIndex <= range.endRow).sort((left, right) => left - right);
+  const missing = [...hiddenRows].filter(
+    (rowIndex) => !seen.has(rowIndex) && rowIndex >= firstDataRow && rowIndex <= range.endRow
+  ).sort((left, right) => left - right);
   for (const rowIndex of missing) {
     xml = insertEmptyHiddenRow(xml, rowIndex + 1);
   }
@@ -20250,6 +20393,13 @@ function columnToLetters2(column) {
     remaining = Math.floor(remaining / 26);
   }
   return letters;
+}
+function lettersToColumn2(letters) {
+  let column = 0;
+  for (const character of letters) {
+    column = column * 26 + character.charCodeAt(0) - 64;
+  }
+  return column - 1;
 }
 function escapeXmlAttribute4(input) {
   return input.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -22203,7 +22353,7 @@ var StylesheetReader = class {
     for (const entry of numFmtEntries) {
       const id = Number(readAttribute2(entry, "numFmtId") ?? "NaN");
       const code = readAttribute2(entry, "formatCode");
-      if (Number.isInteger(id) && code) byCode.set(id, decodeXmlText(code));
+      if (Number.isInteger(id) && code) byCode.set(id, decodeXmlText2(code));
     }
     this.numFmtByCode = byCode;
   }
@@ -22241,7 +22391,7 @@ var StylesheetReader = class {
     const sz = Number(readAttribute2(/<sz\b[^>]*\/?>/.exec(font)?.[0] ?? "", "val"));
     if (Number.isFinite(sz) && sz > 0) format.fontSize = sz;
     const name = readAttribute2(/<name\b[^>]*\/?>/.exec(font)?.[0] ?? "", "val");
-    if (name) format.fontFamily = decodeXmlText(name);
+    if (name) format.fontFamily = decodeXmlText2(name);
     const fontColor = argbToRgb(
       readAttribute2(/<color\b[^>]*\/?>/.exec(font)?.[0] ?? "", "rgb") ?? ""
     );
@@ -22268,7 +22418,7 @@ var StylesheetReader = class {
     return Object.keys(format).length > 0 ? format : void 0;
   }
 };
-function decodeXmlText(input) {
+function decodeXmlText2(input) {
   return input.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_m, code) => String.fromCodePoint(Number(code))).replace(/&amp;/g, "&");
 }
 
@@ -22415,11 +22565,18 @@ async function readBasicWorkbook(buffer) {
     const name = readXmlAttribute(attributes2, "name");
     const sheetNumber = readXmlAttribute(attributes2, "sheetId");
     if (!name || !sheetNumber) continue;
-    const decodedName = decodeXmlText2(name);
+    const decodedName = decodeXmlText3(name);
     const id = `sheet-${sheetNumber}`;
     const worksheetPath = await resolveWorksheetPath(zip, decodedName);
     const worksheetXml = await zip.readText(worksheetPath);
     const presentation = parseWorksheetPresentation(worksheetXml, styleReader);
+    let filterState;
+    try {
+      const parsed = parseAutoFilter(worksheetXml, decodedName);
+      if (parsed !== null) filterState = parsed;
+    } catch (error) {
+      if (!(error instanceof FilterReadError)) throw error;
+    }
     sheets.push({
       id,
       name: decodedName,
@@ -22428,7 +22585,8 @@ async function readBasicWorkbook(buffer) {
       ...presentation.merges.length > 0 ? { merges: presentation.merges } : {},
       ...presentation.rowHeights && Object.keys(presentation.rowHeights).length > 0 ? { rowHeights: presentation.rowHeights } : {},
       ...presentation.colWidths && Object.keys(presentation.colWidths).length > 0 ? { colWidths: presentation.colWidths } : {},
-      ...presentation.freeze ? { freeze: presentation.freeze } : {}
+      ...presentation.freeze ? { freeze: presentation.freeze } : {},
+      ...filterState ? { filterState } : {}
     });
     sheetNamesById[id] = decodedName;
   }
@@ -23349,7 +23507,7 @@ function insertCellInColumnOrder(rowBody, cellXml, targetColumn) {
   const siblingPattern = /<c\b[^>]*?\br="([A-Z]{1,3})[1-9][0-9]*"/g;
   let match;
   while ((match = siblingPattern.exec(rowBody)) !== null) {
-    if (lettersToColumn2(match[1] ?? "") > targetColumn) {
+    if (lettersToColumn3(match[1] ?? "") > targetColumn) {
       return rowBody.slice(0, match.index) + cellXml + rowBody.slice(match.index);
     }
   }
@@ -23381,7 +23539,7 @@ function expandWorksheetDimensionToCells(worksheetXml) {
     const cell = /^([A-Z]{1,3})([1-9][0-9]*)$/.exec(cleaned);
     if (!cell?.[1] || !cell[2]) return;
     const row = Number(cell[2]);
-    const column = lettersToColumn2(cell[1]);
+    const column = lettersToColumn3(cell[1]);
     maximumRow = Math.max(maximumRow, row);
     maximumColumn = Math.max(maximumColumn, column);
   };
@@ -23455,9 +23613,9 @@ function ensureFullCalcOnLoad(workbookXml) {
 function parseA1Column(address) {
   const letters = /^[A-Z]{1,3}/.exec(address)?.[0];
   if (!letters) throw new Error(`Invalid cell address: ${address}`);
-  return lettersToColumn2(letters);
+  return lettersToColumn3(letters);
 }
-function lettersToColumn2(letters) {
+function lettersToColumn3(letters) {
   let column = 0;
   for (const character of letters) {
     column = column * 26 + character.charCodeAt(0) - 64;
@@ -23475,12 +23633,12 @@ function parseWorksheetCells(worksheetXml, sharedStrings) {
     const body = match[2] ?? "";
     const formula = /<f(?:\s[^>]*[^/>])?>([\s\S]*?)<\/f>/.exec(body)?.[1];
     if (formula !== void 0) {
-      cells[address] = { value: null, formula: `=${decodeXmlText2(formula)}` };
+      cells[address] = { value: null, formula: `=${decodeXmlText3(formula)}` };
       continue;
     }
     const type = readXmlAttribute(attributes2, "t");
     if (type === "inlineStr") {
-      const text = [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText2(textMatch[1] ?? "")).join("");
+      const text = [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText3(textMatch[1] ?? "")).join("");
       cells[address] = { value: text };
       continue;
     }
@@ -23493,11 +23651,11 @@ function parseWorksheetCells(worksheetXml, sharedStrings) {
     } else if (type === "b") {
       cells[address] = { value: rawValue === "1" };
     } else if (type === "str") {
-      cells[address] = { value: decodeXmlText2(rawValue) };
+      cells[address] = { value: decodeXmlText3(rawValue) };
     } else {
       const numericValue = Number(rawValue);
       cells[address] = {
-        value: Number.isFinite(numericValue) ? numericValue : decodeXmlText2(rawValue)
+        value: Number.isFinite(numericValue) ? numericValue : decodeXmlText3(rawValue)
       };
     }
   }
@@ -23507,7 +23665,7 @@ async function readSharedStrings(source) {
   if (!await source.has("xl/sharedStrings.xml")) return [];
   const xml = await source.readText("xl/sharedStrings.xml");
   return [...xml.matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map(
-    (itemMatch) => [...(itemMatch[1] ?? "").matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText2(textMatch[1] ?? "")).join("")
+    (itemMatch) => [...(itemMatch[1] ?? "").matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText3(textMatch[1] ?? "")).join("")
   );
 }
 function escapeXmlText8(input) {
@@ -23520,7 +23678,7 @@ var XML_NAMED_ENTITIES = {
   gt: ">",
   amp: "&"
 };
-function decodeXmlText2(input) {
+function decodeXmlText3(input) {
   return input.replace(
     /&(?:#x([0-9A-Fa-f]+)|#([0-9]+)|(quot|apos|lt|gt|amp));/g,
     (match, hex, dec, named) => {
@@ -42828,6 +42986,193 @@ function expectSheetPageSetupState(value, index) {
   }
   return out;
 }
+var FILTER_CUSTOM_OPERATORS = /* @__PURE__ */ new Set([
+  "equal",
+  "notEqual",
+  "greaterThan",
+  "greaterThanOrEqual",
+  "lessThan",
+  "lessThanOrEqual"
+]);
+var MAX_FILTER_ROW_OR_COLUMN = 1048576;
+var MAX_FILTER_COLUMN_INDEX = 16384;
+var MAX_FILTER_STATES = 100;
+var MAX_FILTER_VALUES = 1e4;
+var MAX_CUSTOM_FILTERS = 2;
+function expectSheetFilterState(value, index) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `filterStates[${index}] must be an object`);
+  }
+  const sheetName = expectString(value.sheetName, `filterStates[${index}].sheetName`);
+  const out = {
+    sheetName,
+    filter: null,
+    hiddenRows: [],
+    visibilityRange: { startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }
+  };
+  if (value.filter !== null && value.filter !== void 0) {
+    if (!isRecord(value.filter)) {
+      throw new OfficeValidationError(
+        "validation",
+        `filterStates[${index}].filter must be an object or null`
+      );
+    }
+    const range = expectFilterArea(value.filter.range, `filterStates[${index}].filter.range`);
+    const columns = expectArray(
+      value.filter.columns,
+      `filterStates[${index}].filter.columns`,
+      (column, i) => expectFilterColumn(column, `filterStates[${index}].filter.columns[${i}]`)
+    );
+    if (columns.length > MAX_FILTER_COLUMN_INDEX) {
+      throw new OfficeValidationError(
+        "validation",
+        `filterStates[${index}].filter.columns exceeds ${MAX_FILTER_COLUMN_INDEX} entries`
+      );
+    }
+    for (const column of columns) {
+      if (column.colId < 0 || range.startColumn + column.colId > range.endColumn) {
+        throw new OfficeValidationError(
+          "validation",
+          `filterStates[${index}]: column colId ${column.colId} is outside the filter range`
+        );
+      }
+    }
+    out.filter = { range, columns };
+  } else if (value.filter === void 0) {
+    throw new OfficeValidationError(
+      "validation",
+      `filterStates[${index}].filter is required (object or null)`
+    );
+  }
+  const hiddenRows = expectArray(
+    value.hiddenRows,
+    `filterStates[${index}].hiddenRows`,
+    (row, i) => {
+      const n = expectNumber(row, `filterStates[${index}].hiddenRows[${i}]`);
+      if (!Number.isInteger(n) || n < 0 || n > MAX_FILTER_ROW_OR_COLUMN) {
+        throw new OfficeValidationError(
+          "validation",
+          `filterStates[${index}].hiddenRows[${i}] must be a 0-based row index`
+        );
+      }
+      return n;
+    }
+  );
+  out.hiddenRows = hiddenRows;
+  out.visibilityRange = expectFilterArea(
+    value.visibilityRange,
+    `filterStates[${index}].visibilityRange`
+  );
+  return out;
+}
+function expectFilterArea(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const startRow = expectNumber(value.startRow, `${field}.startRow`);
+  const endRow = expectNumber(value.endRow, `${field}.endRow`);
+  const startColumn = expectNumber(value.startColumn, `${field}.startColumn`);
+  const endColumn = expectNumber(value.endColumn, `${field}.endColumn`);
+  for (const [n, label] of [
+    [startRow, `${field}.startRow`],
+    [endRow, `${field}.endRow`],
+    [startColumn, `${field}.startColumn`],
+    [endColumn, `${field}.endColumn`]
+  ]) {
+    if (!Number.isInteger(n) || n < 0 || n > MAX_FILTER_ROW_OR_COLUMN) {
+      throw new OfficeValidationError("validation", `${label} must be a non-negative integer`);
+    }
+  }
+  if (endRow < startRow || endColumn < startColumn) {
+    throw new OfficeValidationError("validation", `${field} end must be >= start`);
+  }
+  if (endColumn > MAX_FILTER_COLUMN_INDEX) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.endColumn exceeds Excel's column ceiling`
+    );
+  }
+  return { startRow, endRow, startColumn, endColumn };
+}
+function expectFilterColumn(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const colId = expectNumber(value.colId, `${field}.colId`);
+  if (!Number.isInteger(colId) || colId < 0 || colId > MAX_FILTER_COLUMN_INDEX) {
+    throw new OfficeValidationError("validation", `${field}.colId must be a non-negative integer`);
+  }
+  const out = { colId };
+  if (value.values !== void 0 && value.values !== null) {
+    const values = expectArray(value.values, `${field}.values`, (v, i) => {
+      if (typeof v !== "string") {
+        throw new OfficeValidationError("validation", `${field}.values[${i}] must be a string`);
+      }
+      return v;
+    });
+    if (values.length > MAX_FILTER_VALUES) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.values exceeds ${MAX_FILTER_VALUES} entries`
+      );
+    }
+    out.values = values;
+  }
+  if (value.blank !== void 0) {
+    if (typeof value.blank !== "boolean") {
+      throw new OfficeValidationError("validation", `${field}.blank must be a boolean`);
+    }
+    out.blank = value.blank;
+  }
+  if (value.customs !== void 0 && value.customs !== null) {
+    if (!isRecord(value.customs)) {
+      throw new OfficeValidationError("validation", `${field}.customs must be an object`);
+    }
+    if (value.customs.and !== void 0 && typeof value.customs.and !== "boolean") {
+      throw new OfficeValidationError("validation", `${field}.customs.and must be a boolean`);
+    }
+    const filters = expectArray(value.customs.filters, `${field}.customs.filters`, (custom, i) => {
+      if (!isRecord(custom)) {
+        throw new OfficeValidationError(
+          "validation",
+          `${field}.customs.filters[${i}] must be an object`
+        );
+      }
+      const val = custom.val;
+      if (typeof val !== "string" && typeof val !== "number") {
+        throw new OfficeValidationError(
+          "validation",
+          `${field}.customs.filters[${i}].val must be a string or number`
+        );
+      }
+      if (custom.operator !== void 0 && custom.operator !== null) {
+        if (typeof custom.operator !== "string" || !FILTER_CUSTOM_OPERATORS.has(custom.operator)) {
+          throw new OfficeValidationError(
+            "validation",
+            `${field}.customs.filters[${i}].operator "${String(custom.operator)}" is not a supported filter condition`
+          );
+        }
+        return { val, operator: custom.operator };
+      }
+      return { val };
+    });
+    if (filters.length === 0 || filters.length > MAX_CUSTOM_FILTERS) {
+      throw new OfficeValidationError(
+        "validation",
+        `${field}.customs.filters must carry 1..${MAX_CUSTOM_FILTERS} conditions`
+      );
+    }
+    const and = value.customs.and === true;
+    out.customs = and ? { and: true, filters } : { filters };
+  }
+  if (out.values === void 0 && !out.blank && out.customs === void 0) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field} carries no criteria (need values, blank, or customs)`
+    );
+  }
+  return out;
+}
 function parseSaveWorkbookRequest(body, codec) {
   if (!isRecord(body)) {
     throw new OfficeValidationError("validation", "Request body must be a JSON object");
@@ -42849,13 +43194,21 @@ function parseSaveWorkbookRequest(body, codec) {
       "savePlan.pageSetupStates",
       expectSheetPageSetupState
     ) : void 0;
+    const filterStates = body.savePlan.filterStates !== void 0 && body.savePlan.filterStates !== null ? expectArray(body.savePlan.filterStates, "savePlan.filterStates", expectSheetFilterState) : void 0;
+    if (filterStates !== void 0 && filterStates.length > MAX_FILTER_STATES) {
+      throw new OfficeValidationError(
+        "validation",
+        `savePlan.filterStates exceeds ${MAX_FILTER_STATES} entries`
+      );
+    }
     return {
       fileName,
       fileBytes,
       savePlan: {
         edits,
         ...structuralOps ? { structuralOps } : {},
-        ...pageSetupStates ? { pageSetupStates } : {}
+        ...pageSetupStates ? { pageSetupStates } : {},
+        ...filterStates ? { filterStates } : {}
       }
     };
   }
@@ -42905,6 +43258,7 @@ async function handleSaveWorkbook(body, codec) {
   const edits = req.savePlan.edits;
   const structuralOps = req.savePlan.structuralOps ?? [];
   const pageSetupStates = req.savePlan.pageSetupStates ?? [];
+  const filterStates = req.savePlan.filterStates ?? [];
   let mutation;
   try {
     mutation = await applyCellEditsToXlsx(
@@ -42913,7 +43267,7 @@ async function handleSaveWorkbook(body, codec) {
       structuralOps,
       [],
       void 0,
-      [],
+      filterStates,
       [],
       [],
       [],
