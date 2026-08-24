@@ -24,6 +24,7 @@ import {
   type OfficeWorkbookHandle,
 } from '../api/office-client'
 import { parseAddress, parseRange, columnIndex } from '../office/cell-address'
+import { cellEditFromMutation, mergeCellEdit } from '../office/cell-mutation-merge'
 import { styles } from '../styles'
 
 /**
@@ -83,169 +84,6 @@ const WORKBOOK_UNIT_ID = 'genoffice-web-workbook'
  */
 function dirtyKey(sheetName: string, row: number, column: number): string {
   return `${sheetName}:${row}:${column}`
-}
-
-/**
- * Extract a CellEdit from a Univer mutation cell payload.
- *
- * The mutation payload for `sheet.mutation.set-range-values` is a sparse
- * matrix `{ [row]: { [col]: ICellData } }`. Each cell may carry:
- *   - `v`: the cell value (string | number | boolean | null)
- *   - `f`: the formula string (with or without leading `=`)
- *   - `p`: rich-text body (we treat it as plain text for now; the engine
- *          round-trips the rich-text runs separately)
- *
- * Returns null when the cell carries no recognizable value (e.g. a
- * style-only mutation).
- */
-function cellEditFromMutation(
-  sheetName: string,
-  row: number,
-  column: number,
-  cell: unknown,
-): CellEdit | null {
-  if (cell === null || cell === undefined) {
-    // Clearing the cell.
-    return {
-      sheetName,
-      row,
-      column,
-      writeValue: true,
-      cell: { value: null },
-    }
-  }
-  if (typeof cell !== 'object') return null
-  const data = cell as { v?: unknown; f?: unknown; s?: unknown }
-  const style = styleDeltaFromUniver(data.s)
-  // Formula handling — Univer emits three distinct formula-related payload
-  // shapes (verified by the Phase A forensic audit):
-  //   ① formula edit:  { f: "=SUM(A1:A2)*2", v: null }  (leading = present)
-  //   ② recalc echo:   { v: 20, t: 2 } — Univer's formula engine writes the
-  //      recalculated cached value as a SEPARATE set-range-values mutation,
-  //      with NO f field. This must NOT overwrite the formula edit with a
-  //      literal value; the engine drops the cached <v> on formula writes
-  //      anyway and Excel recalculates on open.
-  //   ③ formula clear: { f: null, v: 30 } — an explicit f:null replaces the
-  //      formula with the literal value.
-  const formulaRaw = data.f
-  if (typeof formulaRaw === 'string' && formulaRaw.length > 0) {
-    const formula = formulaRaw.startsWith('=') ? formulaRaw.slice(1) : formulaRaw
-    return {
-      sheetName,
-      row,
-      column,
-      writeValue: true,
-      cell: { value: '', formula },
-      ...(style ? { style } : {}),
-    }
-  }
-  const v = data.v
-  if (v === undefined) {
-    // No formula and no value in the payload: a style-only mutation
-    // (formatting commands rewrite cell styles through set-range-values
-    // with just an `s` payload), or an f:null cleanup echo. A cleanup echo
-    // with si:null but no style carries no editable state — ignore it.
-    if (!style) return null
-    return {
-      sheetName,
-      row,
-      column,
-      writeValue: false,
-      cell: { value: null },
-      style,
-    }
-  }
-  if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-    // f:null + v:30 → literal replaces formula (the engine writes no <f>).
-    // f absent + v present → either a plain value edit OR the recalc echo.
-    // For the recalc echo (a formula cell getting its cached result), the
-    // payload arrives AFTER the formula edit on the same cell — the dirty
-    // map's merge keeps the formula because the formula edit was already
-    // journaled, and the latest-wins merge takes v only when the journaled
-    // entry has no formula. The merge in subscribeToCellMutations handles
-    // this: writeValue from the formula edit wins over the value echo.
-    const cellState: CellState = { value: v }
-    return {
-      sheetName,
-      row,
-      column,
-      writeValue: true,
-      cell: cellState,
-      ...(style ? { style } : {}),
-    }
-  }
-  return null
-}
-
-/**
- * Map a Univer IStyleData (the `s` payload of a set-range-values mutation)
- * to a canonical WorkbookStyleEdit delta. Only PRESENT keys map — Univer's
- * formatting commands send partial deltas ({bl: 1} for bold-on, {bl: 0} for
- * bold-off), and the engine applies deltas on top of each cell's current
- * cellXfs entry, so absent keys leave the file's own properties alone.
- *
- * Colors convert to the '#RRGGBB' convention of WorkbookStyleEdit.
- */
-function styleDeltaFromUniver(s: unknown): CellEdit['style'] | undefined {
-  if (typeof s !== 'object' || s === null) return undefined
-  const d = s as Record<string, unknown>
-  const out: {
-    bold?: boolean
-    italic?: boolean
-    underline?: boolean
-    underlineStyle?: 'single' | 'double'
-    strikethrough?: boolean
-    fontFamily?: string
-    fontSize?: number
-    fontColor?: string | null
-    fillColor?: string | null
-    horizontalAlignment?: 'left' | 'center' | 'right'
-    verticalAlignment?: 'top' | 'center' | 'bottom'
-    wrapText?: boolean
-  } = {}
-  if ('bl' in d) out.bold = d.bl === 1
-  if ('it' in d) out.italic = d.it === 1
-  if ('ul' in d) {
-    const ul = d.ul
-    const on = typeof ul === 'object' && ul !== null ? (ul as { s?: unknown }).s === 1 : ul === 1
-    out.underline = on
-    if (on) out.underlineStyle = 'single'
-  }
-  if ('st' in d) {
-    const st = d.st
-    out.strikethrough =
-      typeof st === 'object' && st !== null ? (st as { s?: unknown }).s === 1 : st === 1
-  }
-  if (typeof d.ff === 'string' && d.ff !== '') out.fontFamily = d.ff
-  if (typeof d.fs === 'number' && Number.isFinite(d.fs) && d.fs > 0) out.fontSize = d.fs
-  if ('cl' in d) {
-    const rgb = univerColorToHex((d.cl as { rgb?: unknown } | null)?.rgb)
-    out.fontColor = rgb === undefined && d.cl === null ? null : rgb
-  }
-  if ('bg' in d) {
-    const rgb = univerColorToHex((d.bg as { rgb?: unknown } | null)?.rgb)
-    out.fillColor = rgb === undefined && d.bg === null ? null : rgb
-  }
-  if (typeof d.ht === 'number') {
-    if (d.ht === 1) out.horizontalAlignment = 'left'
-    else if (d.ht === 2) out.horizontalAlignment = 'center'
-    else if (d.ht === 3) out.horizontalAlignment = 'right'
-  }
-  if (typeof d.vt === 'number') {
-    if (d.vt === 1) out.verticalAlignment = 'top'
-    else if (d.vt === 2) out.verticalAlignment = 'center'
-    else if (d.vt === 3) out.verticalAlignment = 'bottom'
-  }
-  if ('tb' in d) out.wrapText = d.tb === 1
-  return Object.keys(out).length > 0 ? out : undefined
-}
-
-/** Univer color ('#RRGGBB') → WorkbookStyleEdit '#RRGGBB'; non-hex → undefined. */
-function univerColorToHex(rgb: unknown): string | undefined {
-  if (typeof rgb !== 'string' || rgb === '') return undefined
-  if (/^#[0-9A-Fa-f]{6}$/.test(rgb)) return rgb.toUpperCase()
-  if (/^[0-9A-Fa-f]{6}$/.test(rgb)) return `#${rgb.toUpperCase()}`
-  return undefined
 }
 
 /**
@@ -757,46 +595,18 @@ function subscribeToCellMutations(
       for (const [colKey, cell] of Object.entries(rowValue as Record<string, unknown>)) {
         const column = Number(colKey)
         if (!Number.isInteger(column) || column < 0) continue
-        const edit = cellEditFromMutation(sheetName, row, column, cell)
-        if (!edit) continue
-        // Merge into the per-cell entry: a value edit and a style edit on the
-        // same cell compose into ONE CellEdit (writeValue + cell + style) so
-        // the engine applies both in a single patch. Later deltas win per
-        // field (bold-then-fill → {bold, fill}).
-        //
-        // Formula-priority rule: when the journaled entry carries a formula
-        // and the incoming edit is a value-only edit (no formula — Univer's
-        // recalc echo writing the cached result), the FORMULA WINS: the
-        // engine's formula write drops the cached <v> anyway, and a literal
-        // value would destroy the formula the user just typed. Only an
-        // incoming edit that explicitly carries a formula (or a value edit
-        // on a cell with no journaled formula) replaces the cell state.
+        const parsed = cellEditFromMutation(sheetName, row, column, cell)
+        if (!parsed) continue
+        // Fold the incoming mutation into the per-cell dirty entry. A value
+        // edit and a style edit on the same cell compose into ONE CellEdit
+        // (writeValue + cell + style) so the engine applies both in a single
+        // patch. The formula-priority merge (cell-mutation-merge.ts) — which
+        // distinguishes an explicit formula clear (`f: null`) / blank from
+        // the recalc echo (`f` absent + value) — guarantees mutation
+        // ordering can never silently convert a formula back into a literal.
         const key = dirtyKey(sheetName, row, column)
         const existing = dirtyRef.current.get(key)
-        if (existing && existing !== edit) {
-          // Merge rules (formula-priority):
-          //   1. A formula edit always wins the cell state (formula + value).
-          //   2. A value edit (writeValue: true, no formula) wins the cell
-          //      state over a style-only edit (writeValue: false).
-          //   3. A style-only edit never overwrites the cell state but always
-          //      merges its style fields.
-          const existingHasFormula = !!existing.cell.formula
-          const incomingHasFormula = !!edit.cell.formula
-          const incomingIsValueEdit = edit.writeValue
-          const cellWins = incomingHasFormula || (!existingHasFormula && incomingIsValueEdit)
-          dirtyRef.current.set(key, {
-            sheetName,
-            row,
-            column,
-            writeValue: cellWins ? edit.writeValue : existing.writeValue,
-            cell: cellWins ? edit.cell : existing.cell,
-            ...(edit.style || existing.style
-              ? { style: { ...(existing.style ?? {}), ...(edit.style ?? {}) } }
-              : {}),
-          })
-        } else {
-          dirtyRef.current.set(key, edit)
-        }
+        dirtyRef.current.set(key, mergeCellEdit(existing, parsed))
         touched = true
       }
     }
