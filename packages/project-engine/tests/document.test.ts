@@ -177,6 +177,57 @@ describe('project document validation', () => {
     ).toContain('MISSING_PARENT')
   })
 
+  it('rejects duplicate task uids while keeping uid distinct from TaskId', () => {
+    expect(
+      codes(validate({ tasks: [makeTask({ id: 'a', uid: 9 }), makeTask({ id: 'b', uid: 9 })] })),
+    ).toContain('DUPLICATE_TASK_UID')
+    expect(
+      codes(validate({ tasks: [makeTask({ id: 'a', uid: 9 }), makeTask({ id: 'b', uid: 10 })] })),
+    ).toEqual([])
+  })
+
+  it('rejects outline levels inconsistent with hierarchy depth', () => {
+    expect(
+      codes(
+        validate({
+          tasks: [
+            makeTask({ id: 'root', summary: true }),
+            makeTask({ id: 'c', parentTaskId: asTaskId('root'), outlineLevel: 3 }),
+          ],
+        }),
+      ),
+    ).toContain('INCONSISTENT_OUTLINE_LEVEL')
+    expect(
+      codes(
+        validate({
+          tasks: [
+            makeTask({ id: 'root', summary: true }),
+            makeTask({ id: 'mid', summary: true, parentTaskId: asTaskId('root'), outlineLevel: 2 }),
+            makeTask({ id: 'leaf', parentTaskId: asTaskId('mid'), outlineLevel: 3 }),
+          ],
+        }),
+      ),
+    ).toEqual([])
+  })
+
+  it('rejects summary flags inconsistent with child relationships', () => {
+    // Summary flagged without children.
+    expect(codes(validate({ tasks: [makeTask({ id: 'a', summary: true })] }))).toContain(
+      'INCONSISTENT_SUMMARY_FLAG',
+    )
+    // Children present but not flagged as summary.
+    expect(
+      codes(
+        validate({
+          tasks: [
+            makeTask({ id: 's', summary: false }),
+            makeTask({ id: 'c', parentTaskId: asTaskId('s'), outlineLevel: 2 }),
+          ],
+        }),
+      ),
+    ).toContain('INCONSISTENT_SUMMARY_FLAG')
+  })
+
   it('rejects dependency cycles, self links, missing references, and bad lag', () => {
     expect(
       codes(
