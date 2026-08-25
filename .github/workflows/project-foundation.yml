@@ -1,0 +1,44 @@
+name: Project foundation
+
+on:
+  push:
+    branches: [project-office]
+  pull_request:
+    branches: [project-office]
+
+permissions:
+  contents: read
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Verify branch isolation
+        run: |
+          git fetch origin main --depth=1
+          changed=$(git diff --name-only origin/main...HEAD)
+          if echo "$changed" | grep -E '^(apps/sheets/|apps/web/src/screens/ExcelEditor|apps/web/src/screens/excel/|packages/xlsx-gateway/|packages/docx-engine/)' ; then
+            echo 'Project foundation changed a forbidden Excel/frozen surface.' >&2
+            exit 1
+          fi
+      - name: Typecheck contracts
+        run: npm run typecheck -w @genoffice/project-contracts
+      - name: Test contracts
+        run: npm test -w @genoffice/project-contracts
+      - name: Typecheck engine
+        run: npm run typecheck -w @genoffice/project-engine
+      - name: Test engine
+        run: npm test -w @genoffice/project-engine
+      - name: Typecheck scheduling
+        run: npm run typecheck -w @genoffice/project-scheduling
+      - name: Test scheduling
+        run: npm test -w @genoffice/project-scheduling
