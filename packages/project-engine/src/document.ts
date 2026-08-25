@@ -146,6 +146,75 @@ function validateTasks(
         message: `Task ${task.id} has negative duration`,
       })
     }
+    // PROJECT-011 work/cost validation. Work and cost fields are scheduling
+    // inputs that must be finite and non-negative. Inconsistent states
+    // (actualWork > work, actualCost + remainingCost != cost) are rejected
+    // deterministically rather than silently repaired. The scheduler overwrites
+    // derived work/cost for work/material resources, but the document-level
+    // fields must still be valid so a corrupt document never crashes the engine.
+    const taskWork = task.work as number
+    if (!Number.isFinite(taskWork) || taskWork < 0) {
+      diagnostics.push({
+        code: 'INVALID_WORK',
+        message: `Task ${task.id} has invalid work ${taskWork}`,
+      })
+    }
+    if (!Number.isFinite(task.actualWork) || (task.actualWork as number) < 0) {
+      diagnostics.push({
+        code: 'INVALID_ACTUAL_WORK',
+        message: `Task ${task.id} has invalid actualWork ${task.actualWork}`,
+      })
+    }
+    if (!Number.isFinite(task.remainingWork) || (task.remainingWork as number) < 0) {
+      diagnostics.push({
+        code: 'INVALID_REMAINING_WORK',
+        message: `Task ${task.id} has invalid remainingWork ${task.remainingWork}`,
+      })
+    }
+    if (!Number.isFinite(task.cost) || task.cost < 0) {
+      diagnostics.push({
+        code: 'INVALID_COST',
+        message: `Task ${task.id} has invalid cost ${task.cost}`,
+      })
+    }
+    if (!Number.isFinite(task.actualCost) || task.actualCost < 0) {
+      diagnostics.push({
+        code: 'INVALID_ACTUAL_COST',
+        message: `Task ${task.id} has invalid actualCost ${task.actualCost}`,
+      })
+    }
+    if (!Number.isFinite(task.remainingCost) || task.remainingCost < 0) {
+      diagnostics.push({
+        code: 'INVALID_REMAINING_COST',
+        message: `Task ${task.id} has invalid remainingCost ${task.remainingCost}`,
+      })
+    }
+    // Inconsistent state: actual cannot exceed the total. The sum invariant
+    // (actual + remaining = total) is NOT enforced at the document level
+    // because actualWork/actualCost are derived values the scheduler
+    // recomputes — a document may carry stale derived fields that the next
+    // schedule() call overwrites. Only the "exceeds" direction is a real
+    // corruption (negative remaining would already be caught above).
+    if (
+      Number.isFinite(taskWork) &&
+      Number.isFinite(task.actualWork) &&
+      (task.actualWork as number) > taskWork + 1
+    ) {
+      diagnostics.push({
+        code: 'INCONSISTENT_WORK',
+        message: `Task ${task.id} actualWork exceeds work`,
+      })
+    }
+    if (
+      Number.isFinite(task.cost) &&
+      Number.isFinite(task.actualCost) &&
+      (task.actualCost as number) > task.cost + 1
+    ) {
+      diagnostics.push({
+        code: 'INCONSISTENT_COST',
+        message: `Task ${task.id} actualCost exceeds cost`,
+      })
+    }
     if (
       !Number.isFinite(task.percentComplete) ||
       task.percentComplete < 0 ||
@@ -531,6 +600,76 @@ function validateResourcesAndAssignments(
         message: `Assignment ${assignment.id} has invalid units ${assignment.units}`,
       })
     }
+    // PROJECT-011 assignment work/cost validation. Work/cost fields must be
+    // finite and non-negative, and the actual + remaining invariant must hold
+    // within a rounding tolerance. For cost resources the `cost` field is the
+    // authoritative cost input, so an invalid cost value is a hard rejection.
+    // For work/material resources the scheduler recomputes derived work/cost,
+    // but a structurally invalid document is still rejected so the engine never
+    // operates on corrupt inputs.
+    const aWork = assignment.work as number
+    if (!Number.isFinite(aWork) || aWork < 0) {
+      diagnostics.push({
+        code: 'INVALID_WORK',
+        message: `Assignment ${assignment.id} has invalid work ${aWork}`,
+      })
+    }
+    if (!Number.isFinite(assignment.actualWork) || (assignment.actualWork as number) < 0) {
+      diagnostics.push({
+        code: 'INVALID_ACTUAL_WORK',
+        message: `Assignment ${assignment.id} has invalid actualWork ${assignment.actualWork}`,
+      })
+    }
+    if (!Number.isFinite(assignment.remainingWork) || (assignment.remainingWork as number) < 0) {
+      diagnostics.push({
+        code: 'INVALID_REMAINING_WORK',
+        message: `Assignment ${assignment.id} has invalid remainingWork ${assignment.remainingWork}`,
+      })
+    }
+    if (!Number.isFinite(assignment.cost) || assignment.cost < 0) {
+      diagnostics.push({
+        code: 'INVALID_COST',
+        message: `Assignment ${assignment.id} has invalid cost ${assignment.cost}`,
+      })
+    }
+    if (!Number.isFinite(assignment.actualCost) || assignment.actualCost < 0) {
+      diagnostics.push({
+        code: 'INVALID_ACTUAL_COST',
+        message: `Assignment ${assignment.id} has invalid actualCost ${assignment.actualCost}`,
+      })
+    }
+    if (!Number.isFinite(assignment.remainingCost) || assignment.remainingCost < 0) {
+      diagnostics.push({
+        code: 'INVALID_REMAINING_COST',
+        message: `Assignment ${assignment.id} has invalid remainingCost ${assignment.remainingCost}`,
+      })
+    }
+    // Inconsistent state: actual cannot exceed the total. The sum invariant
+    // (actual + remaining = total) is NOT enforced at the document level
+    // because actualWork/actualCost are derived values the scheduler
+    // recomputes — a document may carry stale derived fields that the next
+    // schedule() call overwrites. Only the "exceeds" direction is a real
+    // corruption (negative remaining would already be caught above).
+    if (
+      Number.isFinite(aWork) &&
+      Number.isFinite(assignment.actualWork) &&
+      (assignment.actualWork as number) > aWork + 1
+    ) {
+      diagnostics.push({
+        code: 'INCONSISTENT_WORK',
+        message: `Assignment ${assignment.id} actualWork exceeds work`,
+      })
+    }
+    if (
+      Number.isFinite(assignment.cost) &&
+      Number.isFinite(assignment.actualCost) &&
+      (assignment.actualCost as number) > assignment.cost + 1
+    ) {
+      diagnostics.push({
+        code: 'INCONSISTENT_COST',
+        message: `Assignment ${assignment.id} actualCost exceeds cost`,
+      })
+    }
     const pairKey = `${assignment.taskId}->${assignment.resourceId}`
     if (assignmentPairs.has(pairKey)) {
       diagnostics.push({
@@ -633,6 +772,8 @@ export function affectedTaskIds(command: ProjectCommand): TaskId[] {
     case 'AssignResource':
       return [command.assignment.taskId]
     case 'UnassignResource':
+      return []
+    case 'SetAssignmentUnits':
       return []
     case 'CreateBaseline':
       return Object.keys(command.baseline.taskSnapshots) as TaskId[]

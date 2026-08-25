@@ -252,17 +252,50 @@ export interface TaskSchedule {
    * deterministic calendar choice without re-deriving it. Never renderer state.
    */
   resolvedCalendarId?: CalendarId
+  // ---- PROJECT-011 derived work/cost state ----
+  /**
+   * PROJECT-011 derived task work (WorkingMinutes). For leaf tasks: the sum
+   * of derived assignment work across all assignments on this task. For
+   * summary tasks: the sum of direct children's derived work (rolled up
+   * recursively). A task with no assignments has work 0 (no resources
+   * assigned means no resource work). This is a derived schedule value, never
+   * authoritative document state.
+   */
+  work?: WorkingMinutes
+  /**
+   * PROJECT-011 derived actual work accomplished. For leaf tasks: the sum of
+   * derived assignment actualWork. For summary tasks: the rolled-up sum of
+   * children's actualWork. Derived from `task.percentComplete` (the
+   * authoritative progress input) — the status date does NOT override
+   * percentComplete for work calculations (PROJECT-008 precedence preserved).
+   */
+  actualWork?: WorkingMinutes
+  /**
+   * PROJECT-011 derived remaining work. For leaf tasks: `work − actualWork`.
+   * For summary tasks: the rolled-up sum of children's remainingWork.
+   */
+  remainingWork?: WorkingMinutes
+  /**
+   * PROJECT-011 derived task cost. For leaf tasks: the sum of derived
+   * assignment cost. For summary tasks: the rolled-up sum of children's cost.
+   */
+  cost?: number
+  /** PROJECT-011 derived actual cost. Sum of assignment actualCost, rolled up for summaries. */
+  actualCost?: number
+  /** PROJECT-011 derived remaining cost. `cost − actualCost`, rolled up for summaries. */
+  remainingCost?: number
 }
 
 /**
- * PROJECT-010 derived assignment scheduling inputs.
+ * PROJECT-010 / PROJECT-011 derived assignment scheduling inputs.
  *
  * An `AssignmentSchedule` is a deterministic projection of an `Assignment`
- * paired with its resolved `Resource` scheduling inputs. It does NOT compute
- * assignment work or cost (those are PROJECT-011); it only exposes the
- * canonical, resolved scheduling inputs that a renderer/reporting layer needs
- * to reason about resource capacity without re-deriving calendar/resource
- * resolution.
+ * paired with its resolved `Resource` scheduling inputs. PROJECT-010
+ * established the resolved calendar/resource-type/units/maxUnits inputs.
+ * PROJECT-011 extends it with derived work and cost values computed from the
+ * accepted schedule (task duration, assignment units, resource rates, and
+ * task progress). All derived values are deterministic: the same serialized
+ * `ProjectDocument` + options always produce byte-identical schedule bytes.
  *
  * `resolvedCalendarId` is the resource's resolved calendar id
  * (`resource.calendarId ?? properties.defaultCalendarId`). It is independent
@@ -274,8 +307,35 @@ export interface TaskSchedule {
  * `maxUnits` echoes the resource's max units. For non-work resources (material
  * and cost) the engine treats this as a non-capacity value: a cost resource
  * never carries work capacity, so `maxUnits` is echoed but never used as a
- * capacity bound by PROJECT-010 scheduling. Work/cost calculation that would
- * consume `maxUnits` is deferred to PROJECT-011.
+ * capacity bound.
+ *
+ * PROJECT-011 canonical work/cost semantics:
+ *
+ * - **Work resources**: `work = task.duration × units` (WorkingMinutes). The
+ *   task duration is the already-scheduled duration in the task's resolved
+ *   calendar (the PROJECT-006 accepted schedule, unchanged). `units` is a
+ *   capacity fraction (1.0 = 100%, 0.5 = 50%, 2.0 = 200%). The resource
+ *   calendar is an INPUT but does not move task dates or change the work
+ *   formula in this increment (leveling is PROJECT-013). `actualWork =
+ *   round(work × task.percentComplete / 100)`; `remainingWork = work −
+ *   actualWork`. `cost = standardRateCost + overtimeCost + costPerUse` where
+ *   `standardRateCost = (work / 60) × standardRate` (rate is per hour; work
+ *   is in minutes) and `overtimeCost = 0` (overtime work input is not present
+ *   in the frozen Assignment contract, so overtime cost is deferred — see
+ *   the PROJECT-011 spec clarifications).
+ * - **Material resources**: no work capacity. `work = actualWork =
+ *   remainingWork = 0`. `units` is a material quantity. `cost = units ×
+ *   standardRate + costPerUse`. `actualCost = round(cost × percentComplete /
+ *   100)`; `remainingCost = cost − actualCost`.
+ * - **Cost resources**: pure cost, no work. `work = actualWork =
+ *   remainingWork = 0`. The `Assignment.cost` field is the authoritative
+ *   cost input. `actualCost = round(cost × percentComplete / 100)`;
+ *   `remainingCost = cost − actualCost`.
+ *
+ * The resource rates (`standardRate`, `overtimeRate`, `costPerUse`) are echoed
+ * so downstream layers never re-derive them. Branded `WorkingMinutes` is used
+ * for all work fields; `number` is used for cost fields (cost is not a
+ * working-minute concept).
  */
 export interface AssignmentSchedule {
   assignmentId: AssignmentId
@@ -293,6 +353,37 @@ export interface AssignmentSchedule {
   maxUnits: number
   /** Echo of `Assignment.units`. */
   units: number
+  /**
+   * PROJECT-011 derived assignment work (WorkingMinutes). For work resources:
+   * `task.duration × units`. For material/cost: 0 (no work capacity).
+   */
+  work?: WorkingMinutes
+  /**
+   * PROJECT-011 derived actual work accomplished. For work resources:
+   * `round(work × task.percentComplete / 100)`. For material/cost: 0.
+   */
+  actualWork?: WorkingMinutes
+  /**
+   * PROJECT-011 derived remaining work. For work resources: `work −
+   * actualWork`. For material/cost: 0.
+   */
+  remainingWork?: WorkingMinutes
+  /**
+   * PROJECT-011 derived assignment cost. Work resources: `standardRateCost +
+   * overtimeCost + costPerUse`. Material: `units × standardRate + costPerUse`.
+   * Cost: the authoritative `Assignment.cost` field.
+   */
+  cost?: number
+  /** PROJECT-011 derived actual cost: `round(cost × percentComplete / 100)`. */
+  actualCost?: number
+  /** PROJECT-011 derived remaining cost: `cost − actualCost`. */
+  remainingCost?: number
+  /** Echo of `Resource.standardRate` (per-hour rate for work; per-unit for material). */
+  standardRate?: number
+  /** Echo of `Resource.overtimeRate` (per-hour rate; overtime cost deferred in PROJECT-011). */
+  overtimeRate?: number
+  /** Echo of `Resource.costPerUse` (flat per-assignment cost). */
+  costPerUse?: number
 }
 
 export interface DerivedSchedule {

@@ -549,16 +549,45 @@ function computeSchedule(document: ProjectDocument, options: SchedulingOptions):
     // physicalPercentComplete is intentionally undefined on summaries.
   }
 
-  // ---- PROJECT-010 derived assignment scheduling inputs ----
+  // ---- PROJECT-010 / PROJECT-011 derived assignment scheduling inputs ----
   // Build per-assignment derived schedules deterministically: keyed by
   // AssignmentId and assembled from assignments sorted by AssignmentId so the
   // same serialized ProjectDocument + options always produce byte-identical
-  // schedule bytes (independent of input array order). This does NOT compute
-  // assignment work or cost (PROJECT-011); it only projects the resolved
-  // resource scheduling inputs (calendar id, max units, type, units).
+  // schedule bytes (independent of input array order). PROJECT-010 established
+  // the resolved resource scheduling inputs (calendar id, max units, type,
+  // units); PROJECT-011 extends each assignment schedule with derived work and
+  // cost computed from the accepted schedule.
+  //
+  // Canonical work/cost semantics (PROJECT-011):
+  //  - Work resources: `work = task.duration × units` (WorkingMinutes, using
+  //    the task's already-scheduled duration in the task's resolved calendar).
+  //    `actualWork = round(work × percentComplete / 100)`; `remainingWork =
+  //    work − actualWork`. Cost = `standardRateCost + overtimeCost +
+  //    costPerUse` where `standardRateCost = (work / 60) × standardRate` (rate
+  //    is per hour; work is in minutes). Overtime cost is 0 because the frozen
+  //    Assignment contract has no overtimeWork input — this is a documented
+  //    deferred limitation, not a guess.
+  //  - Material resources: no work capacity. `units` is a material quantity.
+  //    `cost = units × standardRate + costPerUse`. Work = 0.
+  //  - Cost resources: pure cost. `cost = assignment.cost` (authoritative
+  //    document input). Work = 0. `actualCost = round(cost × percentComplete /
+  //    100)`; `remainingCost = cost − actualCost`.
+  //
+  // The status date does NOT override percentComplete for work/cost
+  // calculations (PROJECT-008 precedence preserved). The resource calendar is
+  // an INPUT but does not move task dates or change the work formula in this
+  // increment (leveling is PROJECT-013).
   const assignmentCompare = (a: AssignmentId, b: AssignmentId): number =>
     (a as string) < (b as string) ? -1 : (a as string) > (b as string) ? 1 : 0
   const assignmentSchedules: Record<string, AssignmentSchedule> = {}
+  // Per-task work/cost accumulators (leaf-level aggregation from assignments).
+  // Summary tasks roll these up in a separate pass below.
+  const taskWork = new Map<TaskId, number>()
+  const taskActualWork = new Map<TaskId, number>()
+  const taskRemainingWork = new Map<TaskId, number>()
+  const taskCost = new Map<TaskId, number>()
+  const taskActualCost = new Map<TaskId, number>()
+  const taskRemainingCost = new Map<TaskId, number>()
   const sortedAssignments = [...document.assignments].sort((a, b) => assignmentCompare(a.id, b.id))
   for (const assignment of sortedAssignments) {
     const resource = resourceById.get(assignment.resourceId as string)
@@ -568,6 +597,37 @@ function computeSchedule(document: ProjectDocument, options: SchedulingOptions):
     // resource is missing is omitted from the derived map; the document's own
     // diagnostics (from validation) already report the broken reference.
     if (!resource) continue
+    // The task's scheduled duration (leaf = task.duration; summary = rolled-up
+    // duration). Work is computed against this accepted duration; the resource
+    // calendar does not move task dates in PROJECT-011.
+    const taskEntry = computed.get(assignment.taskId)
+    const taskDuration = (taskEntry?.duration as number) ?? 0
+    const percent = clampPercent(taskEntry?.task.percentComplete ?? 0)
+    // Canonical work/cost derivation by resource kind. Work resources derive
+    // work from duration × units and cost from the standard rate + cost-per-
+    // use. Material resources carry a quantity in `units` and derive cost
+    // from quantity × rate. Cost resources use the authoritative
+    // `Assignment.cost` field. Overtime cost is 0 (deferred — the frozen
+    // Assignment contract has no overtimeWork input).
+    const work = resource.kind === 'work' ? Math.round(taskDuration * assignment.units) : 0
+    const cost =
+      resource.kind === 'work'
+        ? (work / 60) * resource.standardRate + resource.costPerUse
+        : resource.kind === 'material'
+          ? assignment.units * resource.standardRate + resource.costPerUse
+          : assignment.cost
+    const actualWork = Math.round((work * percent) / 100)
+    const remainingWork = work - actualWork
+    const actualCost = Math.round((cost * percent) / 100)
+    const remainingCost = cost - actualCost
+    // Accumulate per-task (leaf) work/cost for task schedule aggregation.
+    const tid = assignment.taskId
+    taskWork.set(tid, (taskWork.get(tid) ?? 0) + work)
+    taskActualWork.set(tid, (taskActualWork.get(tid) ?? 0) + actualWork)
+    taskRemainingWork.set(tid, (taskRemainingWork.get(tid) ?? 0) + remainingWork)
+    taskCost.set(tid, (taskCost.get(tid) ?? 0) + cost)
+    taskActualCost.set(tid, (taskActualCost.get(tid) ?? 0) + actualCost)
+    taskRemainingCost.set(tid, (taskRemainingCost.get(tid) ?? 0) + remainingCost)
     assignmentSchedules[assignment.id as string] = {
       assignmentId: assignment.id,
       taskId: assignment.taskId,
@@ -576,7 +636,80 @@ function computeSchedule(document: ProjectDocument, options: SchedulingOptions):
       resolvedCalendarId: resourceResolvedCalendarId(assignment.resourceId),
       maxUnits: resource.maxUnits,
       units: assignment.units,
+      work: workingMinutesOf(work),
+      actualWork: workingMinutesOf(actualWork),
+      remainingWork: workingMinutesOf(remainingWork),
+      cost,
+      actualCost,
+      remainingCost,
+      standardRate: resource.standardRate,
+      overtimeRate: resource.overtimeRate,
+      costPerUse: resource.costPerUse,
     }
+  }
+
+  // ---- PROJECT-011 leaf task work/cost aggregation ----
+  // For each leaf task, set the derived work/cost from the per-task
+  // accumulators (sum of assignment work/cost). A task with no assignments has
+  // work 0 (no resources means no resource work) and cost 0. Summary task
+  // work/cost is rolled up in the next pass.
+  for (const task of document.tasks) {
+    const isSummaryTask = task.summary && (childrenOf.get(task.id) ?? []).length > 0
+    if (isSummaryTask) continue
+    const entry = taskSchedules[task.id as string]
+    if (!entry) continue
+    const w = taskWork.get(task.id) ?? 0
+    const aw = taskActualWork.get(task.id) ?? 0
+    const rw = taskRemainingWork.get(task.id) ?? 0
+    const c = taskCost.get(task.id) ?? 0
+    const ac = taskActualCost.get(task.id) ?? 0
+    const rc = taskRemainingCost.get(task.id) ?? 0
+    entry.work = workingMinutesOf(w)
+    entry.actualWork = workingMinutesOf(aw)
+    entry.remainingWork = workingMinutesOf(rw)
+    entry.cost = c
+    entry.actualCost = ac
+    entry.remainingCost = rc
+  }
+
+  // ---- PROJECT-011 summary work/cost roll-up (deepest first) ----
+  // Summary work/cost is the deterministic sum of direct children's derived
+  // work/cost, rolled up recursively (a child summary contributes its own
+  // rolled-up value). This mirrors the PROJECT-008 summary-progress roll-up
+  // pattern and is NOT resource-weighted. Nested summaries roll up correctly
+  // because we process deepest-first (children before parents). A summary's
+  // own assignments (if any) are NOT included — assignments belong on leaf
+  // tasks, and the roll-up is from children only.
+  const summaryWorkTasks = document.tasks
+    .filter((task) => task.summary && (childrenOf.get(task.id) ?? []).length > 0)
+    .sort((a, b) => b.outlineLevel - a.outlineLevel || compareIds(a.id, b.id))
+  for (const summary of summaryWorkTasks) {
+    const entry = taskSchedules[summary.id as string]
+    if (!entry) continue
+    const childEntries = (childrenOf.get(summary.id) ?? [])
+      .map((child) => taskSchedules[child.id as string])
+      .filter((child): child is TaskSchedule => Boolean(child))
+    if (childEntries.length === 0) continue
+    let work = 0
+    let actualWork = 0
+    let remainingWork = 0
+    let cost = 0
+    let actualCost = 0
+    let remainingCost = 0
+    for (const child of childEntries) {
+      work += (child.work as number | undefined) ?? 0
+      actualWork += (child.actualWork as number | undefined) ?? 0
+      remainingWork += (child.remainingWork as number | undefined) ?? 0
+      cost += child.cost ?? 0
+      actualCost += child.actualCost ?? 0
+      remainingCost += child.remainingCost ?? 0
+    }
+    entry.work = workingMinutesOf(work)
+    entry.actualWork = workingMinutesOf(actualWork)
+    entry.remainingWork = workingMinutesOf(remainingWork)
+    entry.cost = cost
+    entry.actualCost = actualCost
+    entry.remainingCost = remainingCost
   }
 
   return {
