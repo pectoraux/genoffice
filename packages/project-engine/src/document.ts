@@ -195,6 +195,26 @@ function validateTasks(
         })
       }
     }
+    // PROJECT-008 constraint canonical validation: the six date-bounded
+    // constraint types MUST carry a valid constraintDate, while ASAP/ALAP
+    // never use one. This prevents silent reinterpretation (e.g. MSO stored
+    // without a date being treated as SNET, or ASAP silently honoring a date).
+    if (task.constraintType) {
+      const dateBounded =
+        task.constraintType !== 'asSoonAsPossible' && task.constraintType !== 'asLateAsPossible'
+      if (dateBounded && (task.constraintDate === undefined || !isValidDate(task.constraintDate))) {
+        diagnostics.push({
+          code: 'MISSING_CONSTRAINT_DATE',
+          message: `Task ${task.id} constraint ${task.constraintType} requires a valid constraintDate`,
+        })
+      }
+      if (!dateBounded && task.constraintDate !== undefined) {
+        diagnostics.push({
+          code: 'CONSTRAINT_DATE_NOT_ALLOWED',
+          message: `Task ${task.id} constraint ${task.constraintType} must not carry a constraintDate`,
+        })
+      }
+    }
     for (const baselineId of task.baseline) {
       if (!baselineIds.has(baselineId)) {
         diagnostics.push({
@@ -485,6 +505,7 @@ export function affectedTaskIds(command: ProjectCommand): TaskId[] {
     case 'SetTaskStart':
     case 'SetTaskFinish':
     case 'SetConstraint':
+    case 'SetDeadline':
     case 'SetPercentComplete':
       return [command.taskId]
     case 'AddDependency':

@@ -1,4 +1,5 @@
 import type {
+  ConstraintType,
   ProjectCommand,
   ProjectCommandResult,
   ProjectDocument,
@@ -300,6 +301,188 @@ function mutateForOutdentTask(
 }
 
 /**
+ * The six date-bounded constraints require a constraintDate; ASAP/ALAP never
+ * use one. This constant mirrors the document validator's rule so the command
+ * mutator can build a canonical task shape without silent reinterpretation.
+ */
+const DATE_BOUNDED_CONSTRAINTS: ReadonlySet<ConstraintType> = new Set([
+  'startNoEarlierThan',
+  'startNoLaterThan',
+  'mustStartOn',
+  'finishNoEarlierThan',
+  'finishNoLaterThan',
+  'mustFinishOn',
+])
+
+/**
+ * Returns a task with the given optional date field. When the value is
+ * undefined the key is removed entirely so canonical documents never carry a
+ * stale undefined-valued key (matching the `withParent` convention).
+ */
+const withOptionalDate = <K extends string>(
+  task: Task,
+  key: K,
+  value: string | undefined,
+): Task => {
+  if (value !== undefined) return { ...task, [key]: value }
+  const { [key]: _removed, ...rest } = task
+  return rest as Task
+}
+
+function mutateForSetConstraint(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'SetConstraint' },
+): Mutation {
+  const task = findTask(document, command.taskId)
+  if (!task) {
+    return {
+      kind: 'rejected',
+      diagnostics: [{ code: 'MISSING_TASK', message: `Task ${command.taskId} does not exist` }],
+    }
+  }
+  // The frozen SetConstraint command shape allows an undefined constraintType
+  // (it reuses the Task field type). A constraint cannot be set without a
+  // type, so reject deterministically rather than silently defaulting.
+  if (command.constraintType === undefined) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'MISSING_CONSTRAINT_TYPE',
+          message: `Task ${command.taskId} cannot set a constraint without a constraintType`,
+        },
+      ],
+    }
+  }
+  const constraintType: ConstraintType = command.constraintType
+  // The mutator stores exactly the constraint shape given and lets the
+  // post-mutation validator enforce the canonical rules (missing date on a
+  // date-bounded type, disallowed date on ASAP/ALAP, malformed dates). This
+  // means no constraint is silently reinterpreted: MSO never collapses to
+  // SNET, and ASAP with a date is rejected rather than honored.
+  const previousType = task.constraintType
+  const previousDate = task.constraintDate
+  let updated = withOptionalDate(task, 'constraintDate', command.constraintDate)
+  updated = { ...updated, constraintType }
+  // Re-normalize: a date-bounded constraint must keep its date key (handled
+  // above), and ASAP/ALAP must never carry a constraintDate key. If the command
+  // supplied a date alongside ASAP/ALAP the validator rejects it; if it did
+  // not, ensure no stale date key remains from a prior dated constraint.
+  if (!DATE_BOUNDED_CONSTRAINTS.has(constraintType) && command.constraintDate === undefined) {
+    updated = withOptionalDate(updated, 'constraintDate', undefined)
+  }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks.map((candidate) =>
+        candidate.id === command.taskId ? updated : candidate,
+      ),
+      affectedTaskIds: [command.taskId],
+      // Restore the previous constraint shape. A previously-unconstrained task
+      // restores to the ASAP default (the no-constraint scheduling mode), so
+      // the inverse is always a valid SetConstraint payload.
+      inverse: {
+        type: 'SetConstraint',
+        taskId: command.taskId,
+        constraintType: previousType ?? 'asSoonAsPossible',
+        constraintDate: previousDate,
+      },
+    },
+  }
+}
+
+function mutateForSetPercentComplete(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'SetPercentComplete' },
+): Mutation {
+  const task = findTask(document, command.taskId)
+  if (!task) {
+    return {
+      kind: 'rejected',
+      diagnostics: [{ code: 'MISSING_TASK', message: `Task ${command.taskId} does not exist` }],
+    }
+  }
+  // Summary progress is a DERIVED roll-up of the subtree; it is never set
+  // directly. Rejecting here keeps the summary's stored percentComplete a
+  // non-authoritative placeholder and prevents the renderer from asserting a
+  // value the engine would otherwise overwrite on the next derivation.
+  if (task.summary) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'SUMMARY_PROGRESS_NOT_SETTABLE',
+          message: `Task ${command.taskId} is a summary; its progress is derived from children`,
+        },
+      ],
+    }
+  }
+  if (
+    !Number.isFinite(command.percentComplete) ||
+    command.percentComplete < 0 ||
+    command.percentComplete > 100
+  ) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'INVALID_PERCENT_COMPLETE',
+          message: `Task ${command.taskId} percentComplete ${command.percentComplete} is outside 0-100`,
+        },
+      ],
+    }
+  }
+  const updated: Task = { ...task, percentComplete: command.percentComplete }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks.map((candidate) =>
+        candidate.id === command.taskId ? updated : candidate,
+      ),
+      affectedTaskIds: [command.taskId],
+      inverse: {
+        type: 'SetPercentComplete',
+        taskId: command.taskId,
+        percentComplete: task.percentComplete,
+      },
+    },
+  }
+}
+
+function mutateForSetDeadline(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'SetDeadline' },
+): Mutation {
+  const task = findTask(document, command.taskId)
+  if (!task) {
+    return {
+      kind: 'rejected',
+      diagnostics: [{ code: 'MISSING_TASK', message: `Task ${command.taskId} does not exist` }],
+    }
+  }
+  // A deadline is NOT a scheduling constraint: it never moves the task. The
+  // mutator stores exactly the deadline given (or clears it when undefined)
+  // and lets the validator reject malformed dates. No scheduling semantics
+  // are invented here.
+  const previousDeadline = task.deadline
+  const updated = withOptionalDate(task, 'deadline', command.deadline)
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks.map((candidate) =>
+        candidate.id === command.taskId ? updated : candidate,
+      ),
+      affectedTaskIds: [command.taskId],
+      inverse: {
+        type: 'SetDeadline',
+        taskId: command.taskId,
+        deadline: previousDeadline,
+      },
+    },
+  }
+}
+
+/**
  * Applies a semantic ProjectCommand to a ProjectDocument.
  *
  * Pure and deterministic: the same document plus the same command sequence
@@ -309,8 +492,9 @@ function mutateForOutdentTask(
  * fields (outlineLevel, WBS, summary), so every accepted mutation leaves the
  * ProjectDocument valid.
  *
- * Only the PROJECT-007 hierarchy commands are executable today; other command
- * types are rejected deterministically until their work items are authorized.
+ * The PROJECT-007 hierarchy commands plus the PROJECT-008 constraint/deadline/
+ * progress commands are executable today; other command types are rejected
+ * deterministically until their work items are authorized.
  */
 export function applyProjectCommand(
   document: ProjectDocument,
@@ -342,6 +526,15 @@ export function applyProjectCommand(
         break
       case 'OutdentTask':
         mutation = mutateForOutdentTask(document, command)
+        break
+      case 'SetConstraint':
+        mutation = mutateForSetConstraint(document, command)
+        break
+      case 'SetPercentComplete':
+        mutation = mutateForSetPercentComplete(document, command)
+        break
+      case 'SetDeadline':
+        mutation = mutateForSetDeadline(document, command)
         break
       default:
         mutation = {

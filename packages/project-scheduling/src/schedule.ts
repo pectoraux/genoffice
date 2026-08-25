@@ -8,6 +8,7 @@ import type {
   ProjectDocument,
   Task,
   TaskId,
+  TaskProgressStatus,
   TaskSchedule,
   WorkingMinutes,
 } from '@genoffice/project-contracts'
@@ -27,6 +28,37 @@ import { DependencyGraphError, buildDependencyGraph } from './graph.js'
 
 export interface SchedulingOptions {
   projectStart?: ISODateTime
+}
+
+const clampPercent = (value: number): number =>
+  Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0
+
+/**
+ * PROJECT-008 leaf/milestone progress status derivation.
+ *
+ * Canonical precedence (no wall-clock; only `statusDate` + the scheduled
+ * window + percentComplete):
+ *  - percentComplete >= 100 → complete (even when finish is in the future)
+ *  - 0 < percentComplete < 100 → inProgress
+ *  - percentComplete == 0:
+ *      • statusDate set AND not before scheduledStart → inProgress
+ *        (work should have begun but is not yet reported complete)
+ *      • otherwise → notStarted
+ *
+ * Milestones are zero-duration binary events; their [start, finish) window is
+ * empty, so a 0% milestone is `notStarted` and a 100% milestone is `complete`.
+ */
+function deriveLeafStatus(
+  percent: number,
+  milestone: boolean,
+  statusDate: ISODateTime | undefined,
+  scheduledStart: ISODateTime | undefined,
+): TaskProgressStatus {
+  if (percent >= 100) return 'complete'
+  if (milestone) return percent > 0 ? 'inProgress' : 'notStarted'
+  if (percent > 0) return 'inProgress'
+  if (statusDate && scheduledStart && !isBefore(statusDate, scheduledStart)) return 'inProgress'
+  return 'notStarted'
 }
 
 interface ComputedTask {
@@ -248,6 +280,9 @@ function computeSchedule(document: ProjectDocument, options: SchedulingOptions):
   }
 
   const projectStart = options.projectStart ?? document.properties.startDate
+  // PROJECT-008: status evaluation is deterministic and uses the project
+  // status date only. Wall-clock "today" never enters the scheduling engine.
+  const statusDate = document.properties.statusDate
 
   // ---- Forward pass: early dates in combined dependency + hierarchy order ----
   for (const taskId of graph.topologicalOrder) {
@@ -360,6 +395,44 @@ function computeSchedule(document: ProjectDocument, options: SchedulingOptions):
     const scheduledStart = lateScheduled && lateStart ? lateStart : earlyStart
     const scheduledFinish = lateScheduled && lateFinish ? lateFinish : earlyFinish
 
+    // ---- PROJECT-008 deadline derivation ----
+    // A deadline is NOT a constraint and never moved the task above. It only
+    // yields variance/missed state for downstream reporting. Variance is the
+    // signed working-minute span from scheduledFinish to the deadline in the
+    // task's calendar: positive when the task finishes ahead of the deadline,
+    // negative when it finishes after (missed), zero when they coincide.
+    let deadline: ISODateTime | undefined
+    let deadlineVariance: number | undefined
+    let deadlineMissed: boolean | undefined
+    if (task.deadline !== undefined && scheduledFinish !== undefined) {
+      deadline = task.deadline
+      deadlineVariance = signedWorkingDuration(calendar, scheduledFinish, task.deadline)
+      deadlineMissed = isBefore(task.deadline, scheduledFinish)
+    }
+
+    // ---- PROJECT-008 leaf/milestone progress derivation ----
+    // Summary progress is rolled up in a separate pass below (it needs every
+    // child's derived state). Leaves and milestones derive directly from the
+    // stored percentComplete, the scheduled window, and the status date.
+    const isSummaryTask = task.summary && (childrenOf.get(taskId) ?? []).length > 0
+    let status: TaskProgressStatus | undefined
+    let percent: number | undefined
+    let physicalPercent: number | undefined
+    let actualDuration: WorkingMinutes | undefined
+    let remainingDuration: WorkingMinutes | undefined
+    if (!isSummaryTask) {
+      const stored = clampPercent(task.percentComplete)
+      percent = stored
+      physicalPercent = task.physicalPercentComplete
+      // Milestones have zero duration: actual/remaining are both 0 regardless
+      // of percent (a 100% milestone is complete but consumed no work-minutes).
+      const actual =
+        task.milestone || duration <= 0 ? 0 : Math.round(((duration as number) * stored) / 100)
+      actualDuration = workingMinutesOf(actual)
+      remainingDuration = workingMinutesOf((duration as number) - actual)
+      status = deriveLeafStatus(stored, task.milestone, statusDate, scheduledStart)
+    }
+
     taskSchedules[taskId as string] = {
       taskId,
       earlyStart,
@@ -372,7 +445,60 @@ function computeSchedule(document: ProjectDocument, options: SchedulingOptions):
       scheduledStart,
       scheduledFinish,
       duration,
+      deadline,
+      deadlineVariance,
+      deadlineMissed,
+      status,
+      percentComplete: percent,
+      physicalPercentComplete: physicalPercent,
+      actualDuration,
+      remainingDuration,
     }
+  }
+
+  // ---- PROJECT-008 summary progress roll-up (deepest first) ----
+  // Summary progress is a duration-weighted roll-up of the subtree: it sums
+  // each child's derived actual/remaining work-minutes. This is deliberately
+  // NOT resource-weighted (PROJECT-011 concern) and does not copy a single
+  // child's percent. A summary's stored percentComplete is never authoritative.
+  const summaryTasks = document.tasks
+    .filter((task) => task.summary && (childrenOf.get(task.id) ?? []).length > 0)
+    .sort((a, b) => b.outlineLevel - a.outlineLevel || compareIds(a.id, b.id))
+  for (const summary of summaryTasks) {
+    const id = summary.id as string
+    const entry = taskSchedules[id]
+    if (!entry) continue
+    const childEntries = (childrenOf.get(summary.id) ?? [])
+      .map((child) => taskSchedules[child.id as string])
+      .filter((child): child is TaskSchedule => Boolean(child))
+    let actual = 0
+    let remaining = 0
+    let allComplete = childEntries.length > 0
+    let anyInProgress = false
+    let allNotStarted = childEntries.length > 0
+    for (const child of childEntries) {
+      actual += (child.actualDuration as number | undefined) ?? 0
+      remaining += (child.remainingDuration as number | undefined) ?? 0
+      if (child.status !== 'complete') allComplete = false
+      if (child.status === 'inProgress') anyInProgress = true
+      if (child.status !== 'notStarted') allNotStarted = false
+    }
+    const total = actual + remaining
+    const summaryPercent = total > 0 ? Math.round((actual / total) * 100) : allComplete ? 100 : 0
+    const summaryStatus: TaskProgressStatus =
+      summaryPercent >= 100
+        ? 'complete'
+        : summaryPercent <= 0
+          ? allNotStarted
+            ? 'notStarted'
+            : 'inProgress'
+          : 'inProgress'
+    void anyInProgress // retained for clarity of the precedence intent
+    entry.percentComplete = summaryPercent
+    entry.actualDuration = workingMinutesOf(actual)
+    entry.remainingDuration = workingMinutesOf(remaining)
+    entry.status = summaryStatus
+    // physicalPercentComplete is intentionally undefined on summaries.
   }
 
   return {

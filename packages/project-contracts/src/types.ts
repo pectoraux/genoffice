@@ -27,6 +27,23 @@ export type ConstraintType =
   | 'finishNoLaterThan'
   | 'mustFinishOn'
 
+/**
+ * PROJECT-008 derived progress status. The engine derives this deterministically
+ * from `percentComplete`, the scheduled window, and `ProjectProperties.statusDate`.
+ * It is never authoritative renderer state and never depends on wall-clock time.
+ *
+ * Canonical precedence (documented in spec/project/requirements.md):
+ *  - `complete`: percentComplete >= 100.
+ *  - `inProgress`: 0 < percentComplete < 100, OR (percentComplete == 0 AND a
+ *     statusDate is set that has reached/passed the scheduled start).
+ *  - `notStarted`: percentComplete == 0 AND (no statusDate, OR statusDate is
+ *     still before the scheduled start).
+ *
+ * Milestones are zero-duration binary events: `complete` at 100%, otherwise
+ * `notStarted` (the "in progress" window is empty for a zero-duration task).
+ */
+export type TaskProgressStatus = 'notStarted' | 'inProgress' | 'complete'
+
 export interface ProjectProperties {
   id: string
   name: string
@@ -192,6 +209,41 @@ export interface TaskSchedule {
   scheduledStart?: ISODateTime
   scheduledFinish?: ISODateTime
   duration: WorkingMinutes
+  // ---- PROJECT-008 derived deadline state ----
+  /**
+   * Deadline echoed from the task. A deadline is NOT a scheduling constraint:
+   * it never moves the task. It is only used to derive variance/missed state
+   * for downstream reporting layers.
+   */
+  deadline?: ISODateTime
+  /**
+   * Signed working-minute variance from scheduledFinish to the deadline,
+   * computed in the task's resolved calendar. Positive when the task finishes
+   * before the deadline (ahead/on time); negative when the task finishes after
+   * the deadline (missed); zero when the finish equals the deadline.
+   */
+  deadlineVariance?: number
+  /** True when the task finishes strictly after its deadline. */
+  deadlineMissed?: boolean
+  // ---- PROJECT-008 derived progress state ----
+  /**
+   * Derived progress status. For leaf/milestone tasks this is derived from
+   * `percentComplete` + the status date; for summary tasks it is derived from
+   * the rolled-up progress of the subtree.
+   */
+  status?: TaskProgressStatus
+  /**
+   * Derived percent-complete echo. For leaf/milestone tasks equals the stored
+   * `Task.percentComplete`; for summary tasks equals the duration-weighted
+   * roll-up of the subtree. Always in [0, 100].
+   */
+  percentComplete?: number
+  /** Echo of the task's physical percent-complete (leaf only; undefined on summaries). */
+  physicalPercentComplete?: number
+  /** Working minutes already accomplished (rounded). Equals duration*percent/100 on leaves. */
+  actualDuration?: WorkingMinutes
+  /** Working minutes remaining (= duration - actualDuration on leaves). */
+  remainingDuration?: WorkingMinutes
 }
 
 export interface DerivedSchedule {
