@@ -17,15 +17,15 @@ A work item is VERIFIED only when every required evidence column for that work i
 
 ## Completed work
 
-| Work item | UNIT | ARCH | GOLDEN | BROWSER | DESKTOP | DEPLOYED | BYTE | CI | Status |
-|---|---|---|---|---|---|---|---|---|---|
-| EXCEL-010 Formatting | ✓ | ✓ | ✓ | ✓ | inherited desktop reference | ✓ | ✓ | web gate | VERIFIED |
-| EXCEL-011 Structural Ops | ✓ | ✓ | ✓ | ✓ | existing desktop behavior | ✓ | ✓ | web gate | VERIFIED |
-| EXCEL-012 Formula Fidelity | ✓ | ✓ | ✓ | ✓ | desktop formula path | ✓ | ✓ | web gate | VERIFIED |
-| EXCEL-014 Workspace Shell | ✓ | ✓ | N/A | ✓ | read-only reference | ✓ | N/A | web gate | VERIFIED |
-| EXCEL-015 Core Ribbon | ✓ | ✓ | ✓ | ✓ | reference | ✓ | ✓ | web gate | VERIFIED |
-| EXCEL-016 Filter | ✓ | ✓ | ✓ | ✓ | reference | ✓ | ✓ | web gate | VERIFIED |
-| EXCEL-017 Data Validation | ✓ | ✓ | ✓ | ✓ | reference | ✓ | ✓ | web gate | VERIFIED |
+| Work item                  | UNIT | ARCH | GOLDEN | BROWSER | DESKTOP                     | DEPLOYED | BYTE | CI       | Status   |
+| -------------------------- | ---- | ---- | ------ | ------- | --------------------------- | -------- | ---- | -------- | -------- |
+| EXCEL-010 Formatting       | ✓    | ✓    | ✓      | ✓       | inherited desktop reference | ✓        | ✓    | web gate | VERIFIED |
+| EXCEL-011 Structural Ops   | ✓    | ✓    | ✓      | ✓       | existing desktop behavior   | ✓        | ✓    | web gate | VERIFIED |
+| EXCEL-012 Formula Fidelity | ✓    | ✓    | ✓      | ✓       | desktop formula path        | ✓        | ✓    | web gate | VERIFIED |
+| EXCEL-014 Workspace Shell  | ✓    | ✓    | N/A    | ✓       | read-only reference         | ✓        | N/A  | web gate | VERIFIED |
+| EXCEL-015 Core Ribbon      | ✓    | ✓    | ✓      | ✓       | reference                   | ✓        | ✓    | web gate | VERIFIED |
+| EXCEL-016 Filter           | ✓    | ✓    | ✓      | ✓       | reference                   | ✓        | ✓    | web gate | VERIFIED |
+| EXCEL-017 Data Validation  | ✓    | ✓    | ✓      | ✓       | reference                   | ✓        | ✓    | web gate | VERIFIED |
 
 ## Required future verification
 
