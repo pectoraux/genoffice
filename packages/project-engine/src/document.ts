@@ -421,22 +421,97 @@ function validateResourcesAndAssignments(
   )
   checkDuplicateIds(document.assignments, 'assignment', 'DUPLICATE_ASSIGNMENT_ID', diagnostics)
   const calendarIds = new Set(document.calendars.map((calendar) => calendar.id as string))
+
+  // PROJECT-010 resource canonical validation. Numeric scheduling inputs are
+  // never silently coerced: a non-finite or negative max-units/rate/cost-per-use
+  // is rejected with an explicit diagnostic so the document stays invalid until
+  // the caller repairs it. Resource names are required (identity is ResourceId,
+  // but a resource with no name carries no scheduling meaning).
+  const RESOURCE_KINDS = new Set(['work', 'material', 'cost'])
   for (const resource of document.resources) {
+    if (!resource.name || resource.name.trim() === '') {
+      diagnostics.push({
+        code: 'MISSING_RESOURCE_NAME',
+        message: `Resource ${resource.id} has no name`,
+      })
+    }
+    if (!RESOURCE_KINDS.has(resource.kind)) {
+      diagnostics.push({
+        code: 'INVALID_RESOURCE_KIND',
+        message: `Resource ${resource.id} has invalid kind ${resource.kind}`,
+      })
+    }
+    if (!Number.isFinite(resource.maxUnits) || resource.maxUnits < 0) {
+      diagnostics.push({
+        code: 'INVALID_MAX_UNITS',
+        message: `Resource ${resource.id} has invalid maxUnits ${resource.maxUnits}`,
+      })
+    }
+    if (!Number.isFinite(resource.standardRate) || resource.standardRate < 0) {
+      diagnostics.push({
+        code: 'INVALID_RATE',
+        message: `Resource ${resource.id} has invalid standardRate ${resource.standardRate}`,
+      })
+    }
+    if (!Number.isFinite(resource.overtimeRate) || resource.overtimeRate < 0) {
+      diagnostics.push({
+        code: 'INVALID_RATE',
+        message: `Resource ${resource.id} has invalid overtimeRate ${resource.overtimeRate}`,
+      })
+    }
+    if (!Number.isFinite(resource.costPerUse) || resource.costPerUse < 0) {
+      diagnostics.push({
+        code: 'INVALID_COST_PER_USE',
+        message: `Resource ${resource.id} has invalid costPerUse ${resource.costPerUse}`,
+      })
+    }
     if (resource.calendarId && !calendarIds.has(resource.calendarId)) {
       diagnostics.push({
         code: 'MISSING_CALENDAR',
         message: `Resource ${resource.id} references missing calendar ${resource.calendarId}`,
       })
     }
+    // Availability windows: start is always required; finish, when present, must
+    // be strictly after start (a zero-length or inverted window is invalid, not
+    // silently dropped). Units must be a finite non-negative number. Overlapping
+    // windows are NOT merged here — resolution ordering is deterministic in the
+    // scheduling engine (sorted by start), but the document accepts overlaps so
+    // callers can model shift patterns without a silent merge reinterpreting them.
     for (const slot of resource.availability) {
-      if (!isValidDate(slot.start) || (slot.finish !== undefined && !isValidDate(slot.finish))) {
+      if (!isValidDate(slot.start)) {
         diagnostics.push({
           code: 'INVALID_DATE',
-          message: `Resource ${resource.id} has a malformed availability date`,
+          message: `Resource ${resource.id} has a malformed availability start date`,
+        })
+      } else if (slot.finish !== undefined) {
+        if (!isValidDate(slot.finish)) {
+          diagnostics.push({
+            code: 'INVALID_DATE',
+            message: `Resource ${resource.id} has a malformed availability finish date`,
+          })
+        } else if (new Date(slot.finish).getTime() <= new Date(slot.start).getTime()) {
+          diagnostics.push({
+            code: 'INVALID_AVAILABILITY_RANGE',
+            message: `Resource ${resource.id} has a zero-length or inverted availability window`,
+          })
+        }
+      }
+      if (!Number.isFinite(slot.units) || slot.units < 0) {
+        diagnostics.push({
+          code: 'INVALID_AVAILABILITY_UNITS',
+          message: `Resource ${resource.id} has invalid availability units ${slot.units}`,
         })
       }
     }
   }
+
+  // PROJECT-010 assignment canonical validation. Assignment units are a
+  // scheduling input (capacity fraction); they must be a finite non-negative
+  // number. Task/resource references must resolve. A duplicate assignment id
+  // is already reported above; here we additionally guard against a duplicate
+  // (taskId, resourceId) pair so two assignment rows cannot silently shadow the
+  // same task/resource relationship.
+  const assignmentPairs = new Set<string>()
   for (const assignment of document.assignments) {
     if (!taskIds.has(assignment.taskId)) {
       diagnostics.push({
@@ -450,6 +525,34 @@ function validateResourcesAndAssignments(
         message: `Assignment ${assignment.id} references missing resource ${assignment.resourceId}`,
       })
     }
+    if (!Number.isFinite(assignment.units) || assignment.units < 0) {
+      diagnostics.push({
+        code: 'INVALID_ASSIGNMENT_UNITS',
+        message: `Assignment ${assignment.id} has invalid units ${assignment.units}`,
+      })
+    }
+    const pairKey = `${assignment.taskId}->${assignment.resourceId}`
+    if (assignmentPairs.has(pairKey)) {
+      diagnostics.push({
+        code: 'DUPLICATE_ASSIGNMENT_PAIR',
+        message: `Assignment ${assignment.id} duplicates the task/resource link ${pairKey}`,
+      })
+    }
+    assignmentPairs.add(pairKey)
+  }
+
+  // Resource UID uniqueness: UIDs are persistent interoperability identifiers
+  // (source-file round-tripping), so they must be unique per document even
+  // though ResourceId remains the canonical identity (mirrors the Task rule).
+  const resourceUids = new Set<number>()
+  for (const resource of document.resources) {
+    if (resourceUids.has(resource.uid)) {
+      diagnostics.push({
+        code: 'DUPLICATE_RESOURCE_UID',
+        message: `Resource ${resource.id} duplicates uid ${resource.uid}`,
+      })
+    }
+    resourceUids.add(resource.uid)
   }
 }
 
