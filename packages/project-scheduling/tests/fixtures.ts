@@ -64,10 +64,16 @@ export function holiday(date: string): CalendarException {
   return { date, periods: [] }
 }
 
+// Task UIDs must be unique within a document (interoperability identity).
+// Fixture tasks receive an auto-incrementing UID so multi-task documents stay
+// valid; tests may always pass an explicit uid override.
+let fixtureUid = 0
+
 export function makeTask(overrides: Omit<Partial<Task>, 'id'> & { id: string }): Task {
   const { id, ...rest } = overrides
+  fixtureUid += 1
   return {
-    uid: 1,
+    uid: fixtureUid,
     wbs: '',
     outlineLevel: 1,
     name: id,

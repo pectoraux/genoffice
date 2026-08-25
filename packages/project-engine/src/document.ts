@@ -213,6 +213,20 @@ function validateTasks(
     }
   }
 
+  // Task UID uniqueness: UIDs are persistent interoperability identifiers
+  // (source-file round-tripping), so they must be unique per document even
+  // though TaskId remains the canonical identity.
+  const taskUids = new Set<number>()
+  for (const task of document.tasks) {
+    if (taskUids.has(task.uid)) {
+      diagnostics.push({
+        code: 'DUPLICATE_TASK_UID',
+        message: `Task ${task.id} duplicates uid ${task.uid}`,
+      })
+    }
+    taskUids.add(task.uid)
+  }
+
   // Parent-chain cycle detection.
   for (const task of document.tasks) {
     const seen = new Set<string>()
@@ -227,6 +241,49 @@ function validateTasks(
       }
       seen.add(current.id as string)
       current = taskById.get(current.parentTaskId as string)
+    }
+  }
+
+  // PROJECT-007 hierarchy invariants: outlineLevel must equal hierarchy depth
+  // (root = 1, child = parent + 1) and the summary flag must equal "has at
+  // least one child". Cyclic or missing-parent chains are skipped here; they
+  // are already reported above.
+  const parentsWithChildren = new Set<string>()
+  for (const task of document.tasks) {
+    if (task.parentTaskId && taskIds.has(task.parentTaskId)) {
+      parentsWithChildren.add(task.parentTaskId as string)
+    }
+  }
+  const outlineDepthOf = (task: { id: string; parentTaskId?: string }): number | undefined => {
+    let depth = 1
+    const seen = new Set<string>()
+    let current: { id: string; parentTaskId?: string } | undefined = task
+    while (current?.parentTaskId) {
+      if (seen.has(current.id)) return undefined
+      seen.add(current.id)
+      const parent = taskById.get(current.parentTaskId as string)
+      if (!parent) return undefined
+      current = parent
+      depth += 1
+    }
+    return depth
+  }
+  for (const task of document.tasks) {
+    const depth = outlineDepthOf(task)
+    if (depth !== undefined && task.outlineLevel >= 1 && task.outlineLevel !== depth) {
+      diagnostics.push({
+        code: 'INCONSISTENT_OUTLINE_LEVEL',
+        message: `Task ${task.id} has outlineLevel ${task.outlineLevel} but hierarchy depth is ${depth}`,
+      })
+    }
+    const hasChildren = parentsWithChildren.has(task.id as string)
+    if (task.summary !== hasChildren) {
+      diagnostics.push({
+        code: 'INCONSISTENT_SUMMARY_FLAG',
+        message: hasChildren
+          ? `Task ${task.id} has children and must be a summary task`
+          : `Task ${task.id} has no children and must not be flagged as a summary task`,
+      })
     }
   }
 
