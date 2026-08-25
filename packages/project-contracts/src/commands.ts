@@ -26,6 +26,7 @@ export type ProjectCommand =
       constraintType: ProjectDocument['tasks'][number]['constraintType']
       constraintDate?: string
     }
+  | { type: 'SetDeadline'; taskId: TaskId; deadline?: string }
   | { type: 'AssignResource'; assignment: ProjectDocument['assignments'][number] }
   | { type: 'UnassignResource'; assignmentId: AssignmentId }
   | { type: 'SetPercentComplete'; taskId: TaskId; percentComplete: number }
