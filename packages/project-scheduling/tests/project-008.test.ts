@@ -3,7 +3,6 @@ import { schedule } from '../src/index.js'
 import type { DerivedSchedule, ProjectDocument, TaskSchedule } from '@genoffice/project-contracts'
 import { asISODateTime } from '@genoffice/project-contracts'
 import {
-  FRIDAY_FINISH,
   MONDAY,
   MONDAY_FINISH,
   NEXT_MONDAY,
