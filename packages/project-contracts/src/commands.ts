@@ -29,6 +29,7 @@ export type ProjectCommand =
   | { type: 'SetDeadline'; taskId: TaskId; deadline?: string }
   | { type: 'AssignResource'; assignment: ProjectDocument['assignments'][number] }
   | { type: 'UnassignResource'; assignmentId: AssignmentId }
+  | { type: 'SetAssignmentUnits'; assignmentId: AssignmentId; units: number }
   | { type: 'SetPercentComplete'; taskId: TaskId; percentComplete: number }
   | { type: 'CreateBaseline'; baseline: ProjectDocument['baselines'][number] }
   | { type: 'LevelResources'; taskIds?: TaskId[] }

@@ -1,4 +1,5 @@
 import type {
+  Assignment,
   ConstraintType,
   ProjectCommand,
   ProjectCommandResult,
@@ -699,6 +700,68 @@ function mutateForUnassignResource(
 }
 
 /**
+ * PROJECT-011 SetAssignmentUnits.
+ *
+ * Changes the `units` field on an existing assignment. Units are a work-
+ * capacity fraction (1.0 = 100%, 0.5 = 50%) and the authoritative input to
+ * derived work calculations (`assignment work = task.duration × units` for
+ * work resources). This command is the semantic way to change an assignment's
+ * allocation without an Unassign+Assign pair that would lose the stable
+ * `AssignmentId`.
+ *
+ * The mutator rejects a missing assignment (deterministic diagnostic, document
+ * unchanged) and a non-finite or negative units value (`INVALID_ASSIGNMENT_UNITS`).
+ * The post-mutation validator re-checks the full document. The inverse restores
+ * the previous units value so undo/redo is deterministic. This command does NOT
+ * compute work or cost — derived values belong in the scheduler.
+ */
+function mutateForSetAssignmentUnits(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'SetAssignmentUnits' },
+): Mutation {
+  const existing = document.assignments.find((item) => item.id === command.assignmentId)
+  if (!existing) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'MISSING_ASSIGNMENT',
+          message: `Assignment ${command.assignmentId} does not exist`,
+        },
+      ],
+    }
+  }
+  if (!Number.isFinite(command.units) || command.units < 0) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'INVALID_ASSIGNMENT_UNITS',
+          message: `Assignment ${command.assignmentId} has invalid units ${command.units}`,
+        },
+      ],
+    }
+  }
+  const previousUnits = existing.units
+  const updated: Assignment = { ...existing, units: command.units }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks,
+      assignments: document.assignments.map((item) =>
+        item.id === command.assignmentId ? updated : item,
+      ),
+      affectedTaskIds: [existing.taskId],
+      inverse: {
+        type: 'SetAssignmentUnits',
+        assignmentId: command.assignmentId,
+        units: previousUnits,
+      },
+    },
+  }
+}
+
+/**
  * Applies a semantic ProjectCommand to a ProjectDocument.
  *
  * Pure and deterministic: the same document plus the same command sequence
@@ -760,6 +823,9 @@ export function applyProjectCommand(
         break
       case 'UnassignResource':
         mutation = mutateForUnassignResource(document, command)
+        break
+      case 'SetAssignmentUnits':
+        mutation = mutateForSetAssignmentUnits(document, command)
         break
       default:
         mutation = {

@@ -89,8 +89,15 @@ export function captureBaseline(
       start: entry.scheduledStart,
       finish: entry.scheduledFinish,
       duration: entry.duration,
-      work: task.work,
-      cost: task.cost,
+      // PROJECT-011: prefer the DERIVED work/cost from the schedule (the sum
+      // of assignment work/cost, rolled up for summaries) over the document-
+      // level task.work/task.cost. This makes baselines capture the current
+      // computed values so future baseline comparisons use derived work/cost.
+      // When the schedule has no derived value (e.g. a task with no
+      // assignments), fall back to the document field (backward-compatible
+      // with PROJECT-009 consumers that captured before PROJECT-011 derivation).
+      work: (entry.work as WorkingMinutes | undefined) ?? task.work,
+      cost: entry.cost ?? task.cost,
     }
   }
   return {

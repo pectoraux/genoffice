@@ -231,3 +231,113 @@ Assignments are keyed by stable `TaskId`. `IndentTask`/`OutdentTask`/`RenameTask
 ### PROJECT-011 / PROJECT-013 boundary
 
 PROJECT-010 establishes the resource model, resource calendars, assignment references, calendar resolution, and resource scheduling inputs. It does NOT implement assignment work, actual work, remaining work, resource cost, assignment cost, work/cost calculations (PROJECT-011), or resource leveling (PROJECT-013). The engine does not move tasks to resolve overload, generate leveling commands, or alter dates because of resource contention. Over-allocation detection is deferred until the model has the required work units.
+
+## PROJECT-011 canonical semantic clarifications
+
+These clarifications record the canonical decisions required to implement assignments, work, and cost (PROJECT-011). They refine R-002, R-005, R-006, and R-007 without altering any frozen invariant; no architecture-change proposal is required.
+
+### Assignment units semantics
+
+For work resources, `Assignment.units` is a capacity fraction with explicit canonical semantics: `1.0` = 100% allocation, `0.5` = 50%, `2.0` = 200% (two full units of capacity). Units are NEVER silently mixed with percent-complete, hours, or working-minutes. The engine rejects a non-finite or negative units value with `INVALID_ASSIGNMENT_UNITS` (established in PROJECT-010). A zero-unit assignment is permitted (the model allows `units = 0`); its derived work is 0.
+
+### Work calculation
+
+The canonical work formula for a work resource is:
+
+```
+assignment.work = task.duration × assignment.units   (WorkingMinutes)
+```
+
+The task duration is the already-scheduled duration in the task's resolved calendar (the PROJECT-006 accepted schedule, unchanged by PROJECT-011). The resource calendar is a scheduling INPUT but does NOT move task dates or change the work formula in this increment — resource-calendar-driven task-date movement is leveling (PROJECT-013). Work is computed against the accepted schedule; leveling remains PROJECT-013.
+
+Task work for a leaf task is the sum of its assignment work across all assignments on that task. A task with no assignments has work 0 (no resources means no resource work). The document-level `Task.work` field is NOT authoritative for derived schedule output; the derived value lives in `TaskSchedule.work`.
+
+### Actual and remaining work
+
+```
+assignment.actualWork = round(assignment.work × task.percentComplete / 100)
+assignment.remainingWork = assignment.work − assignment.actualWork
+```
+
+`percentComplete` is the authoritative progress input (PROJECT-008 precedence preserved). The status date does NOT override `percentComplete` for work calculations — it affects the derived `status` field (notStarted/inProgress/complete) per PROJECT-008, but `actualWork` is derived purely from `percentComplete`. This is deterministic: the same serialized document + options always produce byte-identical derived work bytes.
+
+### Material resource semantics
+
+Material resources are NOT work-capacity resources. Material `units` represent a consumable quantity (e.g. 10 tons of concrete), NEVER person-hours. The canonical material cost is:
+
+```
+assignment.cost = assignment.units × resource.standardRate + resource.costPerUse
+```
+
+Material resources contribute zero work: `work = actualWork = remainingWork = 0`.
+
+### Cost resource semantics
+
+Cost resources are pure cost categories. They MUST NOT contribute work and MUST NOT consume `maxUnits` as work capacity. The `Assignment.cost` field is the authoritative cost input for a cost resource. The canonical cost-resource cost is:
+
+```
+assignment.cost = assignment.cost   (the authoritative document value)
+assignment.actualCost = round(assignment.cost × task.percentComplete / 100)
+assignment.remainingCost = assignment.cost − assignment.actualCost
+```
+
+Cost resources contribute zero work: `work = actualWork = remainingWork = 0`. The engine does not manufacture hourly labor cost for a cost resource.
+
+### Rates
+
+The accepted `Resource` rates are `standardRate`, `overtimeRate`, and `costPerUse`. Canonical rate semantics:
+
+- **Work resources**: `standardRateCost = (assignment.work / 60) × resource.standardRate` (work is in minutes; rate is per hour). `costPerUse` is a flat per-assignment cost added to the rate-based cost. `assignment.cost = standardRateCost + overtimeCost + costPerUse`.
+- **Overtime cost is deferred**: the frozen `Assignment` contract has no `overtimeWork` input field, so the engine cannot determine which portion of work is overtime. `overtimeCost = 0` in PROJECT-011. This is a documented deferred limitation, not a guess. A future work item that adds an `overtimeWork` input to the `Assignment` contract will enable overtime cost calculation; until then the `overtimeRate` is echoed on `AssignmentSchedule` but never applied to cost.
+- **Material resources**: `standardRate` is a per-unit rate. `cost = units × standardRate + costPerUse`.
+- **Cost resources**: `costPerUse` is not applied (the `Assignment.cost` field is the authoritative cost). `standardRate`/`overtimeRate` are echoed but not used for cost derivation.
+
+The scheduler never silently ignores a populated rate: it is echoed on `AssignmentSchedule` so downstream layers never re-derive it.
+
+### Multiple assignments and aggregate demand
+
+A task can have multiple assignments. Task work is the deterministic sum of assignment work. Aggregate demand exceeding `maxUnits` (over-allocation, e.g. two assignments at 1.0 each on a resource with `maxUnits = 1`) is a data/scheduling condition, NOT a trigger for date mutation. The engine does NOT level (PROJECT-013 territory). Over-allocation is reported through the derived work values; the caller can detect it by comparing aggregate assignment units against `maxUnits`.
+
+### Calendar interaction
+
+Work and cost calculations respect canonical working-time inputs. The accepted calendar engine (`resolveCalendar`, `isWorking`, `addWorkingTime`, `subtractWorkingTime`, `workingDuration`) is reused; no second resource-calendar engine is created. Resource calendar resolution from PROJECT-010 remains authoritative.
+
+When `task calendar != resource calendar`, assignment work is calculated using the TASK's scheduled duration (`task.duration × units`). The resource calendar is exposed on `AssignmentSchedule.resolvedCalendarId` but does not change the work formula in PROJECT-011. This is deterministic. The engine does NOT modify the accepted PROJECT-006 task scheduling dates to fit the resource calendar (leveling is PROJECT-013).
+
+### Status date / actuals interaction
+
+`ProjectProperties.statusDate` is used for deterministic current-date evaluation. The engine NEVER uses `Date.now()`, the system clock, local timezone, or browser time. `percentComplete` remains the authoritative progress input (PROJECT-008 precedence preserved). The status date's role is to derive the task `status` (notStarted/inProgress/complete) per PROJECT-008:
+
+- `percentComplete >= 100` → complete (actualWork = work, remainingWork = 0)
+- `0 < percentComplete < 100` → inProgress (actualWork = round(work × percent / 100))
+- `percentComplete == 0`:
+  - statusDate set AND has reached/passed scheduled start → status `inProgress`, but `actualWork = 0` (no work reported complete)
+  - otherwise → status `notStarted`, `actualWork = 0`
+
+The status date does NOT silently overwrite `percentComplete` or invent progress. `actualWork` is derived purely from `percentComplete`.
+
+### Summary task work/cost roll-up
+
+Summary task work/cost is a deterministic aggregation from descendants, NOT renderer state. A summary's work = sum of direct children's derived work (rolled up recursively). A summary's cost = sum of direct children's derived cost. Nested summaries roll up correctly because the engine processes deepest-first (children before parents). A summary's own assignments (if any) are NOT included in the roll-up — assignments belong on leaf tasks, and the roll-up is from children only. This is NOT resource-weighted; it is a plain sum.
+
+### Derived schedule extension
+
+`AssignmentSchedule` is extended with optional derived work/cost fields: `work`, `actualWork`, `remainingWork` (branded `WorkingMinutes`), `cost`, `actualCost`, `remainingCost` (plain `number`), plus echoed `standardRate`, `overtimeRate`, `costPerUse`. `TaskSchedule` is extended with optional `work`, `actualWork`, `remainingWork`, `cost`, `actualCost`, `remainingCost`. Both additions are optional and backward-compatible: existing PROJECT-006..010 consumers that do not read them are unaffected. All derived values are deterministic.
+
+### Baseline integration
+
+PROJECT-009 established immutable baseline snapshots. PROJECT-011 makes current derived work/cost values available so baseline comparisons use them: `captureBaseline` now prefers the DERIVED `TaskSchedule.work`/`TaskSchedule.cost` over the document-level `Task.work`/`Task.cost`, falling back to the document field when no derived value exists (backward-compatible with PROJECT-009 consumers). Historical baseline snapshots are never mutated automatically; the existing baseline immutability is preserved. Baseline comparison continues to use the captured snapshot values.
+
+### Semantic commands
+
+PROJECT-011 adds the `SetAssignmentUnits` command compatibly within the frozen `ProjectCommand` model (a new union member, mirroring the PROJECT-008 `SetDeadline` precedent). The command changes the `units` field on an existing assignment without an Unassign+Assign pair that would lose the stable `AssignmentId`. Every accepted command is deterministic, preserves stable identity, validates ranges (`INVALID_ASSIGNMENT_UNITS` for non-finite/negative), leaves the document valid, produces canonical diagnostics, and leaves the original document unchanged on rejection. The inverse restores the previous units value so undo/redo is deterministic.
+
+`SetTaskWork` and `SetActualWork` are NOT added because work and actualWork are purely derived values (the scheduler computes them from `task.duration × units` and `percentComplete`). The frozen command union does not need commands to store derived values — derived work/cost belongs in the scheduler.
+
+### Validation
+
+PROJECT-011 extends validation for work/cost inputs. Work fields (`work`, `actualWork`, `remainingWork`) must be finite and non-negative (`INVALID_WORK`, `INVALID_ACTUAL_WORK`, `INVALID_REMAINING_WORK`). Cost fields (`cost`, `actualCost`, `remainingCost`) must be finite and non-negative (`INVALID_COST`, `INVALID_ACTUAL_COST`, `INVALID_REMAINING_COST`). The "exceeds" direction is a hard rejection: `actualWork > work` → `INCONSISTENT_WORK`; `actualCost > cost` → `INCONSISTENT_COST`. The sum invariant (`actual + remaining = total`) is NOT enforced at the document level because `actualWork`/`actualCost` are derived values the scheduler recomputes — a document may carry stale derived fields that the next `schedule()` call overwrites. Only the "exceeds" direction is a real corruption.
+
+### Determinism
+
+The same canonical `ProjectDocument` + scheduling options MUST produce byte-identical `DerivedSchedule` output. The engine does not use current system time, random numbers, locale-sensitive sorting, or array position as identity. Assignment schedules are built from assignments sorted by `AssignmentId`; task schedules are assembled from tasks sorted by `TaskId`; summary roll-up processes summaries deepest-first with canonical `TaskId` tie-breaking. JSON serialization round-trips preserve derived work/cost values unchanged.
