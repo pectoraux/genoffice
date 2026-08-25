@@ -30,6 +30,7 @@ jobs:
             echo 'Project foundation changed a forbidden Excel/frozen surface.' >&2
             exit 1
           fi
+      # This workflow is the objective foundation evidence path because local network access is unavailable in the implementation environment.
       - name: Typecheck contracts
         run: npm run typecheck -w @genoffice/project-contracts
       - name: Test contracts
