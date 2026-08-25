@@ -4,7 +4,7 @@ on:
   push:
     branches: [project-office]
   pull_request:
-    branches: [project-office]
+    branches: [main, project-office]
 
 permissions:
   contents: read
@@ -30,7 +30,14 @@ jobs:
             echo 'Project foundation changed a forbidden Excel/frozen surface.' >&2
             exit 1
           fi
-      # This workflow is the objective foundation evidence path because local network access is unavailable in the implementation environment.
+      - name: Verify frozen specification set
+        run: |
+          for f in architecture-lock.md architecture.md requirements.md work-items.md dependency-graph.md verification-matrix.md; do
+            test -f "spec/project/$f" || { echo "Missing spec/project/$f" >&2; exit 1; }
+          done
+      - name: Verify foundation package boundaries
+        run: |
+          ! grep -R -nE "from ['\"]react|from ['\"]electron|from ['\"]node:|from ['\"]http|from ['\"]https" packages/project-contracts packages/project-engine packages/project-scheduling --include='*.ts'
       - name: Typecheck contracts
         run: npm run typecheck -w @genoffice/project-contracts
       - name: Test contracts
