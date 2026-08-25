@@ -117,7 +117,8 @@ The web shall remain usable for normal office workbooks within the documented pa
 - EXCEL-006: sort/formula synchronization — implemented and independently gated.
 - EXCEL-007: AutoFilter — implemented.
 - EXCEL-008: Data Validation — implemented.
+- EXCEL-009 (notes family slice): `noteStates` is an implemented feature family — read (`parseCommentsPart` via worksheet rels), import (journal-suppressed `createOrUpdateNote`), create/edit/delete through the real Univer note surface, declarative live-model snapshot at save, canonical `applySheetNotes` write (comments part + VML + rels + content types), save/reopen, per-sheet fail-closed on unrepresentable parts. Tracked as work item EXCEL-019 (VERIFIED); see `spec/excel/work-items.md` for the evidence references. The other EXCEL-009 families (sheetProtections, tableAdditions, visualAdditions, chartEdits, cfStates, definedNamesState) remain open.
 
 ### Remaining
 
-The remaining requirements are staged into the work-item backlog and may not be considered complete until the corresponding verification matrix entries pass.
+The remaining requirements are staged into the work-item backlog and may not be considered complete until the corresponding verification matrix entries pass. The next authorized implementation item is EXCEL-018 Remove Duplicates (per the 2026-08-25 architect review), followed by EXCEL-020 Protection.

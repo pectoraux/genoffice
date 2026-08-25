@@ -41,19 +41,30 @@ EXCEL-015 Core Ribbon Mutation Persistence
 ```text
 EXCEL-015
   ↓
-EXCEL-016 Data Filter
+EXCEL-016 Data Filter          [VERIFIED]
   ↓
-EXCEL-017 Data Validation
+EXCEL-017 Data Validation      [VERIFIED]
+```
+
+```text
+EXCEL-015
+  ↓
+EXCEL-019 Notes / Comments     [VERIFIED — see spec/excel/work-items.md for evidence]
+  ↓
+EXCEL-020 Protection           [READY; sequenced after EXCEL-018 per architect direction]
 ```
 
 ## Remaining feature sequence
 
+Next authorized item: **EXCEL-018 Remove Duplicates** (2026-08-25 architect review), then EXCEL-020 Protection:
+
 ```text
 EXCEL-015
- ├──→ EXCEL-018 Remove Duplicates
- ├──→ EXCEL-019 Notes
+ ├──→ EXCEL-018 Remove Duplicates     ← NEXT
+ │
+ ├──→ EXCEL-019 Notes                 [VERIFIED]
  │       ↓
- │   EXCEL-020 Protection
+ │   EXCEL-020 Protection             [after EXCEL-018]
  │
  ├──→ EXCEL-021 Tables
  │       ↓
@@ -114,7 +125,7 @@ EXCEL-036 Final Parity Acceptance
 ### Data semantics stream
 
 ```text
-Filter → Data Validation → Remove Duplicates → Tables → CF → Notes/Protection
+Filter → Data Validation → Remove Duplicates → Tables → CF → Notes [VERIFIED] / Protection
 ```
 
 ### Visual stream

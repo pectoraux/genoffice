@@ -54,6 +54,18 @@ Required:
 - save/reopen;
 - browser + production E2E.
 
+Status: VERIFIED (commit 68cbb9d1a36c54b1731b2f43460da547fde1e437; see `spec/excel/work-items.md` for the full evidence record).
+
+Verification evidence map:
+
+- import existing notes — `xlsx-notes.test.ts` "readBasicWorkbook integration" + E2E test 1 (snapshot + live model);
+- render author/text metadata — E2E test 1 (author split convention proven in the live model);
+- create/edit/delete — E2E tests 3+4 (create, edit, delete through the real facade);
+- multiple notes — E2E tests 1, 5+6 (two notes; delete-one isolation);
+- no-op byte preservation — gateway test 10 + E2E test 10 + live production assertion;
+- save/reopen — gateway test 6 (write→reopen) + E2E tests 7+8+9 (typed wire + XML + reopened live model);
+- browser + production E2E — `ribbon-review-notes.spec.ts` (5 tests, real HTTP) + the 25-assertion live pipeline verification against genoffice.vercel.app.
+
 ### EXCEL-020 Protection
 
 Required:

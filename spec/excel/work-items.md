@@ -92,6 +92,21 @@ Objective: Import, render, edit, clear, persist, and reopen supported validation
 Dependencies: EXCEL-016, EXCEL-009.
 Status: VERIFIED.
 
+### EXCEL-019 — Comments / Notes
+
+Objective: Import existing cell notes/comments, display them, create/edit/delete supported notes, and persist through `noteStates`.
+Dependencies: EXCEL-009, EXCEL-015.
+Status: VERIFIED.
+Implementation commit: 68cbb9d1a36c54b1731b2f43460da547fde1e437 (bundle: 8c05c18; pushed to origin/web-office-editor through 26f5f54).
+Evidence:
+
+- Gateway read/write: `parseCommentsPart` + `resolveCommentsPath` in `packages/xlsx-gateway/src/gateway/xlsx-notes.ts`; `WorksheetState.notes` in `packages/xlsx-gateway/src/domain/workbook.types.ts`; per-sheet fail-closed (`NoteReadError`) on unreadable refs, out-of-sheet refs, missing text, oversized sets.
+- Canonical save: `noteStates` at `applyCellEditsToXlsx` argument 13 → `applySheetNotes` (comments part + VML note shapes + rels + content types + `<legacyDrawing>`); empty notes list removes the part.
+- Wire: `BrowserWorkbookSavePlan.noteStates` with strict `expectSheetNoteState`/`expectSheetNote` validation in `packages/contractor-core/src/api/office-routes.ts`.
+- Browser: journal-suppressed import via `createOrUpdateNote` (no Undo pollution — proven), `sheet.mutation.update-note`/`remove-note` dirty marks, live-model `collectNoteStates` snapshot at save, Review → New Comment via the real `sheet.operation.add-note-popup`.
+- Tests: gateway `packages/xlsx-gateway/tests/xlsx-notes.test.ts` (19 tests: all required verification points — import, author/text/multi-line/special-XML preservation, multiple notes, write→reopen, edit, delete-one, delete-all, no-op byte preservation, malformed rejection, oversized rejection, out-of-sheet legacy form, readBasicWorkbook integration, per-sheet fail-closed); wire `packages/contractor-core/tests/unit/office-notes-routes.test.ts` (13 tests); browser E2E `apps/web/tests/e2e/ribbon-review-notes.spec.ts` (5 tests / 10 scenarios through real HTTP: existing-notes render, no-undo-on-load, create, edit, delete-one-of-two, save/reopen with XML + typed wire inspection, untouched-note survival, no-op byte preservation).
+- Production: deployed to genoffice.vercel.app; 25-assertion live pipeline verification (read/save/reopen/clear/no-op/validation) all green; CI `web` job green on the final commit.
+
 ## Remaining implementation roadmap
 
 ### EXCEL-018 — Remove Duplicates / Data Tools
@@ -99,18 +114,14 @@ Status: VERIFIED.
 Objective: Implement a real Remove Duplicates command using canonical workbook mutations, or explicitly prove that a safe canonical engine path does not exist and record the feature as deferred.
 Dependencies: EXCEL-015.
 Required verification: duplicate-row fixtures, header handling, multiple selected columns, formulas/styles preservation, save/reopen.
-
-### EXCEL-019 — Comments / Notes
-
-Objective: Import existing cell notes/comments, display them, create/edit/delete supported notes, and persist through `noteStates`.
-Dependencies: EXCEL-009, EXCEL-015.
-Required verification: no-op preservation, create/edit/delete, multiple notes, rich metadata if supported.
+Status: READY — next authorized implementation item (dependencies EXCEL-015 VERIFIED; EXCEL-019 no longer blocks this stream).
 
 ### EXCEL-020 — Sheet Protection / Workbook Protection
 
 Objective: Add Review protection controls using canonical `sheetProtections` and workbook-protection families.
-Dependencies: EXCEL-019.
+Dependencies: EXCEL-019 (VERIFIED — see the completed Phase 4 section above).
 Required verification: protect/unprotect, password semantics if supported, protected-cell behavior, save/reopen.
+Status: READY, but sequenced AFTER EXCEL-018 per architect direction (2026-08-25 review): `EXCEL-018 Remove Duplicates → EXCEL-020 Protection`.
 
 ### EXCEL-021 — Tables
 
@@ -163,7 +174,7 @@ Required verification: timer/blur save, crash simulation, recovery prompt, recov
 ### EXCEL-029 — Undo/Redo and journal parity
 
 Objective: Move from partial browser dirty maps toward shared semantic journaling and correct undo/redo grouping/suppression.
-Dependencies: EXCEL-019, EXCEL-021, EXCEL-024.
+Dependencies: EXCEL-019 (VERIFIED), EXCEL-021, EXCEL-024.
 Required verification: mutation-family coverage, load suppression, batch grouping, redo, save/reopen after undo.
 
 ### EXCEL-030 — Theme and locale parity
