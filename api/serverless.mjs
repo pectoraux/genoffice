@@ -21556,6 +21556,8 @@ function applyThemeState(themeXml, state) {
 // packages/xlsx-gateway/src/gateway/xlsx-notes.ts
 var NoteEditError = class extends Error {
 };
+var NoteReadError = class extends Error {
+};
 var COMMENTS_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
 var VML_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing";
 var COMMENTS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";
@@ -21617,16 +21619,7 @@ function buildCommentsXml(notes) {
 }
 var VML_HEADER = '<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout><v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>';
 function noteShape(note, index) {
-  const anchor = [
-    note.column + 1,
-    15,
-    note.row,
-    2,
-    note.column + 4,
-    15,
-    note.row + 4,
-    2
-  ].join(",");
+  const anchor = [note.column + 1, 15, note.row, 2, note.column + 4, 15, note.row + 4, 2].join(",");
   return `<v:shape id="_x0000_s${1025 + index}" type="#_x0000_t202" style="position:absolute;margin-left:80pt;margin-top:2pt;width:108pt;height:60pt;z-index:${index + 1};visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto"><v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/><v:path o:connecttype="none"/><v:textbox style="mso-direction-alt:auto"><div style="text-align:left"></div></v:textbox><x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>${anchor}</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>${note.row}</x:Row><x:Column>${note.column}</x:Column></x:ClientData></v:shape>`;
 }
 function stripNoteShapes(vmlXml) {
@@ -21687,7 +21680,9 @@ async function applySheetNotes(pkg, worksheetPath, notes, touchedEntries) {
     relsXml = removeRel(relsXml, COMMENTS_REL_TYPE);
     const contentTypes2 = await pkg.readText(CONTENT_TYPES_PATH);
     const stripped = contentTypes2.replace(
-      new RegExp(`<Override\\b[^>]*PartName="/${existingCommentsPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^>]*/>`),
+      new RegExp(
+        `<Override\\b[^>]*PartName="/${existingCommentsPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^>]*/>`
+      ),
       ""
     );
     if (stripped !== contentTypes2) {
@@ -21758,6 +21753,52 @@ async function applySheetNotes(pkg, worksheetPath, notes, touchedEntries) {
     else pkg.add(relsPath, relsXml);
     touchedEntries.add(relsPath);
   }
+}
+var NOTE_MAX_PER_SHEET = 1e3;
+function parseCommentsPart(commentsXml) {
+  const authors = [];
+  for (const match of commentsXml.matchAll(/<author>([\s\S]*?)<\/author>/g)) {
+    authors.push(decodeXmlText3(match[1] ?? ""));
+  }
+  const notes = [];
+  for (const match of commentsXml.matchAll(/<comment\b([^>]*)>([\s\S]*?)<\/comment>/g)) {
+    const attributes2 = match[1] ?? "";
+    const body = match[2] ?? "";
+    const ref = /(?:^|\s)ref="([^"]*)"/.exec(attributes2)?.[1];
+    if (ref === void 0 || ref.trim() === "") {
+      throw new NoteReadError("comment has no ref attribute.");
+    }
+    const cell = /^([A-Z]{1,3})([0-9]+)$/.exec(ref.trim());
+    if (!cell) {
+      throw new NoteReadError(`comment ref "${ref}" is not a readable cell address.`);
+    }
+    const row = Number(cell[2]) - 1;
+    const column = lettersToColumnIndex(cell[1]);
+    if (row < 0 || row > 1048575 || column < 0 || column > 16383) {
+      throw new NoteReadError(`comment ref "${ref}" is outside the sheet.`);
+    }
+    const authorIdText = /(?:^|\s)authorId="([0-9]+)"/.exec(attributes2)?.[1];
+    const author = authorIdText === void 0 ? "" : authors[Number(authorIdText)] ?? "";
+    const text = decodeXmlText3(/<t\b[^>]*>([\s\S]*?)<\/t>/.exec(body)?.[1] ?? "");
+    if (text === "") {
+      throw new NoteReadError(`comment at ${ref} carries no readable text.`);
+    }
+    notes.push({ row, column, author, text });
+    if (notes.length > NOTE_MAX_PER_SHEET) {
+      throw new NoteReadError(`Sheet carries more than ${NOTE_MAX_PER_SHEET} notes.`);
+    }
+  }
+  return notes;
+}
+function decodeXmlText3(input) {
+  return input.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&#10;", "\n").replaceAll("&amp;", "&");
+}
+function lettersToColumnIndex(letters) {
+  let column = 0;
+  for (const character of letters) {
+    column = column * 26 + character.charCodeAt(0) - 64;
+  }
+  return column - 1;
 }
 
 // packages/xlsx-gateway/src/gateway/xlsx-sparkline.ts
@@ -22498,7 +22539,7 @@ var StylesheetReader = class {
     for (const entry of numFmtEntries) {
       const id = Number(readAttribute2(entry, "numFmtId") ?? "NaN");
       const code = readAttribute2(entry, "formatCode");
-      if (Number.isInteger(id) && code) byCode.set(id, decodeXmlText3(code));
+      if (Number.isInteger(id) && code) byCode.set(id, decodeXmlText4(code));
     }
     this.numFmtByCode = byCode;
   }
@@ -22536,7 +22577,7 @@ var StylesheetReader = class {
     const sz = Number(readAttribute2(/<sz\b[^>]*\/?>/.exec(font)?.[0] ?? "", "val"));
     if (Number.isFinite(sz) && sz > 0) format.fontSize = sz;
     const name = readAttribute2(/<name\b[^>]*\/?>/.exec(font)?.[0] ?? "", "val");
-    if (name) format.fontFamily = decodeXmlText3(name);
+    if (name) format.fontFamily = decodeXmlText4(name);
     const fontColor = argbToRgb(
       readAttribute2(/<color\b[^>]*\/?>/.exec(font)?.[0] ?? "", "rgb") ?? ""
     );
@@ -22563,11 +22604,12 @@ var StylesheetReader = class {
     return Object.keys(format).length > 0 ? format : void 0;
   }
 };
-function decodeXmlText3(input) {
+function decodeXmlText4(input) {
   return input.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_m, code) => String.fromCodePoint(Number(code))).replace(/&amp;/g, "&");
 }
 
 // packages/xlsx-gateway/src/gateway/xlsx-gateway.ts
+var COMMENTS_REL_TYPE2 = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
 var MAX_ENTRY_COUNT = 1e4;
 var MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024;
 var PackageEditor = class {
@@ -22710,7 +22752,7 @@ async function readBasicWorkbook(buffer) {
     const name = readXmlAttribute(attributes2, "name");
     const sheetNumber = readXmlAttribute(attributes2, "sheetId");
     if (!name || !sheetNumber) continue;
-    const decodedName = decodeXmlText4(name);
+    const decodedName = decodeXmlText5(name);
     const id = `sheet-${sheetNumber}`;
     const worksheetPath = await resolveWorksheetPath(zip, decodedName);
     const worksheetXml = await zip.readText(worksheetPath);
@@ -22729,6 +22771,16 @@ async function readBasicWorkbook(buffer) {
     } catch (error) {
       if (!(error instanceof DvReadError)) throw error;
     }
+    let sheetNotes;
+    try {
+      const commentsPath = await resolveCommentsPath(zip, worksheetPath);
+      if (commentsPath !== null && await zip.has(commentsPath)) {
+        const parsed = parseCommentsPart(await zip.readText(commentsPath));
+        if (parsed.length > 0) sheetNotes = parsed;
+      }
+    } catch (error) {
+      if (!(error instanceof NoteReadError)) throw error;
+    }
     sheets.push({
       id,
       name: decodedName,
@@ -22739,7 +22791,8 @@ async function readBasicWorkbook(buffer) {
       ...presentation.colWidths && Object.keys(presentation.colWidths).length > 0 ? { colWidths: presentation.colWidths } : {},
       ...presentation.freeze ? { freeze: presentation.freeze } : {},
       ...filterState ? { filterState } : {},
-      ...dvRules ? { dvRules } : {}
+      ...dvRules ? { dvRules } : {},
+      ...sheetNotes ? { notes: sheetNotes } : {}
     });
     sheetNamesById[id] = decodedName;
   }
@@ -23576,6 +23629,23 @@ async function shiftAnchoredSheetParts(pkg, worksheetPath, worksheetXml, ops, to
 function findSheetElement(workbookXml, sheetName) {
   return parseSheetElements(workbookXml).find((element) => element.name === sheetName);
 }
+async function resolveCommentsPath(reader, worksheetPath) {
+  const relsPath = worksheetPath.replace(/^(xl\/worksheets\/)([^/]+)$/, "$1_rels/$2.rels");
+  if (!await reader.has(relsPath)) return null;
+  const relsXml = await reader.readText(relsPath);
+  const relationship = new RegExp(`<Relationship[^>]*Type="${COMMENTS_REL_TYPE2}"[^>]*/?>`).exec(
+    relsXml
+  )?.[0];
+  const target = relationship === void 0 ? void 0 : /\bTarget="([^"]+)"/.exec(relationship)?.[1];
+  if (target === void 0) return null;
+  if (target.startsWith("/")) return target.slice(1);
+  const base = worksheetPath.split("/").slice(0, -1);
+  for (const part of target.split("/")) {
+    if (part === "..") base.pop();
+    else if (part !== ".") base.push(part);
+  }
+  return base.join("/");
+}
 async function resolveWorksheetPath(reader, sheetName) {
   const workbookXml = await reader.readText("xl/workbook.xml");
   const relationshipId = findSheetElement(workbookXml, sheetName)?.relationshipId;
@@ -23786,12 +23856,12 @@ function parseWorksheetCells(worksheetXml, sharedStrings) {
     const body = match[2] ?? "";
     const formula = /<f(?:\s[^>]*[^/>])?>([\s\S]*?)<\/f>/.exec(body)?.[1];
     if (formula !== void 0) {
-      cells[address] = { value: null, formula: `=${decodeXmlText4(formula)}` };
+      cells[address] = { value: null, formula: `=${decodeXmlText5(formula)}` };
       continue;
     }
     const type = readXmlAttribute(attributes2, "t");
     if (type === "inlineStr") {
-      const text = [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText4(textMatch[1] ?? "")).join("");
+      const text = [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText5(textMatch[1] ?? "")).join("");
       cells[address] = { value: text };
       continue;
     }
@@ -23804,11 +23874,11 @@ function parseWorksheetCells(worksheetXml, sharedStrings) {
     } else if (type === "b") {
       cells[address] = { value: rawValue === "1" };
     } else if (type === "str") {
-      cells[address] = { value: decodeXmlText4(rawValue) };
+      cells[address] = { value: decodeXmlText5(rawValue) };
     } else {
       const numericValue = Number(rawValue);
       cells[address] = {
-        value: Number.isFinite(numericValue) ? numericValue : decodeXmlText4(rawValue)
+        value: Number.isFinite(numericValue) ? numericValue : decodeXmlText5(rawValue)
       };
     }
   }
@@ -23818,7 +23888,7 @@ async function readSharedStrings(source) {
   if (!await source.has("xl/sharedStrings.xml")) return [];
   const xml = await source.readText("xl/sharedStrings.xml");
   return [...xml.matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map(
-    (itemMatch) => [...(itemMatch[1] ?? "").matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText4(textMatch[1] ?? "")).join("")
+    (itemMatch) => [...(itemMatch[1] ?? "").matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((textMatch) => decodeXmlText5(textMatch[1] ?? "")).join("")
   );
 }
 function escapeXmlText8(input) {
@@ -23831,7 +23901,7 @@ var XML_NAMED_ENTITIES = {
   gt: ">",
   amp: "&"
 };
-function decodeXmlText4(input) {
+function decodeXmlText5(input) {
   return input.replace(
     /&(?:#x([0-9A-Fa-f]+)|#([0-9]+)|(quot|apos|lt|gt|amp));/g,
     (match, hex, dec, named) => {
@@ -41115,7 +41185,7 @@ function buildStyleXml(up) {
 }
 var NUMBERING_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
 var COMMENTS_EXT_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/commentsExtended";
-var COMMENTS_REL_TYPE2 = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
+var COMMENTS_REL_TYPE3 = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
 var SETTINGS_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings";
 var CHART_REL_TYPE2 = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
 var CHART_CONTENT_TYPE2 = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
@@ -41409,7 +41479,7 @@ async function saveDocx(parsed, finalBlocks, options = {}) {
       commentsIsNew = true;
       newRels.push({
         rId: `rId${nextRelNum++}`,
-        type: COMMENTS_REL_TYPE2,
+        type: COMMENTS_REL_TYPE3,
         target: "comments.xml",
         external: false
       });
@@ -43507,6 +43577,63 @@ function expectDvRule(value, field) {
   }
   return out;
 }
+var MAX_NOTE_STATES = 1e3;
+var MAX_NOTES_PER_SHEET = 1e3;
+var MAX_NOTE_AUTHOR_LENGTH = 255;
+var MAX_NOTE_TEXT_LENGTH = 32767;
+var MAX_NOTE_ROW = 1048575;
+var MAX_NOTE_COLUMN = 16383;
+function expectSheetNoteState(value, index) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `noteStates[${index}] must be an object`);
+  }
+  const sheetName = expectString(value.sheetName, `noteStates[${index}].sheetName`);
+  const notes = expectArray(
+    value.notes,
+    `noteStates[${index}].notes`,
+    (note, i) => expectSheetNote(note, `noteStates[${index}].notes[${i}]`)
+  );
+  if (notes.length > MAX_NOTES_PER_SHEET) {
+    throw new OfficeValidationError(
+      "validation",
+      `noteStates[${index}].notes exceeds ${MAX_NOTES_PER_SHEET} entries`
+    );
+  }
+  return { sheetName, notes };
+}
+function expectSheetNote(value, field) {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError("validation", `${field} must be an object`);
+  }
+  const row = expectNumber(value.row, `${field}.row`);
+  if (!Number.isInteger(row) || row < 0 || row > MAX_NOTE_ROW) {
+    throw new OfficeValidationError("validation", `${field}.row must be a 0-based row index`);
+  }
+  const column = expectNumber(value.column, `${field}.column`);
+  if (!Number.isInteger(column) || column < 0 || column > MAX_NOTE_COLUMN) {
+    throw new OfficeValidationError("validation", `${field}.column must be a 0-based column index`);
+  }
+  const author = value.author;
+  if (typeof author !== "string" || author.length > MAX_NOTE_AUTHOR_LENGTH) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.author must be a string of at most ${MAX_NOTE_AUTHOR_LENGTH} characters`
+    );
+  }
+  const text = value.text;
+  if (typeof text !== "string" || text.length === 0 || text.length > MAX_NOTE_TEXT_LENGTH) {
+    throw new OfficeValidationError(
+      "validation",
+      `${field}.text must be a non-empty string of at most ${MAX_NOTE_TEXT_LENGTH} characters`
+    );
+  }
+  for (const key of Object.keys(value)) {
+    if (!["row", "column", "author", "text"].includes(key)) {
+      throw new OfficeValidationError("validation", `${field} carries an unknown field "${key}"`);
+    }
+  }
+  return { row, column, author, text };
+}
 function parseSaveWorkbookRequest(body, codec) {
   if (!isRecord(body)) {
     throw new OfficeValidationError("validation", "Request body must be a JSON object");
@@ -43542,6 +43669,13 @@ function parseSaveWorkbookRequest(body, codec) {
         `savePlan.dvStates exceeds ${MAX_DV_STATES} entries`
       );
     }
+    const noteStates = body.savePlan.noteStates !== void 0 && body.savePlan.noteStates !== null ? expectArray(body.savePlan.noteStates, "savePlan.noteStates", expectSheetNoteState) : void 0;
+    if (noteStates !== void 0 && noteStates.length > MAX_NOTE_STATES) {
+      throw new OfficeValidationError(
+        "validation",
+        `savePlan.noteStates exceeds ${MAX_NOTE_STATES} entries`
+      );
+    }
     return {
       fileName,
       fileBytes,
@@ -43550,7 +43684,8 @@ function parseSaveWorkbookRequest(body, codec) {
         ...structuralOps ? { structuralOps } : {},
         ...pageSetupStates ? { pageSetupStates } : {},
         ...filterStates ? { filterStates } : {},
-        ...dvStates ? { dvStates } : {}
+        ...dvStates ? { dvStates } : {},
+        ...noteStates ? { noteStates } : {}
       }
     };
   }
@@ -43602,6 +43737,7 @@ async function handleSaveWorkbook(body, codec) {
   const pageSetupStates = req.savePlan.pageSetupStates ?? [];
   const filterStates = req.savePlan.filterStates ?? [];
   const dvStates = req.savePlan.dvStates ?? [];
+  const noteStates = req.savePlan.noteStates ?? [];
   let mutation;
   try {
     mutation = await applyCellEditsToXlsx(
@@ -43616,7 +43752,8 @@ async function handleSaveWorkbook(body, codec) {
       dvStates,
       [],
       null,
-      pageSetupStates
+      pageSetupStates,
+      noteStates
     );
   } catch (e) {
     throw new OfficeValidationError(
