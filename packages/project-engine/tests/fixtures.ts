@@ -1,4 +1,5 @@
 import {
+  asBaselineId,
   asCalendarId,
   asDependencyId,
   asISODateTime,
@@ -8,6 +9,7 @@ import {
 import type {
   Assignment,
   Baseline,
+  BaselineId,
   Calendar,
   CalendarPeriod,
   CustomField,
@@ -16,6 +18,7 @@ import type {
   ProjectDocument,
   Resource,
   Task,
+  TaskId,
 } from '@genoffice/project-contracts'
 
 const standardDay = (): CalendarPeriod[] => [{ startMinute: 540, endMinute: 1020 }]
@@ -91,6 +94,46 @@ export function makeDependency(
     lagMinutes,
   }
 }
+
+// PROJECT-009: a baseline is an immutable snapshot of task start/finish/
+// duration/work/cost captured at a point in time. The helper accepts a
+// task-id → snapshot map (or an empty snapshot when the caller only needs
+// the baseline shell for a rejection test).
+export interface BaselineSnapshotInput {
+  start?: string
+  finish?: string
+  duration?: number
+  work?: number
+  cost?: number
+}
+
+export function makeBaseline(
+  id: string,
+  capturedAt: string,
+  snapshots: Record<string, BaselineSnapshotInput> = {},
+  overrides: Partial<Omit<Baseline, 'id' | 'taskSnapshots'>> = {},
+): Baseline {
+  const taskSnapshots: Baseline['taskSnapshots'] = {}
+  for (const [taskKey, snap] of Object.entries(snapshots)) {
+    taskSnapshots[taskKey] = {
+      start: snap.start !== undefined ? asISODateTime(snap.start) : undefined,
+      finish: snap.finish !== undefined ? asISODateTime(snap.finish) : undefined,
+      duration: asWorkingMinutes(snap.duration ?? 0),
+      work: asWorkingMinutes(snap.work ?? 0),
+      cost: snap.cost ?? 0,
+    }
+  }
+  return {
+    name: id,
+    ...overrides,
+    id: asBaselineId(id),
+    capturedAt: asISODateTime(capturedAt),
+    taskSnapshots,
+  }
+}
+
+export { asBaselineId }
+export type { BaselineId, TaskId }
 
 export interface DocumentParts {
   tasks?: Task[]

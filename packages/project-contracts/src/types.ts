@@ -253,6 +253,58 @@ export interface DerivedSchedule {
   diagnostics: ImportDiagnostic[]
 }
 
+// ---- PROJECT-009 derived baseline-variance state ----
+/**
+ * PROJECT-009 per-task baseline variance. A baseline is an immutable snapshot
+ * of task start/finish/duration/work/cost captured at a point in time. The
+ * comparison projects the CURRENT derived schedule against that snapshot.
+ *
+ * Sign convention (explicit — mirrors the Microsoft Project "Variance" table):
+ *  - `startVariance` / `finishVariance` are SIGNED WORKING-MINUTE spans,
+ *    computed in the task's resolved calendar, measured as
+ *    `signedWorkingDuration(baseline, current)`:
+ *      • positive when the current date is LATER than the baseline (the task
+ *        has slipped past its planned date);
+ *      • negative when the current date is EARLIER (the task is ahead of plan);
+ *      • zero when the dates coincide.
+ *  - `durationVariance` is a plain signed working-minute span
+ *    (`currentDuration - baselineDuration`): positive when the current task
+ *    is longer than planned, negative when shorter, zero when equal.
+ *
+ * Both `startVariance` and `finishVariance` are `undefined` when either the
+ * baseline snapshot or the current schedule lacks the corresponding date
+ * (for example a baseline captured before a task was scheduled, or a summary
+ * whose baseline has no finish). `durationVariance` is always defined because
+ * duration is always present in both the snapshot and the derived schedule.
+ */
+export interface BaselineVariance {
+  taskId: TaskId
+  baselineId: BaselineId
+  baselineStart?: ISODateTime
+  baselineFinish?: ISODateTime
+  baselineDuration: WorkingMinutes
+  baselineWork: WorkingMinutes
+  baselineCost: number
+  /** Signed working-minutes; + when current starts after baseline (slipped). */
+  startVariance?: number
+  /** Signed working-minutes; + when current finishes after baseline (slipped). */
+  finishVariance?: number
+  /** Signed minutes; + when current duration exceeds baseline. */
+  durationVariance: number
+}
+
+/**
+ * PROJECT-009 baseline comparison result. Projects the current `DerivedSchedule`
+ * against a single baseline's immutable snapshots. Tasks without a snapshot in
+ * the baseline are omitted (a baseline only reports variance for tasks it
+ * captured). Pure and deterministic: the same document + schedule + baseline
+ * always produces byte-identical variance bytes.
+ */
+export interface BaselineComparison {
+  baselineId: BaselineId
+  variances: Record<TaskId, BaselineVariance>
+}
+
 export interface ProjectSavePlan {
   format: 'gproj' | 'mspdi' | 'mpp'
   path?: string
