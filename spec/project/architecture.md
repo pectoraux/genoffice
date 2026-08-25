@@ -27,18 +27,23 @@
 ## Package responsibilities
 
 ### `@genoffice/project-contracts`
+
 Defines stable, host-neutral identities, entities, enums, Project commands, schedule outputs, file-plan metadata, and diagnostics.
 
 ### `@genoffice/project-engine`
+
 Owns document validation, semantic command types/journal behavior, and future domain mutations. It is the semantic boundary between UI intent and canonical state.
 
 ### `@genoffice/project-scheduling`
+
 Owns deterministic calendar calculations, dependency validation/topology, and the scheduling/critical-path pass. It consumes contracts and emits derived schedule state without mutating the document.
 
 ### `@genoffice/project-file`
+
 Owns file-adapter interfaces and, in later increments, `.gproj`, MSPDI, and MPP translators. It never becomes renderer state. PROJECT-001 reserves the boundary; PROJECT-014+ implements formats.
 
 ### `@genoffice/project-renderer-core`
+
 Owns shared Project view composition after the semantic foundation passes. Its purpose is projection and interaction, not schedule calculation. PROJECT-001 reserves the boundary; PROJECT-021+ implements it.
 
 ## Domain graph

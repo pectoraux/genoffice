@@ -1,4 +1,12 @@
-import type { AssignmentId, DependencyId, DependencyType, ResourceId, TaskId, WorkingMinutes, ProjectDocument } from './types.js'
+import type {
+  AssignmentId,
+  DependencyId,
+  DependencyType,
+  ResourceId,
+  TaskId,
+  WorkingMinutes,
+  ProjectDocument,
+} from './types.js'
 
 export type ProjectCommand =
   | { type: 'CreateTask'; task: ProjectDocument['tasks'][number] }
@@ -13,7 +21,12 @@ export type ProjectCommand =
   | { type: 'SetTaskDuration'; taskId: TaskId; duration: WorkingMinutes }
   | { type: 'SetTaskStart'; taskId: TaskId; start: string }
   | { type: 'SetTaskFinish'; taskId: TaskId; finish: string }
-  | { type: 'SetConstraint'; taskId: TaskId; constraintType: ProjectDocument['tasks'][number]['constraintType']; constraintDate?: string }
+  | {
+      type: 'SetConstraint'
+      taskId: TaskId
+      constraintType: ProjectDocument['tasks'][number]['constraintType']
+      constraintDate?: string
+    }
   | { type: 'AssignResource'; assignment: ProjectDocument['assignments'][number] }
   | { type: 'UnassignResource'; assignmentId: AssignmentId }
   | { type: 'SetPercentComplete'; taskId: TaskId; percentComplete: number }

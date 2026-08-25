@@ -17,7 +17,15 @@ export type WorkingMinutes = number & { readonly __brand: 'WorkingMinutes' }
 
 export type TaskType = 'fixedUnits' | 'fixedWork' | 'fixedDuration'
 export type DependencyType = 'FS' | 'SS' | 'FF' | 'SF'
-export type ConstraintType = 'asSoonAsPossible' | 'asLateAsPossible' | 'startNoEarlierThan' | 'startNoLaterThan' | 'mustStartOn' | 'finishNoEarlierThan' | 'finishNoLaterThan' | 'mustFinishOn'
+export type ConstraintType =
+  | 'asSoonAsPossible'
+  | 'asLateAsPossible'
+  | 'startNoEarlierThan'
+  | 'startNoLaterThan'
+  | 'mustStartOn'
+  | 'finishNoEarlierThan'
+  | 'finishNoLaterThan'
+  | 'mustFinishOn'
 
 export interface ProjectProperties {
   id: string
@@ -95,7 +103,10 @@ export interface Dependency {
   lagMinutes: number
 }
 
-export interface CalendarPeriod { startMinute: number; endMinute: number }
+export interface CalendarPeriod {
+  startMinute: number
+  endMinute: number
+}
 export interface CalendarException {
   date: string
   periods: CalendarPeriod[]
@@ -112,14 +123,46 @@ export interface Baseline {
   id: BaselineId
   name: string
   capturedAt: ISODateTime
-  taskSnapshots: Record<string, { start?: ISODateTime; finish?: ISODateTime; duration: WorkingMinutes; work: WorkingMinutes; cost: number }>
+  taskSnapshots: Record<
+    string,
+    {
+      start?: ISODateTime
+      finish?: ISODateTime
+      duration: WorkingMinutes
+      work: WorkingMinutes
+      cost: number
+    }
+  >
 }
 
-export interface CustomField { id: CustomFieldId; name: string; type: 'text' | 'number' | 'boolean' | 'date' }
-export interface ProjectView { id: ProjectViewId; name: string; type: string; tableId?: ProjectTableId; filterId?: ProjectFilterId; groupId?: ProjectGroupId }
-export interface ProjectTable { id: ProjectTableId; name: string; columns: string[] }
-export interface ProjectFilter { id: ProjectFilterId; name: string; expression: string }
-export interface ProjectGroup { id: ProjectGroupId; name: string; expression: string }
+export interface CustomField {
+  id: CustomFieldId
+  name: string
+  type: 'text' | 'number' | 'boolean' | 'date'
+}
+export interface ProjectView {
+  id: ProjectViewId
+  name: string
+  type: string
+  tableId?: ProjectTableId
+  filterId?: ProjectFilterId
+  groupId?: ProjectGroupId
+}
+export interface ProjectTable {
+  id: ProjectTableId
+  name: string
+  columns: string[]
+}
+export interface ProjectFilter {
+  id: ProjectFilterId
+  name: string
+  expression: string
+}
+export interface ProjectGroup {
+  id: ProjectGroupId
+  name: string
+  expression: string
+}
 
 export interface ProjectDocument {
   schemaVersion: 1
@@ -158,6 +201,19 @@ export interface DerivedSchedule {
   diagnostics: ImportDiagnostic[]
 }
 
-export interface ProjectSavePlan { format: 'gproj' | 'mspdi' | 'mpp'; path?: string; document: ProjectDocument }
-export interface ProjectFileMetadata { format: ProjectSavePlan['format']; version: string; sourceName?: string }
-export interface ImportDiagnostic { code: string; severity: 'info' | 'warning' | 'error'; message: string; entityId?: string }
+export interface ProjectSavePlan {
+  format: 'gproj' | 'mspdi' | 'mpp'
+  path?: string
+  document: ProjectDocument
+}
+export interface ProjectFileMetadata {
+  format: ProjectSavePlan['format']
+  version: string
+  sourceName?: string
+}
+export interface ImportDiagnostic {
+  code: string
+  severity: 'info' | 'warning' | 'error'
+  message: string
+  entityId?: string
+}

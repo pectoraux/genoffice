@@ -1,4 +1,8 @@
-import type { JournalEntry, ProjectCommand, ProjectCommandResult } from '@genoffice/project-contracts'
+import type {
+  JournalEntry,
+  ProjectCommand,
+  ProjectCommandResult,
+} from '@genoffice/project-contracts'
 
 export class ProjectJournal {
   private past: JournalEntry[] = []
@@ -10,8 +14,12 @@ export class ProjectJournal {
     this.future = []
   }
 
-  canUndo(): boolean { return this.past.length > 0 }
-  canRedo(): boolean { return this.future.length > 0 }
+  canUndo(): boolean {
+    return this.past.length > 0
+  }
+  canRedo(): boolean {
+    return this.future.length > 0
+  }
 
   undo(): JournalEntry | undefined {
     const entry = this.past.pop()
@@ -27,5 +35,7 @@ export class ProjectJournal {
     return entry
   }
 
-  entries(): readonly JournalEntry[] { return this.past }
+  entries(): readonly JournalEntry[] {
+    return this.past
+  }
 }
