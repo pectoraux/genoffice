@@ -162,3 +162,72 @@ Baseline capture and comparison are deterministic and use `ProjectProperties.sta
 ### Semantic command
 
 PROJECT-009 implements the `CreateBaseline` command compatibly within the frozen `ProjectCommand` model (the union member already existed; the executor now accepts it). Every accepted command is deterministic, preserves stable identity, leaves the document valid, produces canonical diagnostics, and preserves unrelated hierarchy and baseline state. Every rejected command leaves the input document unchanged and returns deterministic diagnostics. No inverse is provided for `CreateBaseline`: a future `DeleteBaseline` command (PROJECT-038 territory: multiple-baseline management) is required to undo a capture cleanly, mirroring the existing `OutdentTask` precedent of leaving an undefined inverse when a single inverse command cannot restore prior state.
+
+## PROJECT-010 canonical semantic clarifications
+
+These clarifications record the canonical decisions required to implement resources and calendars (PROJECT-010). They refine R-004, R-005, R-006, and R-007 without altering any frozen invariant; no architecture-change proposal is required.
+
+### Resource model
+
+The frozen `Resource` contract already carried `id`, `uid`, `name`, `kind`, `maxUnits`, `standardRate`, `overtimeRate`, `costPerUse`, `calendarId`, and `availability`. PROJECT-010 makes these scheduling inputs authoritative and validates them. `ResourceId` is the canonical identity (never array position); `uid` is a unique persistent interoperability identifier mirroring the Task `uid` rule. A resource name is required (a resource with no name carries no scheduling meaning and is rejected with `MISSING_RESOURCE_NAME`).
+
+### Resource type semantics
+
+The canonical model supports exactly three resource kinds with explicit, documented semantics:
+
+- **Work resources** represent people/equipment capacity in units. `maxUnits`, `standardRate`, `overtimeRate`, `costPerUse`, and `calendarId` are all meaningful scheduling inputs.
+- **Material resources** represent consumable materials. `standardRate` and `costPerUse` are meaningful; the engine does not invent work-capacity semantics for materials (`maxUnits` is not a work-capacity bound).
+- **Cost resources** represent pure cost categories. They must not silently become work-capacity resources: the scheduling engine treats a cost resource as carrying zero work capacity regardless of its stored `maxUnits`. `costPerUse` is the meaningful field.
+
+`AssignmentSchedule.resourceType` echoes the kind so downstream layers never reinterpret a cost/material resource as a work-capacity resource.
+
+### Numeric validation
+
+Numeric scheduling inputs are never silently coerced. A non-finite or negative `maxUnits` is rejected with `INVALID_MAX_UNITS`; a negative `standardRate`/`overtimeRate` is rejected with `INVALID_RATE`; a negative `costPerUse` is rejected with `INVALID_COST_PER_USE`; a non-finite/negative assignment `units` is rejected with `INVALID_ASSIGNMENT_UNITS`. An invalid resource kind is rejected with `INVALID_RESOURCE_KIND`.
+
+### Availability windows
+
+A resource may carry availability windows (`{ start, finish?, units }`). `start` is always required; `finish`, when present, must be strictly after `start` (a zero-length or inverted window is rejected with `INVALID_AVAILABILITY_RANGE`, not silently dropped). `units` must be finite and non-negative (`INVALID_AVAILABILITY_UNITS`). Overlapping windows are NOT silently merged — the document accepts overlaps so callers can model shift patterns, and resolution ordering is deterministic in the scheduling engine (sorted by start). Resource availability is independent of array order.
+
+### Calendar precedence
+
+The canonical calendar precedence is explicit, deterministic, and never renderer-driven:
+
+1. **Task calendar** — `Task.calendarId` governs task scheduling (the PROJECT-006 frozen behavior, unchanged). `TaskSchedule.resolvedCalendarId` exposes `task.calendarId ?? properties.defaultCalendarId`.
+2. **Resource calendar** — `Resource.calendarId` is a scheduling INPUT exposed on `AssignmentSchedule.resolvedCalendarId` as `resource.calendarId ?? properties.defaultCalendarId`. It is independent of the task's resolved calendar.
+3. **Project default calendar** — `ProjectProperties.defaultCalendarId` is the fallback for both.
+
+PROJECT-010 establishes resource calendars as resolvable scheduling inputs. It does NOT authorize rewriting the accepted task-calendar scheduling semantics from PROJECT-006: resource calendars do not move task dates in this increment. The smallest deterministic integration exposes the resolved resource calendar id on the derived `AssignmentSchedule` and the resolved task calendar id on `TaskSchedule.resolvedCalendarId`. Calendar intersection and resource-calendar-driven task-date movement are PROJECT-011 work/cost territory.
+
+The existing calendar engine (`resolveCalendar`, `isWorking`, `addWorkingTime`, `subtractWorkingTime`, `workingDuration`) is reused; no second `ResourceCalendarEngine` is created. Resource calendar inheritance and exceptions are resolved by the same accepted primitives.
+
+### Assignments
+
+The frozen `Assignment` contract already carried `id`, `taskId`, `resourceId`, `units`, and work/cost fields. PROJECT-010 makes the assignment reference authoritative and validates it. `AssignmentId` is the canonical identity (never array position). A duplicate `AssignmentId` is rejected with `DUPLICATE_ASSIGNMENT_ID`. A missing task/resource reference is rejected with `MISSING_TASK_REFERENCE`/`MISSING_RESOURCE_REFERENCE`. Two assignment rows cannot silently shadow the same task/resource relationship: a duplicate `(taskId, resourceId)` pair is rejected with `DUPLICATE_ASSIGNMENT_PAIR`.
+
+PROJECT-010 does NOT authorize full assignment work/cost calculations (those are PROJECT-011). The `Assignment` carries work/cost fields in the frozen contract, but this increment only establishes the valid scheduling-input relationship. `AssignmentSchedule` projects the resolved scheduling inputs (calendar id, max units, type, units) without computing work or cost.
+
+### Derived schedule extension
+
+`DerivedSchedule` is extended with an optional `assignmentSchedules: Record<AssignmentId, AssignmentSchedule>`, built deterministically (sorted by `AssignmentId`) so the same serialized `ProjectDocument` + options always produce byte-identical schedule bytes independent of input array order. `TaskSchedule` is extended with an optional `resolvedCalendarId`. Both additions are optional and backward-compatible: existing PROJECT-006..009 consumers that do not read them are unaffected.
+
+### Semantic commands
+
+PROJECT-010 implements the `AssignResource` and `UnassignResource` commands compatibly within the frozen `ProjectCommand` model (both union members already existed; the executor now accepts them). Every accepted command is deterministic, preserves stable identity, leaves the document valid, produces canonical diagnostics, and preserves unrelated hierarchy/baseline state. Every rejected command leaves the input document unchanged and returns deterministic diagnostics.
+
+- `AssignResource` carries a fully-formed `Assignment`; the mutator stores it and lets the post-mutation validator enforce canonical rules. Early rejection for duplicate id, missing task/resource references, and a duplicate task/resource pair keeps the diagnostic surface clean. The inverse is `UnassignResource` for the new assignment id.
+- `UnassignResource` removes an assignment by `AssignmentId`; the removed assignment is captured so the inverse (`AssignResource`) restores the exact prior relationship. Removing an assignment never moves task dates (PROJECT-010 does not resource-level).
+
+No resource creation/update commands are added: the frozen command union lacks them, and resources are document-level state set directly (consistent with the frozen architecture and the existing fixture pattern). `LevelResources` remains in the union but is NOT implemented by PROJECT-010 (it is PROJECT-013 territory).
+
+### Assignment validity through mutations
+
+Assignments are keyed by stable `TaskId`. `IndentTask`/`OutdentTask`/`RenameTask` never change `TaskId`, so assignments survive those mutations unchanged. `DeleteTask` already prunes assignments referencing deleted tasks (the Microsoft Project outline-deletion behavior), so every accepted hierarchy mutation leaves the document's assignment state valid.
+
+### Resource calendar deterministic resolution
+
+`resolveResourceCalendarId(document, resourceId)` is the single canonical boundary for resource calendar resolution, returning `resource.calendarId ?? properties.defaultCalendarId` (or `undefined` for a missing resource). Tests and downstream layers use this helper rather than re-deriving (and potentially diverging from) the engine's calendar choice.
+
+### PROJECT-011 / PROJECT-013 boundary
+
+PROJECT-010 establishes the resource model, resource calendars, assignment references, calendar resolution, and resource scheduling inputs. It does NOT implement assignment work, actual work, remaining work, resource cost, assignment cost, work/cost calculations (PROJECT-011), or resource leveling (PROJECT-013). The engine does not move tasks to resolve overload, generate leveling commands, or alter dates because of resource contention. Over-allocation detection is deferred until the model has the required work units.

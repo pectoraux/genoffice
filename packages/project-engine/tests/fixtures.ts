@@ -1,8 +1,10 @@
 import {
+  asAssignmentId,
   asBaselineId,
   asCalendarId,
   asDependencyId,
   asISODateTime,
+  asResourceId,
   asTaskId,
   asWorkingMinutes,
 } from '@genoffice/project-contracts'
@@ -92,6 +94,50 @@ export function makeDependency(
     successorId: asTaskId(successorId),
     type,
     lagMinutes,
+  }
+}
+
+// PROJECT-010: resource UIDs must be unique within a document (interoperability
+// identity), mirroring the Task uid rule. Fixture resources receive an
+// auto-incrementing UID so multi-resource documents stay valid; tests may
+// always pass an explicit uid override.
+let fixtureResourceUid = 0
+
+export function makeResource(overrides: Omit<Partial<Resource>, 'id'> & { id: string }): Resource {
+  const { id, ...rest } = overrides
+  fixtureResourceUid += 1
+  return {
+    uid: fixtureResourceUid,
+    name: id,
+    kind: 'work',
+    maxUnits: 1,
+    standardRate: 0,
+    overtimeRate: 0,
+    costPerUse: 0,
+    availability: [],
+    ...rest,
+    id: asResourceId(id),
+  }
+}
+
+export function makeAssignment(
+  id: string,
+  taskId: string,
+  resourceId: string,
+  overrides: Partial<Omit<Assignment, 'id' | 'taskId' | 'resourceId'>> = {},
+): Assignment {
+  return {
+    units: 1,
+    work: asWorkingMinutes(0),
+    actualWork: asWorkingMinutes(0),
+    remainingWork: asWorkingMinutes(0),
+    cost: 0,
+    actualCost: 0,
+    remainingCost: 0,
+    ...overrides,
+    id: asAssignmentId(id),
+    taskId: asTaskId(taskId),
+    resourceId: asResourceId(resourceId),
   }
 }
 

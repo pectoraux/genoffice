@@ -244,6 +244,55 @@ export interface TaskSchedule {
   actualDuration?: WorkingMinutes
   /** Working minutes remaining (= duration - actualDuration on leaves). */
   remainingDuration?: WorkingMinutes
+  // ---- PROJECT-010 resolved calendar + resource scheduling inputs ----
+  /**
+   * The resolved calendar id used to schedule this task. Equals
+   * `task.calendarId ?? properties.defaultCalendarId` (the PROJECT-006 task-
+   * calendar precedence, unchanged). Exposed so downstream layers can read the
+   * deterministic calendar choice without re-deriving it. Never renderer state.
+   */
+  resolvedCalendarId?: CalendarId
+}
+
+/**
+ * PROJECT-010 derived assignment scheduling inputs.
+ *
+ * An `AssignmentSchedule` is a deterministic projection of an `Assignment`
+ * paired with its resolved `Resource` scheduling inputs. It does NOT compute
+ * assignment work or cost (those are PROJECT-011); it only exposes the
+ * canonical, resolved scheduling inputs that a renderer/reporting layer needs
+ * to reason about resource capacity without re-deriving calendar/resource
+ * resolution.
+ *
+ * `resolvedCalendarId` is the resource's resolved calendar id
+ * (`resource.calendarId ?? properties.defaultCalendarId`). It is independent
+ * of the task's resolved calendar: per the documented PROJECT-010 calendar
+ * precedence, task scheduling stays task-calendar-based (PROJECT-006 frozen),
+ * and resource calendars are scheduling INPUTS only — they do not move task
+ * dates in this increment.
+ *
+ * `maxUnits` echoes the resource's max units. For non-work resources (material
+ * and cost) the engine treats this as a non-capacity value: a cost resource
+ * never carries work capacity, so `maxUnits` is echoed but never used as a
+ * capacity bound by PROJECT-010 scheduling. Work/cost calculation that would
+ * consume `maxUnits` is deferred to PROJECT-011.
+ */
+export interface AssignmentSchedule {
+  assignmentId: AssignmentId
+  taskId: TaskId
+  resourceId: ResourceId
+  /** Echo of `Resource.kind`. Cost/material resources are never work-capacity. */
+  resourceType: 'work' | 'material' | 'cost'
+  /**
+   * The resource's resolved calendar id
+   * (`resource.calendarId ?? properties.defaultCalendarId`). Deterministic and
+   * independent of the task's resolved calendar.
+   */
+  resolvedCalendarId: CalendarId
+  /** Echo of `Resource.maxUnits` (work-capacity input; non-capacity for cost). */
+  maxUnits: number
+  /** Echo of `Assignment.units`. */
+  units: number
 }
 
 export interface DerivedSchedule {
@@ -251,6 +300,14 @@ export interface DerivedSchedule {
   projectStart?: ISODateTime
   projectFinish?: ISODateTime
   diagnostics: ImportDiagnostic[]
+  /**
+   * PROJECT-010 derived per-assignment scheduling inputs. Keyed by `AssignmentId`
+   * and built deterministically (sorted by AssignmentId) so the same serialized
+   * `ProjectDocument` + options always produce byte-identical schedule bytes.
+   * Optional and absent when the document carries no assignments, so existing
+   * PROJECT-006..009 consumers that do not read it are unaffected.
+   */
+  assignmentSchedules?: Record<AssignmentId, AssignmentSchedule>
 }
 
 // ---- PROJECT-009 derived baseline-variance state ----

@@ -1,4 +1,6 @@
 import type {
+  AssignmentId,
+  AssignmentSchedule,
   Calendar,
   CalendarId,
   Dependency,
@@ -6,6 +8,7 @@ import type {
   ISODateTime,
   ImportDiagnostic,
   ProjectDocument,
+  ResourceId,
   Task,
   TaskId,
   TaskProgressStatus,
@@ -28,6 +31,26 @@ import { DependencyGraphError, buildDependencyGraph } from './graph.js'
 
 export interface SchedulingOptions {
   projectStart?: ISODateTime
+}
+
+/**
+ * PROJECT-010 deterministic resource calendar id resolution.
+ *
+ * Returns the resolved calendar id for a resource
+ * (`resource.calendarId ?? properties.defaultCalendarId`). This is the same
+ * resolution the scheduling engine uses to build `AssignmentSchedule`
+ * values; exposing it keeps a single canonical boundary so tests and
+ * downstream layers never re-derive (and potentially diverge from) the
+ * engine's calendar choice. Pure and deterministic: the same document +
+ * resourceId always resolve to the same CalendarId.
+ */
+export function resolveResourceCalendarId(
+  document: ProjectDocument,
+  resourceId: ResourceId,
+): CalendarId | undefined {
+  const resource = document.resources.find((item) => item.id === resourceId)
+  if (!resource) return undefined
+  return (resource.calendarId ?? document.properties.defaultCalendarId) as CalendarId
 }
 
 const clampPercent = (value: number): number =>
@@ -265,6 +288,27 @@ function computeSchedule(document: ProjectDocument, options: SchedulingOptions):
     return resolved
   }
 
+  // PROJECT-010 resource scheduling inputs. Resource calendars are scheduling
+  // INPUTS only — they do not move task dates in this increment (the PROJECT-006
+  // task-calendar precedence is unchanged). The resolved resource calendar id
+  // (`resource.calendarId ?? properties.defaultCalendarId`) is exposed on the
+  // derived `AssignmentSchedule` so downstream layers can reason about resource
+  // capacity without re-deriving calendar/resource resolution. Calendar
+  // precedence (documented, deterministic, never renderer-driven):
+  //   task calendar > resource calendar > project default
+  // Task scheduling stays task-calendar-based; resource calendars are
+  // independent derived inputs reserved for PROJECT-011 work/cost calculations.
+  const resourceById = new Map<string, (typeof document.resources)[number]>()
+  for (const resource of document.resources) {
+    resourceById.set(resource.id as string, resource)
+  }
+  const taskResolvedCalendarId = (task: Task): CalendarId =>
+    (task.calendarId ?? document.properties.defaultCalendarId) as CalendarId
+  const resourceResolvedCalendarId = (resourceId: ResourceId): CalendarId => {
+    const resource = resourceById.get(resourceId as string)
+    return (resource?.calendarId ?? document.properties.defaultCalendarId) as CalendarId
+  }
+
   const childrenOf = new Map<TaskId, Task[]>()
   for (const task of document.tasks) {
     if (task.parentTaskId) {
@@ -453,6 +497,10 @@ function computeSchedule(document: ProjectDocument, options: SchedulingOptions):
       physicalPercentComplete: physicalPercent,
       actualDuration,
       remainingDuration,
+      // PROJECT-010: the resolved calendar id used to schedule this task
+      // (task.calendarId ?? properties.defaultCalendarId). Exposed so downstream
+      // layers read the deterministic calendar choice without re-deriving it.
+      resolvedCalendarId: taskResolvedCalendarId(task),
     }
   }
 
@@ -501,11 +549,44 @@ function computeSchedule(document: ProjectDocument, options: SchedulingOptions):
     // physicalPercentComplete is intentionally undefined on summaries.
   }
 
+  // ---- PROJECT-010 derived assignment scheduling inputs ----
+  // Build per-assignment derived schedules deterministically: keyed by
+  // AssignmentId and assembled from assignments sorted by AssignmentId so the
+  // same serialized ProjectDocument + options always produce byte-identical
+  // schedule bytes (independent of input array order). This does NOT compute
+  // assignment work or cost (PROJECT-011); it only projects the resolved
+  // resource scheduling inputs (calendar id, max units, type, units).
+  const assignmentCompare = (a: AssignmentId, b: AssignmentId): number =>
+    (a as string) < (b as string) ? -1 : (a as string) > (b as string) ? 1 : 0
+  const assignmentSchedules: Record<string, AssignmentSchedule> = {}
+  const sortedAssignments = [...document.assignments].sort((a, b) => assignmentCompare(a.id, b.id))
+  for (const assignment of sortedAssignments) {
+    const resource = resourceById.get(assignment.resourceId as string)
+    // A valid document guarantees the resource exists (validation rejects
+    // dangling references), but the schedule is still built defensively so a
+    // partial/repairing document cannot crash the engine. An assignment whose
+    // resource is missing is omitted from the derived map; the document's own
+    // diagnostics (from validation) already report the broken reference.
+    if (!resource) continue
+    assignmentSchedules[assignment.id as string] = {
+      assignmentId: assignment.id,
+      taskId: assignment.taskId,
+      resourceId: assignment.resourceId,
+      resourceType: resource.kind,
+      resolvedCalendarId: resourceResolvedCalendarId(assignment.resourceId),
+      maxUnits: resource.maxUnits,
+      units: assignment.units,
+    }
+  }
+
   return {
     taskSchedules: taskSchedules as Record<TaskId, TaskSchedule>,
     projectStart,
     projectFinish,
     diagnostics: [],
+    ...(Object.keys(assignmentSchedules).length > 0
+      ? { assignmentSchedules: assignmentSchedules as Record<AssignmentId, AssignmentSchedule> }
+      : {}),
   }
 }
 

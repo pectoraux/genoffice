@@ -568,6 +568,137 @@ function mutateForCreateBaseline(
 }
 
 /**
+ * PROJECT-010 AssignResource.
+ *
+ * Adds a resource/task relationship to the document as an `Assignment`. The
+ * command carries a fully-formed `Assignment` value: the mutator stores it
+ * as-is and lets the post-mutation validator enforce the canonical rules
+ * (duplicate assignment id, missing task/resource references, invalid units,
+ * duplicate task/resource pair). Early rejection for a duplicate id and for
+ * missing task/resource references keeps the diagnostic surface clean and
+ * avoids the post-validation pass discovering structural failures after
+ * partial work.
+ *
+ * Assignment identity (`AssignmentId`) is stable and never array position.
+ * The assignment is appended to the `assignments` array; canonical ordering
+ * for scheduling output is enforced deterministically by the scheduling
+ * engine (sorted by `AssignmentId`), so insertion order here does not affect
+ * derived schedule bytes.
+ *
+ * PROJECT-010 does NOT compute assignment work or cost (those are PROJECT-011).
+ * The `Assignment` carries work/cost fields in the frozen contract, but this
+ * command only establishes the valid scheduling-input relationship.
+ */
+function mutateForAssignResource(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'AssignResource' },
+): Mutation {
+  const { assignment } = command
+  // Early rejection for a duplicate assignment id keeps the diagnostic surface
+  // clean (the post-mutation validator would also catch it, but reporting here
+  // gives a single, immediate, actionable diagnostic).
+  if (document.assignments.some((existing) => existing.id === assignment.id)) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'DUPLICATE_ASSIGNMENT_ID',
+          message: `Assignment ${assignment.id} already exists`,
+        },
+      ],
+    }
+  }
+  // Early rejection for missing task/resource references: an assignment must
+  // link real entities. The post-mutation validator re-checks this, but the
+  // early rejection avoids building a candidate document from broken inputs.
+  if (!findTask(document, assignment.taskId)) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'MISSING_TASK_REFERENCE',
+          message: `Assignment ${assignment.id} references missing task ${assignment.taskId}`,
+        },
+      ],
+    }
+  }
+  if (!document.resources.some((resource) => resource.id === assignment.resourceId)) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'MISSING_RESOURCE_REFERENCE',
+          message: `Assignment ${assignment.id} references missing resource ${assignment.resourceId}`,
+        },
+      ],
+    }
+  }
+  // Early rejection for a duplicate task/resource pair: two assignment rows
+  // cannot silently shadow the same task/resource relationship. The
+  // post-mutation validator also enforces this, but the early rejection keeps
+  // the rejected document byte-identical to the input.
+  const pairExists = document.assignments.some(
+    (existing) =>
+      existing.taskId === assignment.taskId && existing.resourceId === assignment.resourceId,
+  )
+  if (pairExists) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'DUPLICATE_ASSIGNMENT_PAIR',
+          message: `Assignment ${assignment.id} duplicates the task/resource link ${assignment.taskId}->${assignment.resourceId}`,
+        },
+      ],
+    }
+  }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks,
+      assignments: [...document.assignments, assignment],
+      affectedTaskIds: [assignment.taskId],
+      inverse: { type: 'UnassignResource', assignmentId: assignment.id },
+    },
+  }
+}
+
+/**
+ * PROJECT-010 UnassignResource.
+ *
+ * Removes an assignment by `AssignmentId`. The removed assignment is captured
+ * so the inverse (`AssignResource`) can restore the exact prior relationship.
+ * Removing an assignment never moves task dates (PROJECT-010 does not
+ * resource-level); it only removes the scheduling-input relationship.
+ */
+function mutateForUnassignResource(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'UnassignResource' },
+): Mutation {
+  const existing = document.assignments.find((item) => item.id === command.assignmentId)
+  if (!existing) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'MISSING_ASSIGNMENT',
+          message: `Assignment ${command.assignmentId} does not exist`,
+        },
+      ],
+    }
+  }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks,
+      assignments: document.assignments.filter((item) => item.id !== command.assignmentId),
+      affectedTaskIds: [existing.taskId],
+      inverse: { type: 'AssignResource', assignment: existing },
+    },
+  }
+}
+
+/**
  * Applies a semantic ProjectCommand to a ProjectDocument.
  *
  * Pure and deterministic: the same document plus the same command sequence
@@ -623,6 +754,12 @@ export function applyProjectCommand(
         break
       case 'CreateBaseline':
         mutation = mutateForCreateBaseline(document, command)
+        break
+      case 'AssignResource':
+        mutation = mutateForAssignResource(document, command)
+        break
+      case 'UnassignResource':
+        mutation = mutateForUnassignResource(document, command)
         break
       default:
         mutation = {
