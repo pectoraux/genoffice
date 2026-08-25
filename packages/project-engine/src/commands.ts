@@ -483,6 +483,91 @@ function mutateForSetDeadline(
 }
 
 /**
+ * PROJECT-009 CreateBaseline.
+ *
+ * A baseline is an immutable snapshot of task start/finish/duration/work/cost
+ * captured at a point in time. The command carries a fully-formed `Baseline`
+ * value: the mutator stores it as-is and lets the post-mutation validator
+ * enforce the canonical rules (duplicate baseline id, malformed `capturedAt`,
+ * snapshot keys referencing missing tasks). No scheduling is performed inside
+ * the mutator — building the snapshot from the current `DerivedSchedule` is the
+ * scheduling package's job (`captureBaseline`), keeping the command pure and
+ * deterministic.
+ *
+ * To preserve `Task.baseline` as a canonical reverse index, every task that has
+ * a snapshot in the new baseline receives the baseline id in its `baseline`
+ * array (deduplicated; existing references are preserved). This keeps the
+ * invariant `task.baseline ⊆ document.baselines` bidirectionally consistent:
+ * a baseline exists iff at least one task references it, and a task references
+ * a baseline iff that baseline has a snapshot for it.
+ *
+ * Baseline immutability through hierarchy mutations is structural: baselines
+ * are keyed by stable `TaskId`, and `IndentTask`/`OutdentTask`/`RenameTask`
+ * never change `TaskId`, so snapshots survive those mutations unchanged.
+ * `DeleteTask` already prunes dangling snapshots for deleted tasks (the
+ * Microsoft Project outline-deletion behavior), so every accepted mutation
+ * leaves the document's baseline state valid.
+ *
+ * No inverse is provided: a future `DeleteBaseline` command (PROJECT-038
+ * territory: multiple-baseline management) is required to undo a capture
+ * cleanly. This mirrors the existing `OutdentTask` precedent of leaving an
+ * undefined inverse when a single inverse command cannot restore prior state.
+ */
+function mutateForCreateBaseline(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'CreateBaseline' },
+): Mutation {
+  const { baseline } = command
+  // Early rejection for a duplicate id keeps the diagnostic surface clean and
+  // avoids the post-validation pass discovering it after partial work.
+  if (document.baselines.some((existing) => existing.id === baseline.id)) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'DUPLICATE_BASELINE_ID',
+          message: `Baseline ${baseline.id} already exists`,
+        },
+      ],
+    }
+  }
+  // Early rejection for snapshots referencing missing tasks: every snapshot
+  // key must be an existing TaskId.
+  const taskIds = new Set(document.tasks.map((task) => task.id))
+  const missing: string[] = []
+  for (const taskKey of Object.keys(baseline.taskSnapshots)) {
+    if (!taskIds.has(asTaskId(taskKey))) missing.push(taskKey)
+  }
+  if (missing.length) {
+    return {
+      kind: 'rejected',
+      diagnostics: missing.map((taskKey) => ({
+        code: 'MISSING_TASK_REFERENCE',
+        message: `Baseline ${baseline.id} references missing task ${taskKey}`,
+      })),
+    }
+  }
+  // Add the baseline id to every task that has a snapshot, preserving any
+  // existing baseline references (a task may be tracked by several baselines).
+  const snapshotKeys = new Set(Object.keys(baseline.taskSnapshots))
+  const tasks = document.tasks.map((task) =>
+    snapshotKeys.has(task.id as string) && !task.baseline.includes(baseline.id)
+      ? { ...task, baseline: [...task.baseline, baseline.id] }
+      : task,
+  )
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks,
+      baselines: [...document.baselines, baseline],
+      affectedTaskIds: Object.keys(baseline.taskSnapshots) as TaskId[],
+      // No inverse: a future DeleteBaseline command is required to undo a
+      // capture cleanly (see the PROJECT-009 spec clarifications).
+    },
+  }
+}
+
+/**
  * Applies a semantic ProjectCommand to a ProjectDocument.
  *
  * Pure and deterministic: the same document plus the same command sequence
@@ -535,6 +620,9 @@ export function applyProjectCommand(
         break
       case 'SetDeadline':
         mutation = mutateForSetDeadline(document, command)
+        break
+      case 'CreateBaseline':
+        mutation = mutateForCreateBaseline(document, command)
         break
       default:
         mutation = {

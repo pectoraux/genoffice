@@ -129,3 +129,36 @@ Status evaluation uses `ProjectProperties.statusDate` only. Wall-clock "today", 
 ### Semantic commands
 
 PROJECT-008 implements the `SetConstraint`, `SetPercentComplete`, and `SetDeadline` commands compatibly within the frozen `ProjectCommand` model. Every accepted command is deterministic, preserves stable identity, leaves the document valid, produces canonical diagnostics, and preserves unrelated hierarchy state. Every rejected command leaves the input document unchanged and returns deterministic diagnostics. `SetDeadline` was added as a compatible union member because the frozen contract had no deadline command; it does not alter any existing command shape.
+
+## PROJECT-009 canonical semantic clarifications
+
+These clarifications record the canonical decisions required to implement baselines and status-date (PROJECT-009). They refine R-002, R-005, and R-006 without altering any frozen invariant; no architecture-change proposal is required.
+
+### Baseline model
+
+A baseline is an immutable snapshot of task `start`, `finish`, `duration`, `work`, and `cost` captured at a point in time. The frozen `Baseline` type already carried `id`, `name`, `capturedAt`, and `taskSnapshots`; PROJECT-009 makes the snapshot authoritative and adds the comparison projection. A document MAY carry multiple independent baselines (the `ProjectDocument.baselines` array), and every `Task.baseline` array is the canonical reverse index of which baselines track that task.
+
+### Baseline capture
+
+`CreateBaseline` carries a fully-formed `Baseline` value: the command stores it as-is and lets document validation enforce the canonical rules. No scheduling is performed inside the command mutator — building the snapshot from the current `DerivedSchedule` is the scheduling package's job (`captureBaseline`). This separation keeps the command pure and deterministic (the same document + the same `CreateBaseline` command always produce the same resulting document bytes). The mutator adds the baseline id to every task that has a snapshot, preserving the bidirectional invariant `task.baseline ⊆ document.baselines`.
+
+### Baseline immutability through hierarchy mutations
+
+Baselines are keyed by stable `TaskId`, and `IndentTask`/`OutdentTask`/`RenameTask` never change `TaskId`, so snapshots survive those mutations unchanged. `DeleteTask` already prunes dangling snapshots for deleted tasks (the Microsoft Project outline-deletion behavior). No other command mutates baseline state, so every accepted hierarchy mutation leaves the document's baseline state valid and the captured dates immutable.
+
+### Baseline comparison (variance with explicit sign convention)
+
+`compareBaseline` projects the current `DerivedSchedule` against a single baseline's immutable snapshots and emits per-task `BaselineVariance`. The sign convention is explicit and mirrors the Microsoft Project "Variance" table:
+
+- `startVariance` and `finishVariance` are signed working-minute spans computed in the task's resolved calendar as `signedWorkingDuration(baseline, current)`: **positive when the current date is later than the baseline (the task slipped past its planned date)**; **negative when the current date is earlier (ahead of plan)**; zero when the dates coincide.
+- `durationVariance` is `currentDuration - baselineDuration` (plain signed working-minutes): positive when the current task is longer than planned, negative when shorter, zero when equal.
+
+Both `startVariance` and `finishVariance` are `undefined` when either the baseline snapshot or the current schedule lacks the corresponding date (a baseline captured before a task was scheduled, or a summary whose baseline has no finish). `durationVariance` is always defined because duration is always present in both the snapshot and the derived schedule. Tasks that the baseline did not snapshot are omitted from the comparison (a baseline only reports variance for tasks it captured).
+
+### Status-date semantics
+
+Baseline capture and comparison are deterministic and use `ProjectProperties.statusDate` only. Wall-clock "today", local timezone, and locale never enter the baseline engine. `captureBaseline` defaults the `capturedAt` instant to `ProjectProperties.statusDate` when an explicit override is not supplied; it never falls back to `Date.now()` (that would break byte-identical determinism). A baseline cannot be captured without a deterministic instant: when neither an explicit `capturedAt` nor a project status date is set, `captureBaseline` returns `undefined` so the caller surfaces a clean diagnostic instead of silently inventing a timestamp. The same serialized `ProjectDocument` plus the same baseline options SHALL produce byte-identical `BaselineComparison` output across repeated executions.
+
+### Semantic command
+
+PROJECT-009 implements the `CreateBaseline` command compatibly within the frozen `ProjectCommand` model (the union member already existed; the executor now accepts it). Every accepted command is deterministic, preserves stable identity, leaves the document valid, produces canonical diagnostics, and preserves unrelated hierarchy and baseline state. Every rejected command leaves the input document unchanged and returns deterministic diagnostics. No inverse is provided for `CreateBaseline`: a future `DeleteBaseline` command (PROJECT-038 territory: multiple-baseline management) is required to undo a capture cleanly, mirroring the existing `OutdentTask` precedent of leaving an undefined inverse when a single inverse command cannot restore prior state.

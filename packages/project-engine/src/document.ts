@@ -476,12 +476,24 @@ export function validateProjectDocument(document: ProjectDocument): ProjectComma
 
   checkDuplicateIds(document.baselines, 'baseline', 'DUPLICATE_BASELINE_ID', diagnostics)
   checkDuplicateIds(document.customFields, 'custom field', 'DUPLICATE_CUSTOM_FIELD_ID', diagnostics)
+  // PROJECT-009: baseline snapshots are keyed by TaskId. Every snapshot key
+  // MUST reference an existing task so a baseline never carries a dangling
+  // reference (the reverse of the MISSING_BASELINE_REFERENCE check above,
+  // which ensures a task's `baseline` array references real baselines).
   for (const baseline of document.baselines) {
     if (!isValidDate(baseline.capturedAt)) {
       diagnostics.push({
         code: 'INVALID_DATE',
         message: `Baseline ${baseline.id} has a malformed capturedAt date`,
       })
+    }
+    for (const taskKey of Object.keys(baseline.taskSnapshots)) {
+      if (!taskIds.has(taskKey)) {
+        diagnostics.push({
+          code: 'MISSING_TASK_REFERENCE',
+          message: `Baseline ${baseline.id} references missing task ${taskKey}`,
+        })
+      }
     }
   }
 
