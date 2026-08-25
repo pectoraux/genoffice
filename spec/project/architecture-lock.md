@@ -1,32 +1,55 @@
-# GenOffice Project — Verification Matrix
+# GenOffice Project — Architecture Lock
 
-| Work item | Semantic evidence | Static/architecture evidence | Host evidence | File evidence | Completion gate |
-|---|---|---|---|---|---|
-| PROJECT-001 | contract compile | package boundary scan; lock review | N/A | N/A | six specs committed and internally consistent |
-| PROJECT-002 | domain validation tests | stable-ID architecture tests | N/A | schema serialization fixture | invalid identities/references rejected |
-| PROJECT-003 | command/journal tests | forbidden raw-mutation scan | N/A | N/A | semantic command union + history invariants pass |
-| PROJECT-004 | calendar golden suite | host-import scan | N/A | calendar fixture | repeated working-time calculations match |
-| PROJECT-005 | graph validation/topology suite | dependency determinism scan | N/A | graph fixture | all link types + invalid graph rejection pass |
-| PROJECT-006 | scheduling golden suite + repeat-run byte equality | no UI/host imports; deterministic iteration guard | N/A | golden ProjectDocument fixtures | dates, dependencies, critical path, total/free float all match expected |
-| PROJECT-007..013 | domain/scheduling goldens | package boundaries | later E2E | later save/reopen | semantic acceptance before renderer work |
-| PROJECT-014..020 | round-trip/import/export goldens | parser isolation checks | N/A | golden files + diagnostics | no silent loss |
-| PROJECT-021..031 | command-to-renderer integration | renderer dependency checks | desktop + Playwright E2E | save/reopen | semantic and renderer parity |
-| PROJECT-032..045 | view/scheduling/resource tests | view projections have no scheduling authority | desktop/web E2E | view fixtures | each view matches canonical derived state |
-| PROJECT-046 | cross-host scenario suite | package boundary scan | desktop/web parity | persisted scenario artifacts | identical semantic outcomes |
-| PROJECT-047 | golden compatibility suite | adapter isolation | optional host smoke | golden file corpus | import/export regressions blocked |
-| PROJECT-048 | benchmark suite | performance architecture assertions | desktop/web performance runs | representative project fixtures | agreed large-project budgets met |
-| PROJECT-049 | production E2E | release architecture gate | desktop + web production verification | save/reopen + import/export | release acceptance complete |
+Status: FROZEN
+Scope: PROJECT-001 through PROJECT-006 foundation
+Authority: This document is the controlling architectural contract for the Project initiative.
 
-## Foundation evidence requirements
+## 1. Mission
+GenOffice Project is a Microsoft Project-class planning application with one host-neutral semantic model shared by desktop and web. The canonical product model is independent of Electron, React, browser APIs, HTTP, and filesystem APIs.
 
-PROJECT-006 must include at minimum:
+## 2. Layer order
+Intent/UI → semantic ProjectCommand → Project Engine → ProjectDocument → Scheduling Engine → deterministic DerivedSchedule → host-specific transport/file integrations.
 
-- sequential dependency fixture
-- FS/SS/FF/SF fixture
-- lag fixture
-- holiday/calendar fixture
-- critical-path/float fixture
-- cycle/self/missing-reference rejection tests
-- repeated scheduling equality test
+A lower layer may consume contracts from a higher layer but may never redefine a higher-layer concept. Rendering is never authoritative for scheduling, identity, persistence, or Project semantics.
 
-Agent narrative is never sufficient evidence without these artifacts.
+## 3. Canonical package boundaries
+- `packages/project-contracts`: stable domain and integration contracts; no host dependencies.
+- `packages/project-engine`: domain validation, semantic commands, journal model; no UI/host dependencies.
+- `packages/project-scheduling`: calendar primitives, dependency graph, deterministic scheduling; no UI/host dependencies.
+- `packages/project-file`: file adapter boundary until PROJECT-014+; no renderer/parser leakage.
+- `packages/project-renderer-core`: shared renderer boundary until PROJECT-021+; no scheduling authority.
+- Project desktop host code will be isolated under a Project-specific app surface.
+- Project web code will use shared renderer contracts and host transport; it will not import Electron or Node APIs.
+
+## 4. Identity
+Every Project entity has stable identity. Array position is never identity. UIDs are persistent source/interoperability identifiers; local IDs are canonical application identities.
+
+## 5. Canonical time model
+Foundation scheduling uses ISO-8601 UTC timestamps and integer working-minute durations. Calendar periods are represented as minute offsets inside a day. This removes host locale drift from deterministic scheduling. Time-zone/DST fidelity is an advanced-calendar concern and requires an architecture-change proposal before changing this invariant.
+
+## 6. Scheduling authority
+`schedule(projectDocument, schedulingOptions)` is the sole authoritative scheduling operation. It is a pure deterministic function from canonical inputs to `DerivedSchedule` or explicit diagnostics. It does not mutate the source ProjectDocument.
+
+## 7. Dependency semantics
+Supported relationship types are FS, SS, FF, and SF with integer working-minute lag/lead. Self-links, missing references, and cycles are invalid.
+
+## 8. Calendar semantics
+Calendars explicitly define weekly working periods and date exceptions. Calendar inheritance is resolved before scheduling. The scheduling engine provides deterministic `isWorking`, `addWorkingTime`, `subtractWorkingTime`, and `workingDuration` primitives.
+
+## 9. Commands and history
+UI mutations must be represented as semantic `ProjectCommand` values. Undo/redo is command-history based. A renderer may not invent Project semantics from raw state mutation.
+
+## 10. Files
+The canonical model is not MPP/MSPDI. File adapters translate to/from the canonical model. File parsing and XML construction never live in React.
+
+## 11. Renderer rule
+Renderer state may cache projections of canonical state, but may not own authoritative task dates, dependencies, critical path, float, resource leveling results, or persisted Project semantics.
+
+## 12. Architecture changes
+Any change to a frozen invariant requires a recorded architecture-change proposal containing motivation, affected invariants, alternatives, compatibility impact, migration plan, verification impact, and explicit authority approval. Until accepted, the proposal is not implemented.
+
+## 13. Forbidden dependencies
+Foundation packages must not import React/React DOM, Electron, Node filesystem/process APIs, browser globals, HTTP clients/server route modules, Excel renderer packages, or `.mpp`/MSPDI parser implementation code.
+
+## 14. Completion authority
+Agent claims are not evidence. A work item is complete only when repository state, automated tests, fixtures, static architecture checks, and required host/file evidence satisfy its verification matrix entry.
