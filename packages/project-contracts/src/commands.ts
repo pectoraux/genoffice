@@ -2,7 +2,6 @@ import type {
   AssignmentId,
   DependencyId,
   DependencyType,
-  ResourceId,
   TaskId,
   WorkingMinutes,
   ProjectDocument,

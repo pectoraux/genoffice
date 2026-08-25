@@ -1,9 +1,7 @@
 import {
-  asAssignmentId,
   asCalendarId,
   asDependencyId,
   asISODateTime,
-  asResourceId,
   asTaskId,
   asWorkingMinutes,
 } from '@genoffice/project-contracts'

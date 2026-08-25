@@ -5,7 +5,6 @@ import {
   asBaselineId,
   asCalendarId,
   asCustomFieldId,
-  asDependencyId,
   asISODateTime,
   asResourceId,
   asTaskId,
