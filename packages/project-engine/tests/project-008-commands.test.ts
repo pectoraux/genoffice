@@ -55,25 +55,19 @@ describe('PROJECT-008 SetConstraint', () => {
 
   it('MSO and MFO are not silently reinterpreted as SNET/FNET', () => {
     const base = canonicalizeDocument(makeDocument({ tasks: [makeTask({ id: 'a' })] }))
-    const mso = expectAccepted(
-      base,
-      {
-        type: 'SetConstraint',
-        taskId: parent('a'),
-        constraintType: 'mustStartOn',
-        constraintDate: '2026-08-04T09:00:00.000Z',
-      },
-    ).document
+    const mso = expectAccepted(base, {
+      type: 'SetConstraint',
+      taskId: parent('a'),
+      constraintType: 'mustStartOn',
+      constraintDate: '2026-08-04T09:00:00.000Z',
+    }).document
     expect(taskIn(mso, 'a').constraintType).toBe('mustStartOn')
-    const mfo = expectAccepted(
-      base,
-      {
-        type: 'SetConstraint',
-        taskId: parent('a'),
-        constraintType: 'mustFinishOn',
-        constraintDate: '2026-08-04T17:00:00.000Z',
-      },
-    ).document
+    const mfo = expectAccepted(base, {
+      type: 'SetConstraint',
+      taskId: parent('a'),
+      constraintType: 'mustFinishOn',
+      constraintDate: '2026-08-04T17:00:00.000Z',
+    }).document
     expect(taskIn(mfo, 'a').constraintType).toBe('mustFinishOn')
   })
 
@@ -326,7 +320,11 @@ describe('PROJECT-008 command determinism and history', () => {
       constraintType: 'mustStartOn',
       constraintDate: '2026-08-04T09:00:00.000Z',
     })
-    applyProjectCommand(base, { type: 'SetPercentComplete', taskId: parent('a'), percentComplete: 75 })
+    applyProjectCommand(base, {
+      type: 'SetPercentComplete',
+      taskId: parent('a'),
+      percentComplete: 75,
+    })
     applyProjectCommand(base, {
       type: 'SetDeadline',
       taskId: parent('a'),

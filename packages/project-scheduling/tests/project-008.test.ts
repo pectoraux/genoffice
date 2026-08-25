@@ -476,8 +476,14 @@ describe('PROJECT-008 constraints / deadlines / progress', () => {
       expect(result.diagnostics.some((d) => d.code === code)).toBe(true)
       expect(result.diagnostics.every((d) => d.severity === 'error')).toBe(true)
     }
-    reject(makeDocument({ tasks: [makeTask({ id: 'a', percentComplete: 150 })] }), 'INVALID_PERCENT_COMPLETE')
-    reject(makeDocument({ tasks: [makeTask({ id: 'a', percentComplete: -5 })] }), 'INVALID_PERCENT_COMPLETE')
+    reject(
+      makeDocument({ tasks: [makeTask({ id: 'a', percentComplete: 150 })] }),
+      'INVALID_PERCENT_COMPLETE',
+    )
+    reject(
+      makeDocument({ tasks: [makeTask({ id: 'a', percentComplete: -5 })] }),
+      'INVALID_PERCENT_COMPLETE',
+    )
     reject(
       makeDocument({ tasks: [makeTask({ id: 'a', physicalPercentComplete: 101 })] }),
       'INVALID_PERCENT_COMPLETE',

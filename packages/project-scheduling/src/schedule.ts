@@ -484,8 +484,7 @@ function computeSchedule(document: ProjectDocument, options: SchedulingOptions):
       if (child.status !== 'notStarted') allNotStarted = false
     }
     const total = actual + remaining
-    const summaryPercent =
-      total > 0 ? Math.round((actual / total) * 100) : allComplete ? 100 : 0
+    const summaryPercent = total > 0 ? Math.round((actual / total) * 100) : allComplete ? 100 : 0
     const summaryStatus: TaskProgressStatus =
       summaryPercent >= 100
         ? 'complete'
