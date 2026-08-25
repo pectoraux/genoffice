@@ -30,3 +30,13 @@ PROJECT-006 must include at minimum:
 - repeated scheduling equality test
 
 Agent narrative is never sufficient evidence without these artifacts.
+
+## PROJECT-012 evidence requirements
+
+PROJECT-012 (Critical path / float edge cases) must include at minimum:
+
+- 18 golden fixtures CP01–CP18 covering: simple critical chain, two/three critical paths, diamond convergence, mixed dependency types, lag/lead, free-vs-total slack, negative slack, near-critical branch, critical/noncritical milestone, summary criticality, nested summary, constraint + critical path, calendar boundary, holiday, isolated branch, reordered deterministic input.
+- additional required tests covering: fan-out, fan-in, FS lag, FS lead, SS lag, FF lag, SF lag, multiple successors, freeSlack < totalSlack, freeSlack = totalSlack, zero free slack, negative slack, one-day near-critical, one-hour near-critical, critical milestone, noncritical milestone, milestone with predecessor, summary critical roll-up, nested summary critical path, SNET/MSO/FNET/MFO constraint interaction, different task calendars, weekend boundary, holiday boundary, isolated independent task, repeated deterministic schedule, serialized round-trip byte equality.
+- every applicable golden fixture asserts exact `taskId`, `earlyStart`, `earlyFinish`, `lateStart`, `lateFinish`, `totalSlack`, `freeSlack`, `critical`, `scheduledStart`, `scheduledFinish`, and `projectFinish` — not merely counts of critical tasks.
+- byte-identical `DerivedSchedule` output under repeated runs, reversed task/dependency arrays, and reordered parallel branches.
+- all accepted PROJECT-006 through PROJECT-011 tests remain green (no regression, no weakened goldens).
