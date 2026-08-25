@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import { asTaskId } from '@genoffice/project-contracts'
+import type { ProjectCommand, ProjectCommandResult } from '@genoffice/project-contracts'
 import { ProjectJournal } from '../src/index.js'
 
-const command = { type: 'RenameTask', taskId: 't1' as any, name: 'Renamed' } as const
-const result = { commandId: 'c1', accepted: true, diagnostics: [], affectedTaskIds: ['t1'] as any[] }
+const command: ProjectCommand = { type: 'RenameTask', taskId: asTaskId('t1'), name: 'Renamed' }
+const result: ProjectCommandResult = {
+  commandId: 'c1',
+  accepted: true,
+  diagnostics: [],
+  affectedTaskIds: [asTaskId('t1')],
+}
 
 describe('ProjectJournal', () => {
   it('clears redo history after a new accepted command', () => {
