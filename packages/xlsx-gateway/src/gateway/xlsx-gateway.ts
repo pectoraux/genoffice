@@ -83,7 +83,10 @@ import {
   type ProtectedRangeState,
 } from './xlsx-protection'
 import { applyThemeState, type WorkbookThemeState } from './xlsx-theme'
-import { applySheetNotes, type SheetNote } from './xlsx-notes'
+import { applySheetNotes, NoteReadError, parseCommentsPart, type SheetNote } from './xlsx-notes'
+
+const COMMENTS_REL_TYPE =
+  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments'
 import {
   applySparklineAdditions,
   type SheetSparklineAddition,
@@ -430,6 +433,21 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     } catch (error) {
       if (!(error instanceof DvReadError)) throw error
     }
+    // Notes read: resolve the comments part through the worksheet rels
+    // (the same two-step lookup resolveWorksheetPath uses) and parse it.
+    // Fail closed PER SHEET — an unrepresentable comments part (unreadable
+    // refs, missing text, oversized sets) surfaces no notes, the workbook
+    // still opens, and a no-op save preserves the file's parts.
+    let sheetNotes: readonly SheetNote[] | undefined
+    try {
+      const commentsPath = await resolveCommentsPath(zip, worksheetPath)
+      if (commentsPath !== null && (await zip.has(commentsPath))) {
+        const parsed = parseCommentsPart(await zip.readText(commentsPath))
+        if (parsed.length > 0) sheetNotes = parsed
+      }
+    } catch (error) {
+      if (!(error instanceof NoteReadError)) throw error
+    }
     sheets.push({
       id,
       name: decodedName,
@@ -447,6 +465,7 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
       ...(presentation.freeze ? { freeze: presentation.freeze } : {}),
       ...(filterState ? { filterState } : {}),
       ...(dvRules ? { dvRules } : {}),
+      ...(sheetNotes ? { notes: sheetNotes } : {}),
     })
     sheetNamesById[id] = decodedName
   }
@@ -1727,6 +1746,30 @@ async function shiftAnchoredSheetParts(
 /// save because r:id preceded name, or the name used numeric char refs).
 function findSheetElement(workbookXml: string, sheetName: string): SheetElement | undefined {
   return parseSheetElements(workbookXml).find((element) => element.name === sheetName)
+}
+
+/// Resolve a worksheet's comments part via its rels (COMMENTS_REL_TYPE),
+/// mirroring the desktop's sidecar lookup. Null when the sheet has none.
+async function resolveCommentsPath(
+  reader: Pick<EntrySource, 'readText' | 'has'>,
+  worksheetPath: string,
+): Promise<string | null> {
+  const relsPath = worksheetPath.replace(/^(xl\/worksheets\/)([^/]+)$/, '$1_rels/$2.rels')
+  if (!(await reader.has(relsPath))) return null
+  const relsXml = await reader.readText(relsPath)
+  const relationship = new RegExp(`<Relationship[^>]*Type="${COMMENTS_REL_TYPE}"[^>]*/?>`).exec(
+    relsXml,
+  )?.[0]
+  const target =
+    relationship === undefined ? undefined : /\bTarget="([^"]+)"/.exec(relationship)?.[1]
+  if (target === undefined) return null
+  if (target.startsWith('/')) return target.slice(1)
+  const base = worksheetPath.split('/').slice(0, -1)
+  for (const part of target.split('/')) {
+    if (part === '..') base.pop()
+    else if (part !== '.') base.push(part)
+  }
+  return base.join('/')
 }
 
 async function resolveWorksheetPath(

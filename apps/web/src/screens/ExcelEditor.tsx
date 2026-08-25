@@ -25,6 +25,7 @@ import type {
   DvWireRule,
   FilterColumnState,
   SheetFilterState,
+  SheetNote,
   WorkbookSnapshot,
 } from '@genoffice/xlsx-gateway'
 import {
@@ -101,6 +102,15 @@ const DV_MUTATION_IDS = new Set([
   'data-validation.mutation.updateRule',
   'data-validation.mutation.removeRule',
 ])
+
+/**
+ * Note mutation IDs (sheets-note preset) — the same set the desktop's App.tsx
+ * listens for. update-note fires for create AND edit; remove-note for delete.
+ * (toggle-note-popup / update-note-position are popup/geometry chrome that
+ * never change the persisted comment set.) The save snapshots the LIVE note
+ * model declaratively (collectNoteStates), never replaying mutations.
+ */
+const NOTE_MUTATION_IDS = new Set(['sheet.mutation.update-note', 'sheet.mutation.remove-note'])
 
 /** Structural mutation IDs (insert/remove row/column). */
 const STRUCTURAL_MUTATION_IDS = new Set([
@@ -353,6 +363,14 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   //    rule set is snapshotted (created + modified + untouched rules alike)
   //    — editing one rule never drops its neighbors.
   const dvDirtyRef = useRef<Set<string>>(new Set())
+  // ── Note journal (Review → New Comment). Desktop parity (App.tsx
+  //    noteDirty): sheet NAMES whose notes changed in-session. A sheet absent
+  //    from this set is NOT note-dirty: its save plan carries NO note state,
+  //    so a no-op save preserves the file's own comments part byte-for-byte.
+  //    At save, the sheet's FULL live note set is snapshotted (created +
+  //    edited + untouched notes alike) — editing one note never drops its
+  //    neighbors; an empty snapshot removes the whole comment set.
+  const noteDirtyRef = useRef<Set<string>>(new Set())
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState<string>('Ready')
   const [fileName, setFileName] = useState<string>('workbook.xlsx')
@@ -424,6 +442,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       filterDirtyRef,
       filterOriginsRef,
       dvDirtyRef,
+      noteDirtyRef,
       () => setDirty(true),
     )
     const w = window as { __genofficeExcelRuntime?: unknown }
@@ -513,6 +532,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     filterDirtyRef.current.clear()
     filterOriginsRef.current.clear()
     dvDirtyRef.current.clear()
+    noteDirtyRef.current.clear()
     try {
       rt.univerAPI.createWorkbook({
         id: WORKBOOK_UNIT_ID,
@@ -624,6 +644,36 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             // Installing the file's validations must never fail the open.
           }
         }
+        // Install the file's legacy notes into the REAL Univer note model
+        // (desktop applyWorkbookNotes parity): each SheetNote becomes a
+        // createOrUpdateNote under journal suppression — the canonical
+        // "Author:\nText" blob convention (re-split at save), the same id
+        // scheme, and the Inc-4 undo filter keeps ⌘Z clean. The notes then
+        // render through the real Univer note UI (cell markers + popup).
+        if (sheet.notes && sheet.notes.length > 0) {
+          try {
+            const wb = rt.univerAPI.getActiveWorkbook()
+            const ws = wb?.getSheetByName(sheet.name)
+            if (ws) {
+              for (const note of sheet.notes) {
+                try {
+                  ws.getRange(note.row, note.column).createOrUpdateNote({
+                    id: `note-${sheet.id}-${note.row}-${note.column}`,
+                    row: note.row,
+                    col: note.column,
+                    width: 220,
+                    height: 90,
+                    note: note.author ? `${note.author}:\n${note.text}` : note.text,
+                  })
+                } catch {
+                  // Notes are best-effort decoration (desktop parity).
+                }
+              }
+            }
+          } catch {
+            // Installing the file's notes must never fail the open.
+          }
+        }
       }
     } finally {
       journalSuppressionRef.current = false
@@ -685,6 +735,12 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       // ride along, so editing one rule never drops its neighbors. An
       // empty list means all validation on the sheet was cleared.
       const dvStates = collectDvStates(runtimeRef.current, dvDirtyRef)
+      // Snapshot the LIVE note model for every note-dirty sheet
+      // (Review → New Comment). Declarative, desktop collectNoteStates
+      // parity: the FULL note set of each dirty sheet — untouched notes
+      // ride along, so editing one note never drops its neighbors. An
+      // empty list means all notes on the sheet were cleared.
+      const noteStates = collectNoteStates(runtimeRef.current, noteDirtyRef)
       let nextFileName = handle.fileName
       if (saveAs) {
         const newName = window.prompt('Save as:', nextFileName)
@@ -703,6 +759,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           ...(pageSetupStates.length > 0 ? { pageSetupStates } : {}),
           ...(filterStates.length > 0 ? { filterStates } : {}),
           ...(dvStates.length > 0 ? { dvStates } : {}),
+          ...(noteStates.length > 0 ? { noteStates } : {}),
         },
       })
       handleRef.current = {
@@ -718,6 +775,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       // for DV: the snapshot is in the file; a no-op save must preserve it.
       filterDirtyRef.current.clear()
       dvDirtyRef.current.clear()
+      noteDirtyRef.current.clear()
       const blob = new Blob([savedBytes.buffer as ArrayBuffer], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       })
@@ -967,6 +1025,41 @@ function collectDvStates(
 }
 
 /**
+ * Snapshot the LIVE Univer note model for every note-dirty sheet into the
+ * canonical SheetNoteState wire shape (desktop collectNoteStates parity —
+ * a declarative full-set snapshot, never a mutation replay). Univer's note
+ * model stores one flat text blob per cell; the desktop convention
+ * serializes authorship into it as "Author:\nText", re-split here via the
+ * same regex. An empty notes array means "all notes on the sheet were
+ * cleared" (the engine removes the comments part).
+ */
+function collectNoteStates(
+  runtime: BrowserUniverRuntime | null,
+  noteDirtyRef: React.MutableRefObject<Set<string>>,
+): Array<{ sheetName: string; notes: SheetNote[] }> {
+  const workbook = runtime?.univerAPI.getActiveWorkbook()
+  if (!workbook) return []
+  const states: Array<{ sheetName: string; notes: SheetNote[] }> = []
+  for (const sheetName of noteDirtyRef.current) {
+    const worksheet = workbook.getSheetByName(sheetName)
+    if (!worksheet) continue
+    const notes: SheetNote[] = []
+    for (const note of worksheet.getNotes()) {
+      const blob = note.note
+      const split = /^([^\n]{1,60}):\n([\s\S]*)$/.exec(blob)
+      notes.push({
+        row: note.row,
+        column: note.col,
+        author: split?.[1] ?? '',
+        text: split?.[2] ?? blob,
+      })
+    }
+    states.push({ sheetName, notes })
+  }
+  return states
+}
+
+/**
  * Snapshot the LIVE Univer filter model for every filter-dirty sheet into
  * the canonical SheetFilterState wire shape (desktop collectFilterStates
  * parity — a declarative state snapshot, never a mutation replay).
@@ -1078,6 +1171,7 @@ function subscribeToCellMutations(
     Map<string, { startRow: number; endRow: number; startColumn: number; endColumn: number }>
   >,
   dvDirtyRef: React.MutableRefObject<Set<string>>,
+  noteDirtyRef: React.MutableRefObject<Set<string>>,
   onDirty: () => void,
 ): { dispose(): void } {
   const sub = runtime.univerAPI.addEvent(runtime.univerAPI.Event.CommandExecuted, (event) => {
@@ -1417,6 +1511,27 @@ function subscribeToCellMutations(
       const ws = wb.getSheetBySheetId(params.subUnitId)
       if (!ws) return
       dvDirtyRef.current.add(ws.getSheetName())
+      onDirty()
+      return
+    }
+
+    // ── Note mutations (sheets-note preset). update-note covers create and
+    //    edit; remove-note covers delete. All mark the sheet note-dirty —
+    //    the SAVE snapshots the live note model declaratively
+    //    (collectNoteStates), exactly like the desktop's NOTE_MUTATIONS
+    //    handler. Individual mutations are never replayed.
+    if (NOTE_MUTATION_IDS.has(event.id)) {
+      // The note mutations carry `sheetId` (not `subUnitId` like the other
+      // sheet mutation families) — accept both spellings.
+      const params = event.params as
+        { subUnitId?: string; sheetId?: string; unitId?: string } | undefined
+      const sheetId = params?.subUnitId ?? params?.sheetId
+      if (!sheetId) return
+      const wb = runtime.univerAPI.getActiveWorkbook()
+      if (!wb) return
+      const ws = wb.getSheetBySheetId(sheetId)
+      if (!ws) return
+      noteDirtyRef.current.add(ws.getSheetName())
       onDirty()
       return
     }

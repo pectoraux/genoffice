@@ -30,6 +30,7 @@ import {
   type EditableBorderStyle,
   type SheetDvState,
   type SheetFilterState,
+  type SheetNoteState,
   type SheetPageSetupState,
   type SheetStructuralOps,
   type StructuralOp,
@@ -106,6 +107,12 @@ export interface BrowserWorkbookSavePlan {
    * `<dataValidations>`.
    */
   readonly dvStates?: readonly SheetDvState[]
+  /**
+   * Per-sheet legacy-note states (Review → New Comment). Each entry REPLACES
+   * the sheet's whole comment set with the canonical `SheetNote[]` — an
+   * empty notes array removes the sheet's comment part entirely.
+   */
+  readonly noteStates?: readonly SheetNoteState[]
   // Extensibility seam — future mutation families land here as optional
   // readonly fields (chartEdits?, hyperlinkEdits?, …).
   // The route handler ignores unknown keys, so adding a field is a
@@ -2380,6 +2387,81 @@ function expectDvRule(value: Record<string, unknown>, field: string): Record<str
   return out
 }
 
+// ── SheetNoteState validation (Review → Notes/Comments, Phase 4 Inc. 6) ─────
+
+/** Caps mirroring the desktop's workbookNoteStateSchema. */
+const MAX_NOTE_STATES = 1_000
+const MAX_NOTES_PER_SHEET = 1_000
+const MAX_NOTE_AUTHOR_LENGTH = 255
+const MAX_NOTE_TEXT_LENGTH = 32_767
+const MAX_NOTE_ROW = 1_048_575
+const MAX_NOTE_COLUMN = 16_383
+
+/**
+ * Validate one per-sheet note state from the wire. The browser only emits
+ * full declarative snapshots of Univer's live note model (the same shape
+ * the desktop ships) — anything else (invalid coordinates, missing text,
+ * oversized strings, unknown fields, excessive counts) is rejected with a
+ * 400 rather than reaching the engine. An empty notes array is VALID: it
+ * means "all notes on the sheet were cleared".
+ */
+function expectSheetNoteState(value: unknown, index: number): SheetNoteState {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `noteStates[${index}] must be an object`)
+  }
+  const sheetName = expectString(value.sheetName, `noteStates[${index}].sheetName`)
+  const notes = expectArray(value.notes, `noteStates[${index}].notes`, (note, i) =>
+    expectSheetNote(note, `noteStates[${index}].notes[${i}]`),
+  )
+  if (notes.length > MAX_NOTES_PER_SHEET) {
+    throw new OfficeValidationError(
+      'validation',
+      `noteStates[${index}].notes exceeds ${MAX_NOTES_PER_SHEET} entries`,
+    )
+  }
+  return { sheetName, notes }
+}
+
+function expectSheetNote(
+  value: unknown,
+  field: string,
+): { row: number; column: number; author: string; text: string } {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const row = expectNumber(value.row, `${field}.row`)
+  if (!Number.isInteger(row) || row < 0 || row > MAX_NOTE_ROW) {
+    throw new OfficeValidationError('validation', `${field}.row must be a 0-based row index`)
+  }
+  const column = expectNumber(value.column, `${field}.column`)
+  if (!Number.isInteger(column) || column < 0 || column > MAX_NOTE_COLUMN) {
+    throw new OfficeValidationError('validation', `${field}.column must be a 0-based column index`)
+  }
+  const author = value.author
+  if (typeof author !== 'string' || author.length > MAX_NOTE_AUTHOR_LENGTH) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.author must be a string of at most ${MAX_NOTE_AUTHOR_LENGTH} characters`,
+    )
+  }
+  const text = value.text
+  if (typeof text !== 'string' || text.length === 0 || text.length > MAX_NOTE_TEXT_LENGTH) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.text must be a non-empty string of at most ${MAX_NOTE_TEXT_LENGTH} characters`,
+    )
+  }
+  // Reject unknown extra keys — the canonical note carries exactly these
+  // four fields; extension markers (threaded-comment ids, reply refs, …)
+  // must not slip through.
+  for (const key of Object.keys(value)) {
+    if (!['row', 'column', 'author', 'text'].includes(key)) {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return { row, column, author, text }
+}
+
 function parseSaveWorkbookRequest(
   body: unknown,
   codec: OfficeBinaryCodec,
@@ -2432,6 +2514,16 @@ function parseSaveWorkbookRequest(
         `savePlan.dvStates exceeds ${MAX_DV_STATES} entries`,
       )
     }
+    const noteStates =
+      body.savePlan.noteStates !== undefined && body.savePlan.noteStates !== null
+        ? expectArray(body.savePlan.noteStates, 'savePlan.noteStates', expectSheetNoteState)
+        : undefined
+    if (noteStates !== undefined && noteStates.length > MAX_NOTE_STATES) {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.noteStates exceeds ${MAX_NOTE_STATES} entries`,
+      )
+    }
     return {
       fileName,
       fileBytes,
@@ -2441,6 +2533,7 @@ function parseSaveWorkbookRequest(
         ...(pageSetupStates ? { pageSetupStates } : {}),
         ...(filterStates ? { filterStates } : {}),
         ...(dvStates ? { dvStates } : {}),
+        ...(noteStates ? { noteStates } : {}),
       },
     }
   }
@@ -2513,6 +2606,7 @@ async function handleSaveWorkbook(
   const pageSetupStates = req.savePlan.pageSetupStates ?? []
   const filterStates = req.savePlan.filterStates ?? []
   const dvStates = req.savePlan.dvStates ?? []
+  const noteStates = req.savePlan.noteStates ?? []
   let mutation
   try {
     // filterStates is argument 6 (after chartEdits/sheetPlan): the canonical
@@ -2520,7 +2614,9 @@ async function handleSaveWorkbook(
     // and page setup, so their coordinates and row set match the sheet's
     // final content. dvStates is argument 9 (after hyperlinkEdits/cfStates):
     // validation rules likewise replay after structural + cell changes.
-    // See planCellEditsToXlsx in @genoffice/xlsx-gateway.
+    // noteStates is argument 13 (after pageSetupStates): note snapshots run
+    // after the worksheet flush so the legacyDrawing element lands on the
+    // final sheet XML. See planCellEditsToXlsx in @genoffice/xlsx-gateway.
     mutation = await applyCellEditsToXlsx(
       buf,
       edits,
@@ -2534,6 +2630,7 @@ async function handleSaveWorkbook(
       [],
       null,
       pageSetupStates,
+      noteStates,
     )
   } catch (e) {
     throw new OfficeValidationError(

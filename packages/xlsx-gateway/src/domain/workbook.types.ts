@@ -7,6 +7,7 @@ import type {
 import type { SheetVisual } from './chart-visual'
 import type { SheetFilterState } from '../gateway/xlsx-filter'
 import type { DvWireRule } from '../gateway/xlsx-dv'
+import type { SheetNote } from '../gateway/xlsx-notes'
 
 export type CellScalar = string | number | boolean | null
 
@@ -82,6 +83,17 @@ export interface WorksheetState {
    * survive round-trip.
    */
   readonly dvRules?: readonly DvWireRule[] | undefined
+  /**
+   * Legacy notes (cell comments) parsed from the worksheet's comments part
+   * (resolved through the worksheet rels). Absent means no parseable notes —
+   * including when the part carries constructs the canonical model cannot
+   * represent (unreadable refs, missing text), which fail closed: the
+   * browser never renders such notes and a no-op save preserves the file's
+   * parts byte-for-byte. The web Sheets shell (Review → New Comment)
+   * journals note changes through the canonical SheetNoteState save family
+   * and reads it back via this field on reopen.
+   */
+  readonly notes?: readonly SheetNote[] | undefined
 }
 
 export interface WorkbookSnapshot {

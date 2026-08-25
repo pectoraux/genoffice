@@ -551,8 +551,9 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
               {/* Disabled: the wire save plan does not expose noteStates. */}
               <RibbonButton
                 label="New Comment"
-                title="New Comment — disabled: the web save plan does not yet expose the noteStates family"
-                disabled
+                title="Open the note editor for the selected cell (Review → New Comment)"
+                disabled={disabled}
+                onClick={() => api?.addNote()}
               />
             </Group>
             <Group label="Protection">

@@ -81,6 +81,10 @@ export { parseAutoFilter, FilterReadError, FilterEditError } from './gateway/xls
 export type { DvWireRule, DvCellArea } from './gateway/xlsx-dv.js'
 export { parseDataValidations, DvReadError, DvEditError } from './gateway/xlsx-dv.js'
 
+// ── Notes (legacy cell comments) ──
+export type { SheetNote } from './gateway/xlsx-notes.js'
+export { parseCommentsPart, NoteReadError, NoteEditError } from './gateway/xlsx-notes.js'
+
 // ── Defined names ──
 export type { DefinedNamesState } from './gateway/xlsx-defined-names.js'
 export { DefinedNameError } from './gateway/xlsx-defined-names.js'

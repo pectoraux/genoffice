@@ -221,6 +221,15 @@ export interface ExcelRuntimeApi {
    * model is snapshotted as canonical SheetDvState rules.
    */
   openDataValidation(): void
+  /**
+   * Open the REAL Univer note editor for the selected cell — the same
+   * sheet.operation.add-note-popup operation the preset's own context menu
+   * executes (the popup service shows the note editor at the selection's
+   * primary cell). Committing the editor fires sheet.mutation.update-note,
+   * journaled by ExcelEditor as a per-sheet note-dirty mark; on save, the
+   * LIVE note model is snapshotted as canonical SheetNoteState.
+   */
+  addNote(): void
 }
 
 export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeApi | null {
@@ -642,6 +651,21 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     }
   }, [])
 
+  const addNote = useCallback(() => {
+    const r = rtRef.current
+    if (!r) return
+    // The REAL Univer note-creation surface — the same
+    // sheet.operation.add-note-popup the preset's own context menu runs.
+    // It shows the note editor at the selection's primary cell; committing
+    // fires sheet.mutation.update-note (journaled as note-dirty). A cell
+    // that already has a note shows it for editing — Excel's own behavior.
+    try {
+      void r.univerAPI.executeCommand('sheet.operation.add-note-popup')
+    } catch {
+      /* no selection / popup unavailable — the sheet stays canonical */
+    }
+  }, [])
+
   if (!rt) return null
   return {
     state,
@@ -671,5 +695,6 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     insertFunction,
     toggleFilter,
     openDataValidation,
+    addNote,
   }
 }

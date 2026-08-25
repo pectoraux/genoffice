@@ -23,6 +23,7 @@ import type {
   CellEdit,
   DvWireRule,
   SheetFilterState,
+  SheetNote,
   WorkbookSnapshot,
 } from '@genoffice/xlsx-gateway'
 
@@ -128,6 +129,17 @@ export interface BrowserWorkbookSavePlan {
   readonly dvStates?: readonly {
     readonly sheetName: string
     readonly rules: readonly DvWireRule[]
+  }[]
+  /**
+   * Per-sheet legacy-note states (Review → New Comment). Each entry REPLACES
+   * the sheet's whole comment set with the canonical `SheetNote[]`
+   * snapshotted from Univer's live note model (never XML, never
+   * reconstructed OOXML). An empty notes array removes the sheet's comment
+   * part entirely.
+   */
+  readonly noteStates?: readonly {
+    readonly sheetName: string
+    readonly notes: readonly SheetNote[]
   }[]
   readonly [key: string]: unknown
 }
