@@ -362,9 +362,7 @@ describe('architecture: EXCEL-018 Remove Duplicates uses the canonical cell-edit
     // open the dedupe dialog that does).
     // Find the Remove Duplicates button block — it must NOT contain
     // a top-level `disabled` prop (without a value).
-    const buttonBlockMatch = content.match(
-      /label="Remove Duplicates"[\s\S]*?\/>/,
-    )
+    const buttonBlockMatch = content.match(/label="Remove Duplicates"[\s\S]*?\/>/)
     expect(buttonBlockMatch, 'Remove Duplicates button block present').not.toBeNull()
     const buttonBlock = buttonBlockMatch![0]
     // The button block must NOT contain a bare `disabled` prop (the

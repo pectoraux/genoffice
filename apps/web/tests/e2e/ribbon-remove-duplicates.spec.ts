@@ -336,8 +336,12 @@ test.describe('Data tab — Remove Duplicates persists through save/reopen', () 
     expect(sheet1, 'A1 header preserved in saved XML').toMatch(/<c r="A1"[^>]*t="s"[^>]*><v>0<\/v>/)
     expect(sheet1, 'B1 header preserved in saved XML').toMatch(/<c r="B1"[^>]*t="s"[^>]*><v>1<\/v>/)
     // Row 2 (first occurrence) — preserved verbatim.
-    expect(sheet1, 'A2 first occurrence preserved in saved XML').toMatch(/<c r="A2"[^>]*t="s"[^>]*><v>2<\/v>/)
-    expect(sheet1, 'B2 first occurrence preserved in saved XML').toMatch(/<c r="B2"[^>]*><v>10<\/v>/)
+    expect(sheet1, 'A2 first occurrence preserved in saved XML').toMatch(
+      /<c r="A2"[^>]*t="s"[^>]*><v>2<\/v>/,
+    )
+    expect(sheet1, 'B2 first occurrence preserved in saved XML').toMatch(
+      /<c r="B2"[^>]*><v>10<\/v>/,
+    )
     // Row 3 — compacted Banana/20 (moved from row 4). The canonical
     // gateway writes the moved-in string as an INLINE STRING
     // (t="inlineStr" with <is><t>...</t></is>) — it does NOT update
@@ -370,26 +374,20 @@ test.describe('Data tab — Remove Duplicates persists through save/reopen', () 
     // entry entirely (for cells with no style) or writes an empty
     // <c .../> (for cells with a style ref). In all cases, no <v> and
     // no <f> for the blanked cells.
-    expect(
-      sheet1,
-      'A6 must NOT carry a value in saved XML (blanked)',
-    ).not.toMatch(/<c r="A6"[^>]*><v>/)
-    expect(
-      sheet1,
-      'B6 must NOT carry a value in saved XML (blanked)',
-    ).not.toMatch(/<c r="B6"[^>]*><v>/)
-    expect(
-      sheet1,
-      'A7 must NOT carry a value in saved XML (blanked)',
-    ).not.toMatch(/<c r="A7"[^>]*><v>/)
+    expect(sheet1, 'A6 must NOT carry a value in saved XML (blanked)').not.toMatch(
+      /<c r="A6"[^>]*><v>/,
+    )
+    expect(sheet1, 'B6 must NOT carry a value in saved XML (blanked)').not.toMatch(
+      /<c r="B6"[^>]*><v>/,
+    )
+    expect(sheet1, 'A7 must NOT carry a value in saved XML (blanked)').not.toMatch(
+      /<c r="A7"[^>]*><v>/,
+    )
     expect(
       sheet1,
       'B7 must NOT carry the formula =B6 in saved XML (formula LOST, blanked)',
     ).not.toMatch(/<c r="B7"[^>]*><f>B6<\/f>/)
-    expect(
-      sheet1,
-      'B7 must NOT carry a value either (blanked)',
-    ).not.toMatch(/<c r="B7"[^>]*><v>/)
+    expect(sheet1, 'B7 must NOT carry a value either (blanked)').not.toMatch(/<c r="B7"[^>]*><v>/)
 
     // Reopen and verify the snapshot carries the deduped state.
     writeFileSync('/tmp/e2e-ribbon-dedupe-saved.xlsx', saved)
@@ -436,9 +434,7 @@ test.describe('Data tab — Remove Duplicates persists through save/reopen', () 
     expect(pageErrors, 'no uncaught page errors').toEqual([])
   })
 
-  test('no-op when there are no duplicates — fails closed without mutating', async ({
-    page,
-  }) => {
+  test('no-op when there are no duplicates — fails closed without mutating', async ({ page }) => {
     test.setTimeout(120_000)
     const pageErrors: string[] = []
     page.on('pageerror', (err) => pageErrors.push(String(err)))
@@ -478,9 +474,7 @@ test.describe('Data tab — Remove Duplicates persists through save/reopen', () 
 
     // The status message surfaces "No duplicate rows found" and NO save
     // request was fired (no mutation, no journal entries).
-    await expect(page.locator('[data-testid="dedupe-message"]')).toContainText(
-      'No duplicate rows',
-    )
+    await expect(page.locator('[data-testid="dedupe-message"]')).toContainText('No duplicate rows')
 
     // No save request should have been made (the dedupe was a no-op).
     // We assert this by counting save requests over a brief window.
@@ -490,9 +484,7 @@ test.describe('Data tab — Remove Duplicates persists through save/reopen', () 
       // (not "Saving...") and no unsaved-changes marker appears.
       return document.querySelector('.excel-statusbar')?.textContent ?? ''
     })
-    expect(saveCount, 'no "unsaved changes" marker after a no-op dedupe').not.toContain(
-      'Unsaved',
-    )
+    expect(saveCount, 'no "unsaved changes" marker after a no-op dedupe').not.toContain('Unsaved')
 
     expect(pageErrors, 'no uncaught page errors').toEqual([])
   })
@@ -532,9 +524,7 @@ test.describe('Data tab — Remove Duplicates persists through save/reopen', () 
 
     // The status message surfaces "Select the rows to check for duplicates
     // first." — fail-closed, no mutation fired.
-    await expect(page.locator('[data-testid="dedupe-message"]')).toContainText(
-      'Select the rows',
-    )
+    await expect(page.locator('[data-testid="dedupe-message"]')).toContainText('Select the rows')
 
     expect(pageErrors, 'no uncaught page errors').toEqual([])
   })

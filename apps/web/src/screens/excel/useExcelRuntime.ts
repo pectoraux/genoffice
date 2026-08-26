@@ -794,15 +794,18 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
           // sheet.mutation.set-range-values per cell, captured by the
           // existing subscription. A `null` value clears the cell (the
           // facade's documented behavior; same as Clear All).
-          ws.getRange(startRow + offset, startColumn, 1, width).setValues(
-            [[...newRow]] as unknown as never,
-          )
+          ws.getRange(startRow + offset, startColumn, 1, width).setValues([
+            [...newRow],
+          ] as unknown as never)
         }
         refresh()
         return { kind: 'done', removed }
       } catch (error: unknown) {
         const detail = error instanceof Error ? error.message : ''
-        return { kind: 'error', message: detail === '' ? 'Write failed' : `Write failed: ${detail}` }
+        return {
+          kind: 'error',
+          message: detail === '' ? 'Write failed' : `Write failed: ${detail}`,
+        }
       }
     },
     [refresh],

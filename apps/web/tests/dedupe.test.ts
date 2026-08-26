@@ -52,14 +52,7 @@ describe('dedupeRows', () => {
 
   it('does not confuse types or nulls with equal string forms', () => {
     const { rows, removed } = dedupeRows(
-      [
-        [1, null],
-        ['1', null],
-        [null, null],
-        [null, null],
-        [true],
-        ['true'],
-      ],
+      [[1, null], ['1', null], [null, null], [null, null], [true], ['true']],
       false,
     )
     expect(removed).toBe(1)

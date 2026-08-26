@@ -722,9 +722,8 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
               Remove Duplicates
             </h3>
             <p className="rb-dialog-body">
-              Remove duplicate rows from the selected range. The first
-              occurrence of each unique row is kept; later matches are
-              cleared. Rows outside the selection are untouched.
+              Remove duplicate rows from the selected range. The first occurrence of each unique row
+              is kept; later matches are cleared. Rows outside the selection are untouched.
             </p>
             <label className="rb-dialog-check">
               <input
