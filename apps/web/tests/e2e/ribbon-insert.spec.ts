@@ -1,21 +1,20 @@
 /**
- * REAL browser E2E — Insert tab (Phase 4 Inc. 3).
+ * REAL browser E2E — Insert tab (Phase 4 Inc. 3; EXCEL-021 flipped Table).
  *
- * Verifies the Insert tab's Table / Picture / Chart controls are VISIBLY
- * DISABLED (per spec: "a disabled button is preferable to a fake
- * feature"). The architectural reason: the wire save plan
- * (BrowserWorkbookSavePlan) does not expose the tableAdditions,
- * visualAdditions, or chartEdits families — applyCellEditsToXlsx accepts
- * them, but routeOffice's handleSaveWorkbook does not pass them through,
- * so any in-session insert would NOT survive save/reopen. Until the wire
- * is extended, the controls must remain disabled with the reason in the
- * title tooltip.
+ * Verifies the Insert tab's Picture / Chart controls are VISIBLY DISABLED
+ * (per spec: "a disabled button is preferable to a fake feature") — the
+ * wire save plan still does not expose the visualAdditions / chartEdits
+ * families. Table is ENABLED since EXCEL-021: the tableAdditions family
+ * IS on the wire (ribbon-table.spec.ts proves the full round-trip), so
+ * the old disabled-stub assertion flips to enabled + wired.
  */
 import { test, expect } from '@playwright/test'
 import { loginAsDemoOwner, gotoHashRoute, waitForGridCanvas } from './helpers'
 
 test.describe('Insert tab — disabled-by-design controls', () => {
-  test('Table, Picture, Chart are all disabled with documented reason', async ({ page }) => {
+  test('Picture and Chart are disabled with documented reason; Table is enabled', async ({
+    page,
+  }) => {
     test.setTimeout(120_000)
     const pageErrors: string[] = []
     page.on('pageerror', (err) => pageErrors.push(String(err)))
@@ -28,12 +27,16 @@ test.describe('Insert tab — disabled-by-design controls', () => {
     await page.getByRole('tab', { name: 'Insert', exact: true }).click()
     await page.waitForTimeout(200)
 
-    // Table — must be disabled with a title that names the missing
-    // tableAdditions save family.
-    const tableBtn = page.getByRole('button', { name: /^Table/ }).first()
-    await expect(tableBtn).toBeDisabled()
+    // Table — ENABLED since EXCEL-021 (the tableAdditions family is on
+    // the wire; the canonical round-trip is proven in ribbon-table.spec).
+    const tableBtn = page.getByRole('button', { name: /^Table/, exact: false }).first()
+    await expect(tableBtn).toBeEnabled()
     const tableTitle = await tableBtn.getAttribute('title')
-    expect(tableTitle, 'Table title names the architectural reason').toContain('tableAdditions')
+    expect(tableTitle, 'Table title names the create action').toContain('create a table')
+
+    // Delete Table — the convert-to-range companion command.
+    const deleteBtn = page.getByRole('button', { name: /Delete Table/i })
+    await expect(deleteBtn).toBeEnabled()
 
     // Chart — must be disabled with a title naming chartEdits /
     // visualAdditions.

@@ -26,10 +26,9 @@
  *         applyPageSetupState (<pane> element).
  *
  * Disabled commands (with reason):
- *   Insert → Table/Picture/Chart — the wire save plan does not expose
- *            tableAdditions / visualAdditions / chartEdits families
- *            (applyCellEditsToXlsx accepts them but routeOffice does not
- *            pass them through).
+ *   Insert → Picture/Chart — the wire save plan does not expose
+ *            visualAdditions / chartEdits families (applyCellEditsToXlsx
+ *            accepts them but routeOffice does not pass them through).
  *   Formulas → Show formulas / Name Manager — needs pageSetupStates.
  *             showFormulas (a page-setup field) and definedNamesState,
  *             neither wired through the web save plan.
@@ -37,6 +36,16 @@
  *            only frozenRows/frozenColumns are wired by the web shell;
  *            orientation/margins/print area remain disabled until the
  *            web shell emits them.
+ *
+ * EXCEL-021 (Insert → Tables): ENABLED. Table journals the canonical
+ * tableAdditions family over the active range (the browser sanitizes the
+ * column names from the header row, desktop applyAiTableAdd parity);
+ * Delete Table is convert-to-range for session tables (journal splice —
+ * nothing reaches the file) and refuses file-native tables with the
+ * desktop's exact message. File tables import through
+ * WorksheetState.tables (banding painted into the cell matrix; Univer
+ * registration with a muted plain theme), and a sheet whose filter
+ * belongs to a table refuses filter edits (BeforeCommandExecute gate).
  *
  * EXCEL-020 (Review → Protection): ENABLED. Protect Sheet / Unprotect
  * Sheet journals the canonical sheetProtections family; Protect Workbook /
@@ -211,12 +220,26 @@ export interface RibbonProtectionProps {
   readonly onSetCellsLocked: (locked: boolean) => void
 }
 
+/**
+ * EXCEL-021 tables surface (Insert → Tables group). The shell
+ * (ExcelEditor) owns the file-state refs + the session journal and passes
+ * the two commands down here; the buttons only call back.
+ */
+export interface RibbonTablesProps {
+  /** Insert → Table: journal a table over the active range. */
+  readonly onInsertTable: () => void
+  /** Insert → Delete Table: convert-to-range for a session table. */
+  readonly onDeleteTable: () => void
+}
+
 export function Ribbon({
   api,
   protection,
+  tables,
 }: {
   api: ExcelRuntimeApi | null
   protection?: RibbonProtectionProps | null
+  tables?: RibbonTablesProps | null
 }) {
   const [tab, setTab] = useState<TabId>('home')
   // EXCEL-018 — Remove Duplicates dialog state. Mirrors the desktop's
@@ -470,17 +493,27 @@ export function Ribbon({
         {tab === 'insert' && (
           <>
             <Group label="Tables">
-              {/* Disabled: the wire save plan (BrowserWorkbookSavePlan) does
-                 not expose the tableAdditions family. applyCellEditsToXlsx
-                 accepts it, but routeOffice's handleSaveWorkbook does not
-                 pass it through — a table created in-session would NOT
-                 survive save/reopen. Leaving disabled until the wire is
-                 extended for tables. */}
+              {/* EXCEL-021 — ENABLED. Insert → Table journals the canonical
+                  tableAdditions family (BrowserWorkbookSavePlan →
+                  routeOffice strict validation → the gateway's table-add
+                  writer creates the table part with its worksheet wiring,
+                  relationship, and content-type override). Delete Table is
+                  convert-to-range for session tables (journal splice —
+                  nothing reaches the file); file-native tables refuse with
+                  the desktop's message. */}
               <RibbonButton
                 label="Table"
-                title="Table — disabled: the web save plan does not yet expose the tableAdditions family"
+                title="Table — create a table from the selected range (Insert → Table)"
                 icon={<TableIcon />}
-                disabled
+                disabled={disabled}
+                onClick={() => tables?.onInsertTable()}
+              />
+              <RibbonButton
+                label="Delete Table"
+                title="Delete Table — convert a table created this session back to a range"
+                icon={<TableIcon />}
+                disabled={disabled}
+                onClick={() => tables?.onDeleteTable()}
               />
             </Group>
             <Group label="Charts">

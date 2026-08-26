@@ -42,3 +42,4 @@ bun.lock
 # Regenerate with `bun run build:api` after changing web-host/contractor-core.
 # (api/serverless.mjs.map is not generated — sourcemap is off in bundle-api.mjs)
 .env*
+apps/web/tests/e2e/.results-preview/
