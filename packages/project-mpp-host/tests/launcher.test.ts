@@ -12,7 +12,15 @@
  * malformed sidecar MSPDI (mspdi stage), and canonical rejection
  * (atomicity), plus the shell-injection counter-proof.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -21,14 +29,17 @@ import {
   buildSidecarCommand,
   importMppFromBytes,
   importMppFromFile,
+  probeNetworkIsolation,
   stageSchedulingDiagnostics,
   type MppSidecarLauncherConfig,
 } from '../src/index.js'
 import {
   MPP_INPUT_TOO_LARGE,
+  MPP_INPUT_UNREADABLE,
   MPP_MAX_INPUT_BYTES,
   MPP_OUTPUT_TOO_LARGE,
   MPP_SIDECAR_EXIT,
+  MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE,
   MPP_SIDECAR_RESPONSE_INVALID,
   MPP_SIDECAR_TIMEOUT,
   MPP_SIDECAR_UNAVAILABLE,
@@ -46,13 +57,19 @@ afterEach(() => {
   rmSync(workspace, { recursive: true, force: true })
 })
 
-/** A launcher driving a fake sidecar via the commandBuilder test seam. */
+/** A launcher driving a fake sidecar via the commandBuilder test seam.
+ * The fake-sidecar suite exercises the PROCESS-MANAGEMENT logic
+ * (timeouts, exit codes, frame validation) — orthogonal to network
+ * isolation, which has its own dedicated suite (network-isolation.test.ts,
+ * incl. the real java path in e2e) — so it explicitly opts out of the
+ * wrapper to stay deterministic on hosts without the mechanism. */
 function fakeLauncher(
   fixture: string,
   overrides: Partial<MppSidecarLauncherConfig> = {},
 ): MppSidecarLauncher {
   return new MppSidecarLauncher({
     mpxjHome: '/nonexistent-mpxj',
+    networkIsolation: 'off',
     commandBuilder: (inputPath, outputPath, requestId) => ({
       command: process.execPath,
       args: [join(FIXTURES, fixture), inputPath, outputPath, requestId],
@@ -62,7 +79,11 @@ function fakeLauncher(
 }
 
 describe('launcher failure classes (fake sidecar, real process management)', () => {
-  it('MPP_SIDECAR_UNAVAILABLE: the executable cannot be started', async () => {
+  it('MPP_SIDECAR_UNAVAILABLE: the executable cannot be started (wrapped: exit 127 + "failed to execute" maps precisely)', async () => {
+    // Default 'required' policy on a host with the mechanism: the missing
+    // java executable surfaces as the wrapper's exit 127 + "failed to
+    // execute" stderr — mapped back to the semantically-correct
+    // MPP_SIDECAR_UNAVAILABLE, never a misleading "conversion exited":
     const launcher = new MppSidecarLauncher({
       mpxjHome: '/nonexistent',
       javaExecutable: '/definitely/not/a/real/binary',
@@ -75,6 +96,53 @@ describe('launcher failure classes (fake sidecar, real process management)', () 
       expect(result.diagnostics[0].code).toBe(MPP_SIDECAR_UNAVAILABLE)
       expect(result.diagnostics[0].severity).toBe('error')
       expect(result.diagnostics[0].stage).toBe('sidecar')
+      expect(result.diagnostics[0].message).toContain('could not be started')
+    }
+  })
+
+  it('MPP_SIDECAR_UNAVAILABLE: the direct (unwrapped) spawn-error branch stays covered under the explicit off policy', async () => {
+    const launcher = new MppSidecarLauncher({
+      mpxjHome: '/nonexistent',
+      javaExecutable: '/definitely/not/a/real/binary',
+      networkIsolation: 'off',
+      timeoutMs: 5_000,
+    })
+    const result = await launcher.convert(join(workspace, 'in.mpp'), join(workspace, 'out.xml'))
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.diagnostics).toHaveLength(1)
+      expect(result.diagnostics[0].code).toBe(MPP_SIDECAR_UNAVAILABLE)
+      expect(result.diagnostics[0].stage).toBe('sidecar')
+    }
+  })
+
+  it('the timeout kill path works THROUGH the isolation wrapper (default policy, probe-aware)', async () => {
+    // On a host with the mechanism: the hanging fake sidecar runs WRAPPED
+    // (unshare execs it in place, so child.kill still reaches it) and the
+    // timeout still terminates it. On a host without the mechanism: the
+    // default policy fails closed instead — both outcomes asserted.
+    const capability = await probeNetworkIsolation()
+    const launcher = new MppSidecarLauncher({
+      mpxjHome: '/nonexistent',
+      timeoutMs: 700,
+      commandBuilder: (inputPath, outputPath, requestId) => ({
+        command: process.execPath,
+        args: [join(FIXTURES, 'fake-timeout.mjs'), inputPath, outputPath, requestId],
+      }),
+    })
+    const start = Date.now()
+    const result = await launcher.convert(join(workspace, 'in.mpp'), join(workspace, 'out.xml'))
+    const elapsed = Date.now() - start
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      if (capability.supported) {
+        expect(result.diagnostics[0].code).toBe(MPP_SIDECAR_TIMEOUT)
+        expect(result.diagnostics[0].message).toContain('700 ms')
+        expect(elapsed).toBeGreaterThanOrEqual(600)
+        expect(elapsed).toBeLessThan(10_000)
+      } else {
+        expect(result.diagnostics[0].code).toBe(MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE)
+      }
     }
   })
 
@@ -283,6 +351,95 @@ describe('pipeline failure classes (importMpp* over the fake sidecar)', () => {
       },
       { code: 'CALC_ERROR', severity: 'error', message: 'boom', stage: 'scheduling' },
     ])
+  })
+})
+
+describe('input-side diagnostic provenance (unreadable ≠ oversized)', () => {
+  it('MPP_INPUT_UNREADABLE: a MISSING input file is an input-side failure, never MPP_INPUT_TOO_LARGE', async () => {
+    let built = false
+    const launcher = new MppSidecarLauncher({
+      mpxjHome: '/nonexistent',
+      networkIsolation: 'off',
+      commandBuilder: (inputPath, outputPath, requestId) => {
+        built = true
+        return {
+          command: process.execPath,
+          args: [join(FIXTURES, 'fake-ok.mjs'), inputPath, outputPath, requestId],
+        }
+      },
+    })
+    const result = await importMppFromFile(join(workspace, 'missing.mpp'), { launcher })
+    // The sidecar command is never even built — let alone spawned:
+    expect(built).toBe(false)
+    expect(result.document).toEqual(emptyProjectDocument())
+    expect(result.schedule).toBeUndefined()
+    expect(result.diagnostics).toHaveLength(1)
+    expect(result.diagnostics[0].code).toBe(MPP_INPUT_UNREADABLE)
+    expect(result.diagnostics[0].code).not.toBe(MPP_INPUT_TOO_LARGE)
+    expect(result.diagnostics[0].severity).toBe('error')
+    expect(result.diagnostics[0].stage).toBe('sidecar')
+    // The OS reason is preserved for provenance (missing file → ENOENT):
+    expect(result.diagnostics[0].message).toContain('missing.mpp')
+    expect(result.diagnostics[0].message).toContain('ENOENT')
+  })
+
+  it('MPP_INPUT_UNREADABLE: a PERMISSION-DENIED input is distinguished from both missing and oversized', async () => {
+    const inputPath = join(workspace, 'no-read-permission.mpp')
+    writeFileSync(inputPath, new Uint8Array([0xd0, 0xcf, 0x11, 0xe0]))
+    chmodSync(inputPath, 0o000)
+    let built = false
+    const launcher = new MppSidecarLauncher({
+      mpxjHome: '/nonexistent',
+      networkIsolation: 'off',
+      commandBuilder: (inputPath, outputPath, requestId) => {
+        built = true
+        return {
+          command: process.execPath,
+          args: [join(FIXTURES, 'fake-ok.mjs'), inputPath, outputPath, requestId],
+        }
+      },
+    })
+    const result = await importMppFromFile(inputPath, { launcher })
+    // The input gate opens the file for reading, so the permission failure
+    // is caught input-side (stat alone would pass — it needs no read
+    // permission on the file itself) and nothing is ever built or spawned:
+    expect(built).toBe(false)
+    expect(result.document).toEqual(emptyProjectDocument())
+    expect(result.schedule).toBeUndefined()
+    expect(result.diagnostics).toHaveLength(1)
+    expect(result.diagnostics[0].code).toBe(MPP_INPUT_UNREADABLE)
+    expect(result.diagnostics[0].stage).toBe('sidecar')
+    // The OS reason is preserved (permission → EACCES), and the failure is
+    // not mislabeled as a size problem:
+    expect(result.diagnostics[0].message).toContain('EACCES')
+    expect(result.diagnostics[0].code).not.toBe(MPP_INPUT_TOO_LARGE)
+  })
+
+  it('MPP_INPUT_TOO_LARGE: an oversized input FILE (not bytes) is refused before any spawn', async () => {
+    const inputPath = join(workspace, 'oversized.mpp')
+    writeFileSync(inputPath, '')
+    // Sparse file: the input gate reads size metadata, so this is a real
+    // >100 MiB input without materializing 100 MiB of data:
+    truncateSync(inputPath, MPP_MAX_INPUT_BYTES + 1)
+    let built = false
+    const launcher = new MppSidecarLauncher({
+      mpxjHome: '/nonexistent',
+      networkIsolation: 'off',
+      commandBuilder: (inputPath, outputPath, requestId) => {
+        built = true
+        return {
+          command: process.execPath,
+          args: [join(FIXTURES, 'fake-ok.mjs'), inputPath, outputPath, requestId],
+        }
+      },
+    })
+    const result = await importMppFromFile(inputPath, { launcher })
+    expect(built).toBe(false)
+    expect(result.document).toEqual(emptyProjectDocument())
+    expect(result.diagnostics).toHaveLength(1)
+    expect(result.diagnostics[0].code).toBe(MPP_INPUT_TOO_LARGE)
+    expect(result.diagnostics[0].code).not.toBe(MPP_INPUT_UNREADABLE)
+    expect(result.diagnostics[0].message).toContain(String(MPP_MAX_INPUT_BYTES))
   })
 })
 

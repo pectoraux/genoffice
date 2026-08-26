@@ -70,6 +70,15 @@ export const MPP_SIDECAR_EXIT = 'MPP_SIDECAR_EXIT'
 /** The sidecar's stdout status frame is not a valid protocol envelope. */
 export const MPP_SIDECAR_RESPONSE_INVALID = 'MPP_SIDECAR_RESPONSE_INVALID'
 
+/** The input path could not be read as a file (missing, permission-denied,
+ * or any other stat/read I/O error) — checked before the sidecar is ever
+ * spawned. This is an input-side READABILITY failure, deliberately distinct
+ * from `MPP_INPUT_TOO_LARGE` (a SIZE failure): callers must be able to tell
+ * "the file is too big" from "the file cannot be read at all". The
+ * diagnostic message carries the underlying OS reason (e.g. ENOENT/EACCES)
+ * for full provenance. */
+export const MPP_INPUT_UNREADABLE = 'MPP_INPUT_UNREADABLE'
+
 /** The input exceeds `MPP_MAX_INPUT_BYTES` (checked before the sidecar is
  * ever spawned). */
 export const MPP_INPUT_TOO_LARGE = 'MPP_INPUT_TOO_LARGE'
@@ -77,6 +86,13 @@ export const MPP_INPUT_TOO_LARGE = 'MPP_INPUT_TOO_LARGE'
 /** The sidecar's MSPDI output exceeds `MPP_MAX_MSPDI_OUTPUT_BYTES`
  * (checked before the bytes are handed to the importer). */
 export const MPP_OUTPUT_TOO_LARGE = 'MPP_OUTPUT_TOO_LARGE'
+
+/** The launcher's REQUIRED network-isolation policy could not be satisfied:
+ * the host cannot provide the OS-level sandbox mechanism (on Linux, the
+ * unprivileged user + network namespace wrapper). The conversion FAILED
+ * CLOSED — no sidecar conversion process was started. Produced only under
+ * the default 'required' policy; the explicit 'off' opt-out never emits it. */
+export const MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE = 'MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE'
 
 /** The sidecar reported the input as an unsupported/unknown project format
  * (not one of MPP8/MPP9/MPP12/MPP14 — e.g. a non-MPP file or an
@@ -89,9 +105,11 @@ export const MPP_SIDECAR_DIAGNOSTIC_CODES = [
   MPP_SIDECAR_TIMEOUT,
   MPP_SIDECAR_EXIT,
   MPP_SIDECAR_RESPONSE_INVALID,
+  MPP_INPUT_UNREADABLE,
   MPP_INPUT_TOO_LARGE,
   MPP_OUTPUT_TOO_LARGE,
   MPP_UNSUPPORTED_FORMAT,
+  MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE,
 ] as const
 
 /** All PROJECT-018 MPP diagnostic codes (normalization + sidecar). */

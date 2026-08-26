@@ -22,6 +22,9 @@ import {
   MPP_NORMALIZED_SENTINEL_REFERENCE,
   MPP_DROPPED_UNASSIGNED_ASSIGNMENT,
   MPP_SIDECAR_UNAVAILABLE,
+  MPP_INPUT_UNREADABLE,
+  MPP_INPUT_TOO_LARGE,
+  MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE,
   MPP_DIAGNOSTIC_CODES,
   MPXJ_PINNED_VERSION,
   MPP_SUPPORTED_FORMAT_VERSIONS,
@@ -413,7 +416,7 @@ describe('PROJECT-018 — importMppFromMspdi staged contract', () => {
 
 describe('PROJECT-018 — foundation contract constants', () => {
   it('the diagnostic-code table is the documented union', () => {
-    expect(MPP_DIAGNOSTIC_CODES).toHaveLength(12)
+    expect(MPP_DIAGNOSTIC_CODES).toHaveLength(14)
     expect([...MPP_DIAGNOSTIC_CODES]).toEqual(
       expect.arrayContaining([
         MPP_NORMALIZED_SENTINEL_REFERENCE,
@@ -421,6 +424,12 @@ describe('PROJECT-018 — foundation contract constants', () => {
         MPP_NORMALIZED_PLACEHOLDER_RECORD,
         MPP_NORMALIZED_MIDNIGHT_PERIOD,
         MPP_DROPPED_UNASSIGNED_ASSIGNMENT,
+        // The architect-review corrections: readability is distinct from
+        // size, and the fail-closed isolation refusal is a protocol-level
+        // condition of its own:
+        MPP_INPUT_UNREADABLE,
+        MPP_INPUT_TOO_LARGE,
+        MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE,
       ]),
     )
   })

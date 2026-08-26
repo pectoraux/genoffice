@@ -1,10 +1,14 @@
 /**
  * @genoffice/project-mpp-host — public surface.
  *
- * The host-managed side of MPP import (PROJECT-018):
+ * The @genoffice/project-mpp-host public surface:
  *   - `MppSidecarLauncher` — one-shot MPXJ conversion process management
- *     (isolation, timeout, memory/size caps, no-shell argument arrays).
+ *     (OS-enforced network isolation, timeout, memory/size caps, no-shell
+ *     argument arrays).
  *   - `parseSidecarFrame` — the sidecar wire-protocol frame validator.
+ *   - `probeNetworkIsolation` / `wrapNetworkIsolated` — the network
+ *     isolation mechanism (Linux user + network namespace) and its host
+ *     capability probe.
  *   - `importMppFromFile` / `importMppFromBytes` — the full staged pipeline
  *     (sidecar → N1–N5 normalization → accepted MSPDI importer → canonical
  *     validation → scheduling) with provenance-preserving diagnostics.
@@ -27,6 +31,15 @@ export {
   type MppConversionFailure,
 } from './launcher.js'
 export { parseSidecarFrame } from './protocol.js'
+export {
+  probeNetworkIsolation,
+  wrapNetworkIsolated,
+  DEFAULT_UNSHARE_EXECUTABLE,
+  PROBE_TIMEOUT_MS,
+  type NetworkIsolationPolicy,
+  type NetworkIsolationMechanism,
+  type NetworkIsolationCapability,
+} from './network-isolation.js'
 export {
   importMppFromFile,
   importMppFromBytes,

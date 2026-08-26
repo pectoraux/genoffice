@@ -32,8 +32,14 @@ import org.mpxj.reader.UniversalProjectReader;
  * every data byte it writes is otherwise a pure in-memory transformation
  * (re-verified in the PROJECT-017 spike across two independent runs).
  *
- * This program performs NO network access, executes no code from the input
- * file, and reads/writes only the two paths it is given as arguments.
+ * This program performs no network access at the application level and
+ * executes no code from the input file; it reads/writes only the two paths
+ * it is given as arguments. Independently of that source-level posture,
+ * the host launcher runs this program inside a kernel-enforced
+ * network-isolated context (a Linux user + network namespace whose only
+ * interface is a down loopback) under its default 'required' isolation
+ * policy — and refuses to run it at all when the host cannot provide that
+ * mechanism (fail closed).
  */
 public class MppSidecar {
 

@@ -17,10 +17,18 @@
  * carries none — the constraint surface is proven by the synthetic suites),
  * #26 diagnostics provenance (I10), #30 .gproj save/reopen (I12).
  * Items #11–#15/#17–#20 (sidecar failure/security classes) live in
- * launcher.test.ts + architecture.test.ts (java-independent injection).
+ * launcher.test.ts + network-isolation.test.ts + architecture.test.ts
+ * (java-independent injection).
  *
  * Performance evidence (brief §performance): representative wall times and
  * sizes are console-recorded per file for the verification matrix.
+ *
+ * Network-isolation posture (architect corrections round): this suite runs
+ * the REAL production posture — `networkIsolation: 'required'`, every
+ * sidecar process wrapped in a kernel network namespace — wherever the
+ * host provides the mechanism; on hosts that cannot, it explicitly opts
+ * out with the recorded notice below (the fail-closed refusal itself is
+ * proven deterministically in network-isolation.test.ts).
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -41,7 +49,12 @@ import {
   type MppDiagnostic,
 } from '@genoffice/project-file'
 import { schedule } from '@genoffice/project-scheduling'
-import { MppSidecarLauncher, importMppFromFile } from '../src/index.js'
+import {
+  MppSidecarLauncher,
+  importMppFromFile,
+  probeNetworkIsolation,
+  type NetworkIsolationPolicy,
+} from '../src/index.js'
 
 const DEPS = join(import.meta.dirname, '..', '.sidecar-deps')
 const CORPUS = join(DEPS, 'corpus')
@@ -68,7 +81,27 @@ const manifest = JSON.parse(
 ) as { corpus: ManifestEntry[] }
 
 const byName = new Map(manifest.corpus.map((entry) => [entry.filename, entry]))
-const launcher = new MppSidecarLauncher({ mpxjHome: join(DEPS, 'mpxj-16.7.0') })
+
+// Probe ONCE (cached): every real-corpus conversion below then runs under
+// the launcher's OS-enforced network isolation wherever the host supports
+// it — the CI log records which posture actually ran.
+const isolationCapability = await probeNetworkIsolation()
+const e2eIsolationPolicy: NetworkIsolationPolicy = isolationCapability.supported
+  ? 'required'
+  : 'off'
+if (isolationCapability.supported) {
+  console.info(
+    `[e2e] MPP sidecar network isolation: REQUIRED (${isolationCapability.mechanism}) — every conversion runs inside a kernel network namespace`,
+  )
+} else {
+  console.warn(
+    `[e2e] MPP sidecar network isolation: this host cannot provide the mechanism (${isolationCapability.reason}); running with the explicit 'off' opt-out — the fail-closed refusal is proven in network-isolation.test.ts`,
+  )
+}
+const launcher = new MppSidecarLauncher({
+  mpxjHome: join(DEPS, 'mpxj-16.7.0'),
+  networkIsolation: e2eIsolationPolicy,
+})
 
 let scratch: string
 beforeAll(() => {

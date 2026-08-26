@@ -2,12 +2,17 @@
  * PROJECT-018 — architecture/security discipline suite.
  *
  * Static guards over the increment's own surfaces:
- *   - the launcher never enables a shell and never uses exec-style calls;
+ *   - the launcher and the network-isolation module never enable a shell
+ *     and never use exec-style calls;
  *   - the host library never imports renderer/Electron surfaces;
  *   - the foundation package (project-file) never references the host
  *     package (dependency direction is host → foundation only);
- *   - the Java sidecar performs no network access and executes no
- *     subprocess of its own;
+ *   - the Java sidecar performs no application-level network access and
+ *     executes no subprocess of its own (the OS-level network denial is
+ *     enforced by the launcher's wrapper, tested in
+ *     network-isolation.test.ts);
+ *   - the enforced network-isolation semantics stay documented in the
+ *     specification (requirements/implementation lockstep);
  *   - licensing artifacts and version pins are present and consistent.
  */
 import { readFileSync, existsSync } from 'node:fs'
@@ -32,6 +37,14 @@ describe('launcher process discipline', () => {
     expect(source).toContain('shell: false')
   })
 
+  it('the network-isolation source never enables a shell and never uses exec()', () => {
+    const source = read('src/network-isolation.ts')
+    expect(source).not.toContain('shell: true')
+    expect(source).not.toMatch(/\bexec(?:Sync|File)?\s*\(/)
+    expect(source).not.toContain('execSync')
+    expect(source).toContain('shell: false')
+  })
+
   it('the import pipeline source never spawns processes itself', () => {
     const source = read('src/import-mpp.ts')
     expect(source).not.toMatch(/spawn|child_process/)
@@ -45,6 +58,7 @@ describe('host-library boundaries', () => {
       'src/launcher.ts',
       'src/protocol.ts',
       'src/import-mpp.ts',
+      'src/network-isolation.ts',
     ]) {
       const source = read(file)
       expect(source).not.toMatch(
@@ -72,11 +86,36 @@ describe('host-library boundaries', () => {
     }
   })
 
-  it('the Java sidecar performs no network access and spawns no subprocess', () => {
+  it('the Java sidecar performs no application-level network access and spawns no subprocess', () => {
     const source = read('java/MppSidecar.java')
     expect(source).not.toMatch(
       /java\.net|HttpURLConnection|Socket|Runtime\.getRuntime|ProcessBuilder/,
     )
+    // The source-level claim is explicitly framed as APPLICATION-level; the
+    // OS-level denial is the launcher's job (behaviorally proven in
+    // network-isolation.test.ts):
+    expect(source).toContain('no network access at the application level')
+  })
+})
+
+describe('specification / implementation lockstep', () => {
+  it('requirements.md documents the enforced network-isolation semantics (Option A, not a known limitation)', () => {
+    const requirements = readFileSync(join(REPO_ROOT, 'spec/project/requirements.md'), 'utf8')
+    const start = requirements.indexOf('## PROJECT-018')
+    expect(start).toBeGreaterThan(-1)
+    const section = requirements.slice(
+      start,
+      requirements.indexOf('\n## ', start + 1) === -1
+        ? undefined
+        : requirements.indexOf('\n## ', start + 1),
+    )
+    expect(section).toContain('network namespace')
+    expect(section).toContain("'required'")
+    expect(section).toContain("'off'")
+    expect(section).toContain('MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE')
+    expect(section).toContain('MPP_INPUT_UNREADABLE')
+    // The old static-only claim must be GONE from the security model:
+    expect(section).not.toContain('is NOT enforced and is recorded as a known limitation')
   })
 })
 

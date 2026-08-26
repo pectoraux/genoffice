@@ -2,10 +2,17 @@
  * PROJECT-018 — full MPP→canonical pipeline (host side).
  *
  *   MPP bytes / file
- *     → input-size validation                (MPP_INPUT_TOO_LARGE)
+ *     → input validation                    (MPP_INPUT_UNREADABLE for a
+ *                                          missing/unreadable path —
+ *                                          deliberately distinct from
+ *                                          MPP_INPUT_TOO_LARGE for size;
+ *                                          enforced before any process
+ *                                          is ever started)
  *     → isolated temp workspace              (unique dir per import,
  *                                            deterministically removed)
- *     → MPXJ sidecar conversion              (launcher; stage 'sidecar')
+ *     → MPXJ sidecar conversion              (launcher, inside the
+ *                                            OS-enforced network-isolated
+ *                                            context; stage 'sidecar')
  *     → importMppFromMspdi                   (foundation: N1–N5 → accepted
  *                                            PROJECT-015 importer → engine
  *                                            validation; stages
@@ -23,7 +30,7 @@
  * The input file is NEVER mutated; on failure no repository/project state
  * changes (the caller receives values only — this library owns no state).
  */
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdtempSync, openSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -33,6 +40,7 @@ import type {
 } from '@genoffice/project-contracts'
 import {
   MPP_INPUT_TOO_LARGE,
+  MPP_INPUT_UNREADABLE,
   MPP_MAX_INPUT_BYTES,
   emptyProjectDocument,
   importMppFromMspdi,
@@ -74,13 +82,20 @@ export async function importMppFromFile(
   let inputSize: number
   try {
     inputSize = statSync(inputPath).size
-  } catch {
-    // An unreadable input is an input-side failure, reported at the sidecar
-    // stage (the launcher never sees it — atomic, no partial state):
+    // Readability proof: stat alone does NOT require read permission on the
+    // file itself (only search permission on the parent directory), so a
+    // permission-denied input would otherwise surface later as a
+    // misleading sidecar-stage "unsupported format" refusal. Opening the
+    // file for reading (no data consumed) turns every input-side
+    // readability failure — missing path (ENOENT), permission (EACCES),
+    // any other I/O error — into the precise MPP_INPUT_UNREADABLE
+    // diagnostic, before any process is ever started:
+    closeSync(openSync(inputPath, 'r'))
+  } catch (error) {
     diagnostics.push({
-      code: MPP_INPUT_TOO_LARGE,
+      code: MPP_INPUT_UNREADABLE,
       severity: 'error',
-      message: `MPP input file cannot be read: ${inputPath}`,
+      message: `MPP input file cannot be read: ${inputPath} (${errorMessage(error)})`,
       stage: 'sidecar',
     })
     return { document: emptyProjectDocument(), diagnostics }
@@ -187,4 +202,8 @@ export function stageSchedulingDiagnostics(
   }>,
 ): MppDiagnostic[] {
   return diagnostics.map((d) => ({ ...d, stage: 'scheduling' }))
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

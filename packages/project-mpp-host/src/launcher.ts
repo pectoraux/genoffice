@@ -14,6 +14,12 @@
  *   - DIRECT argument arrays: the MPP path/requestId are passed as argv
  *     entries, never interpolated into a command string; `shell` is never
  *     enabled. No shell injection surface exists.
+ *   - OS-ENFORCED NETWORK ISOLATION (default policy 'required'): the JVM is
+ *     wrapped in a fresh kernel network namespace (unshare --net
+ *     --map-root-user — see network-isolation.ts); a host that cannot
+ *     provide the mechanism FAILS CLOSED with
+ *     MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE and no process is started.
+ *     'off' is an explicit operator opt-out.
  *   - headless JVM (`-Djava.awt.headless=true`) and a hard `-Xmx` cap.
  *   - Wall-clock timeout with SIGTERM→SIGKILL escalation.
  *   - stdout/stderr accumulation caps.
@@ -30,6 +36,7 @@ import {
   MPP_MAX_MSPDI_OUTPUT_BYTES,
   MPP_OUTPUT_TOO_LARGE,
   MPP_SIDECAR_EXIT,
+  MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE,
   MPP_SIDECAR_RESPONSE_INVALID,
   MPP_SIDECAR_TIMEOUT,
   MPP_SIDECAR_UNAVAILABLE,
@@ -38,6 +45,12 @@ import {
   type MppSidecarFrame,
 } from '@genoffice/project-file'
 import { parseSidecarFrame } from './protocol.js'
+import {
+  DEFAULT_UNSHARE_EXECUTABLE,
+  probeNetworkIsolation,
+  wrapNetworkIsolated,
+  type NetworkIsolationPolicy,
+} from './network-isolation.js'
 
 /** Default conversion timeout (30 s — the PROJECT-017 spike converted every
  * corpus file in the sub-second range once the JVM was warm). */
@@ -72,13 +85,25 @@ export interface MppSidecarLauncherConfig {
    * callers never set this; the failure-injection suite uses it to drive
    * the REAL process-management logic (timeouts, exit codes, frame
    * validation) with a deterministic stand-in executable. The command is
-   * still spawned with a direct argument array and no shell.
+   * still spawned with a direct argument array and no shell — and still
+   * wrapped by the network-isolation policy below.
    */
   readonly commandBuilder?: (
     inputPath: string,
     outputPath: string,
     requestId: string,
   ) => { command: string; args: readonly string[] }
+  /** OS network-isolation policy for the sidecar process. DEFAULT
+   * 'required': the conversion only runs inside the kernel-enforced
+   * network-isolated context (Linux user + network namespace); a host
+   * that cannot provide it fails closed with
+   * MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE and no process is started.
+   * 'off' is an explicit operator opt-out (local development only). */
+  readonly networkIsolation?: NetworkIsolationPolicy
+  /** The isolation wrapper executable (default 'unshare'); also the probe
+   * target. Exposed as config so the behavioral isolation tests can point
+   * it at a recording stand-in. */
+  readonly unshareExecutable?: string
 }
 
 /** A successful conversion: the MSPDI bytes plus the validated frame. */
@@ -134,7 +159,12 @@ export class MppSidecarLauncher {
   private readonly config: Required<
     Pick<
       MppSidecarLauncherConfig,
-      'javaExecutable' | 'timeoutMs' | 'maxStderrLength' | 'maxOutputBytes'
+      | 'javaExecutable'
+      | 'timeoutMs'
+      | 'maxStderrLength'
+      | 'maxOutputBytes'
+      | 'networkIsolation'
+      | 'unshareExecutable'
     >
   > &
     MppSidecarLauncherConfig
@@ -145,11 +175,19 @@ export class MppSidecarLauncher {
       timeoutMs: config.timeoutMs ?? MPP_DEFAULT_TIMEOUT_MS,
       maxStderrLength: config.maxStderrLength ?? DEFAULT_MAX_STDERR_LENGTH,
       maxOutputBytes: config.maxOutputBytes ?? MPP_MAX_MSPDI_OUTPUT_BYTES,
+      networkIsolation: config.networkIsolation ?? 'required',
+      unshareExecutable: config.unshareExecutable ?? DEFAULT_UNSHARE_EXECUTABLE,
       javaArgs: config.javaArgs,
       sidecarSource: config.sidecarSource,
       mpxjHome: config.mpxjHome,
       commandBuilder: config.commandBuilder,
     }
+  }
+
+  /** The configured network-isolation policy (exposed for tests asserting
+   * the production default posture). */
+  get networkIsolationPolicy(): NetworkIsolationPolicy {
+    return this.config.networkIsolation
   }
 
   /**
@@ -165,15 +203,50 @@ export class MppSidecarLauncher {
     const built = this.config.commandBuilder
       ? this.config.commandBuilder(inputPath, outputPath, requestId)
       : buildSidecarCommand(this.config, inputPath, outputPath, requestId)
-    return this.run(built.command, built.args, requestId, outputPath)
+    return this.runIsolated(built, requestId, outputPath)
   }
 
-  /** Run the sidecar command (argument array) and interpret the outcome. */
+  /** Apply the network-isolation policy to the built sidecar command, then
+   * run it: 'required' (default) wraps the command in the kernel network
+   * namespace and FAILS CLOSED — refusing the conversion, starting no
+   * sidecar process — when the host cannot provide the mechanism; 'off'
+   * runs the command unwrapped by explicit operator decision. */
+  private async runIsolated(
+    built: { command: string; args: readonly string[] },
+    requestId: string,
+    outputPath: string,
+  ): Promise<MppConversionResult> {
+    if (this.config.networkIsolation === 'off') {
+      return this.run(built.command, built.args, requestId, outputPath, false)
+    }
+    const capability = await probeNetworkIsolation(this.config.unshareExecutable)
+    if (!capability.supported) {
+      return {
+        ok: false,
+        diagnostics: [
+          sidecarError(
+            MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE,
+            `the sidecar requires OS-enforced network isolation, but this host cannot provide it (${capability.reason ?? 'unknown reason'}); the conversion failed closed — the sidecar was not started`,
+          ),
+        ],
+      }
+    }
+    const wrapped = wrapNetworkIsolated(this.config.unshareExecutable, built.command, built.args)
+    return this.run(wrapped.command, wrapped.args, requestId, outputPath, true)
+  }
+
+  /** Run the sidecar command (argument array) and interpret the outcome.
+   * `wrapped` records whether the command is the isolation wrapper — under
+   * the wrapper a missing/unstartable sidecar executable surfaces as the
+   * wrapper's exit 127 + "failed to execute" stderr, which is mapped back
+   * to the semantically-correct MPP_SIDECAR_UNAVAILABLE (never a misleading
+   * "conversion exited nonzero"). */
   private run(
     command: string,
     args: readonly string[],
     requestId: string,
     outputPath: string,
+    wrapped: boolean,
   ): Promise<MppConversionResult> {
     return new Promise((resolve) => {
       let child: ReturnType<typeof spawn>
@@ -260,12 +333,17 @@ export class MppSidecarLauncher {
           return
         }
         if (code !== 0) {
+          // Under the isolation wrapper, a missing/unstartable sidecar
+          // executable surfaces as the wrapper's exit 127 with a
+          // "failed to execute" stderr — map it back to the precise
+          // MPP_SIDECAR_UNAVAILABLE (the sidecar could not be started):
+          const execFailure = wrapped && code === 127 && /failed to execute/i.test(stderr)
           finish({
             ok: false,
             diagnostics: [
               sidecarError(
-                MPP_SIDECAR_EXIT,
-                `sidecar exited with code ${String(code)}${stderr.trim() ? `: ${truncate(stderr.trim(), 512)}` : ''}`,
+                execFailure ? MPP_SIDECAR_UNAVAILABLE : MPP_SIDECAR_EXIT,
+                `sidecar ${execFailure ? 'executable could not be started' : `exited with code ${String(code)}`}${stderr.trim() ? `: ${truncate(stderr.trim(), 512)}` : ''}`,
               ),
             ],
           })
