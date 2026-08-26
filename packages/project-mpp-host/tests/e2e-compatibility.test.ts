@@ -103,64 +103,72 @@ const detectedFormats = new Set<string>()
 
 describe('PROJECT-020 — real-corpus compatibility reports', () => {
   for (const entry of manifest.corpus) {
-    it(`${entry.filename}: full-pipeline compatibility report (N1–N5 classified, manifest-conformant, deterministic)`, async () => {
-      const first = await importMppFromFileWithCompatibility(join(CORPUS, entry.filename), {
-        launcher,
-      })
-      const report = first.report
+    // Each test runs TWO full pipeline passes (2× JVM conversion) under the
+    // enforced isolation wrapper — a generous explicit timeout keeps slow
+    // shared CI runners honest (the files themselves run sequentially —
+    // see vitest.config.ts).
+    it(
+      `${entry.filename}: full-pipeline compatibility report (N1–N5 classified, manifest-conformant, deterministic)`,
+      { timeout: 120_000 },
+      async () => {
+        const first = await importMppFromFileWithCompatibility(join(CORPUS, entry.filename), {
+          launcher,
+        })
+        const report = first.report
 
-      // The honest source version is the sidecar's DETECTED format
-      // (byte-true container generation — not the filename label):
-      expect(report.format).toBe('mpp')
-      expect(report.sourceVersion).toBe(entry.detectedFormat)
-      detectedFormats.add(entry.detectedFormat)
+        // The honest source version is the sidecar's DETECTED format
+        // (byte-true container generation — not the filename label):
+        expect(report.format).toBe('mpp')
+        expect(report.sourceVersion).toBe(entry.detectedFormat)
+        detectedFormats.add(entry.detectedFormat)
 
-      // Status dimensions: every corpus file imports (possibly with
-      // degradation), passes canonical validation, and schedules:
-      expect(report.status.validation).toBe('success')
-      expect(report.status.scheduling).toBe('success')
-      expect(report.authoritative).toBe(true)
-      expect(report.saveEligibility).toBe('allowed')
-      expect(report.status.import).not.toBe('failure')
-      if (entry.expectedErrors > 0) {
-        expect(report.status.import).toBe('success-with-errors')
-      }
+        // Status dimensions: every corpus file imports (possibly with
+        // degradation), passes canonical validation, and schedules:
+        expect(report.status.validation).toBe('success')
+        expect(report.status.scheduling).toBe('success')
+        expect(report.authoritative).toBe(true)
+        expect(report.saveEligibility).toBe('allowed')
+        expect(report.status.import).not.toBe('failure')
+        if (entry.expectedErrors > 0) {
+          expect(report.status.import).toBe('success-with-errors')
+        }
 
-      // The manifest's expected N1–N5 counts as classified normalization
-      // diagnostics (warnings for N5 — expected loss; infos for N1–N4):
-      const count = (code: string): number =>
-        report.diagnostics.filter((d) => d.code === code).length
-      expect(count(MPP_NORMALIZED_SENTINEL_REFERENCE)).toBe(entry.expectedNormalizations.N1)
-      expect(count(MPP_NORMALIZED_BASE_CALENDAR_SENTINEL)).toBe(entry.expectedNormalizations.N2)
-      expect(count(MPP_NORMALIZED_PLACEHOLDER_RECORD)).toBe(entry.expectedNormalizations.N3)
-      expect(count(MPP_NORMALIZED_MIDNIGHT_PERIOD)).toBe(entry.expectedNormalizations.N4)
-      expect(count(MPP_DROPPED_UNASSIGNED_ASSIGNMENT)).toBe(entry.expectedNormalizations.N5)
-      // Every N-family entry is classified, never silent:
-      for (const d of report.diagnostics) {
-        if (d.stage === 'normalization') expect(d.loss).not.toBe('none')
-      }
+        // The manifest's expected N1–N5 counts as classified normalization
+        // diagnostics (warnings for N5 — expected loss; infos for N1–N4):
+        const count = (code: string): number =>
+          report.diagnostics.filter((d) => d.code === code).length
+        expect(count(MPP_NORMALIZED_SENTINEL_REFERENCE)).toBe(entry.expectedNormalizations.N1)
+        expect(count(MPP_NORMALIZED_BASE_CALENDAR_SENTINEL)).toBe(entry.expectedNormalizations.N2)
+        expect(count(MPP_NORMALIZED_PLACEHOLDER_RECORD)).toBe(entry.expectedNormalizations.N3)
+        expect(count(MPP_NORMALIZED_MIDNIGHT_PERIOD)).toBe(entry.expectedNormalizations.N4)
+        expect(count(MPP_DROPPED_UNASSIGNED_ASSIGNMENT)).toBe(entry.expectedNormalizations.N5)
+        // Every N-family entry is classified, never silent:
+        for (const d of report.diagnostics) {
+          if (d.stage === 'normalization') expect(d.loss).not.toBe('none')
+        }
 
-      // The manifest's expected error count, as classified error entries
-      // (entity-level partial recovery — the document stays authoritative):
-      expect(report.errorCount).toBe(entry.expectedErrors)
-      expect(
-        report.diagnostics
-          .filter((d) => d.severity === 'error')
-          .every((d) => d.recoverability === 'partial' && d.stage !== 'scheduling'),
-      ).toBe(true)
+        // The manifest's expected error count, as classified error entries
+        // (entity-level partial recovery — the document stays authoritative):
+        expect(report.errorCount).toBe(entry.expectedErrors)
+        expect(
+          report.diagnostics
+            .filter((d) => d.severity === 'error')
+            .every((d) => d.recoverability === 'partial' && d.stage !== 'scheduling'),
+        ).toBe(true)
 
-      // The canonical shape contract (the accepted I-golden invariant):
-      expect(first.document.tasks).toHaveLength(entry.canonical.tasks)
+        // The canonical shape contract (the accepted I-golden invariant):
+        expect(first.document.tasks).toHaveLength(entry.canonical.tasks)
 
-      // Determinism: a second full pipeline run gives the byte-identical
-      // report, canonical document, and derived schedule:
-      const second = await importMppFromFileWithCompatibility(join(CORPUS, entry.filename), {
-        launcher,
-      })
-      expect(json(second.report)).toBe(json(report))
-      expect(serializeGproj(second.document)).toEqual(serializeGproj(first.document))
-      expect(json(schedule(second.document))).toBe(json(schedule(first.document)))
-    })
+        // Determinism: a second full pipeline run gives the byte-identical
+        // report, canonical document, and derived schedule:
+        const second = await importMppFromFileWithCompatibility(join(CORPUS, entry.filename), {
+          launcher,
+        })
+        expect(json(second.report)).toBe(json(report))
+        expect(serializeGproj(second.document)).toEqual(serializeGproj(first.document))
+        expect(json(schedule(second.document))).toBe(json(schedule(first.document)))
+      },
+    )
   }
 
   it('the corpus covers every MPP format family through the compatibility layer (from the per-file reports)', () => {
