@@ -1,12 +1,12 @@
 /**
- * PROJECT-015 — MSPDI import public surface.
+ * PROJECT-015 / PROJECT-016 — MSPDI public surface.
  *
  * Exposed alongside the native `.gproj` adapter (PROJECT-014). The MSPDI
  * adapter reuses the same `ProjectFileAdapter` boundary, `ImportDiagnostic`
  * contract, brand-promotion helpers, and `validateProjectDocument` pipeline —
  * it does NOT introduce a second file-adapter abstraction. It exposes
- * `inspect` + `import` only (NO `export` — PROJECT-016 MSPDI export is
- * explicitly unauthorized).
+ * `inspect` + `import` (PROJECT-015) and `export` (PROJECT-016 — canonical
+ * `ProjectDocument` → deterministic MSPDI XML).
  */
 export {
   mspdiFileAdapter,
@@ -15,6 +15,7 @@ export {
   type MspdiFileAdapter,
   type MspdiImportResult,
 } from './importer.js'
+export { exportMspdi, type MspdiExportResult } from './exporter.js'
 export {
   MSPDI_FORMAT,
   MSPDI_FORMAT_VERSION,
@@ -73,3 +74,13 @@ export {
   MSPDI_READ,
   MSPDI_DIAGNOSTIC_CODES,
 } from './diagnostics.js'
+export {
+  INVALID_MSPDI_EXPORT,
+  INVALID_MSPDI_EXPORT_LAG,
+  UNREPRESENTABLE_MSPDI_VALUE,
+  UNSUPPORTED_MSPDI_EXPORT_FEATURE,
+  MSPDI_EXPORT_NORMALIZED,
+  MSPDI_WRITTEN,
+  MSPDI_EXPORT_DIAGNOSTIC_CODES,
+} from './diagnostics.js'
+export { escapeXmlText, escapeXmlAttribute, isValidXmlName, XmlWriter } from './xml-writer.js'

@@ -13,7 +13,8 @@
  *     empty/partial document (never a crash, never a silent discard).
  *   - Adversarial XML (DOCTYPE entity bomb, deep nesting, malformed) is
  *     rejected as `INVALID_MSPDI` with the empty document.
- *   - No MSPDI export surface exists (PROJECT-016 is unauthorized).
+ *   - The export surface now exists (PROJECT-016 authorized it); its own
+ *     dedicated suite is `tests/mspdi-export.test.ts`.
  */
 import { describe, expect, it } from 'vitest'
 import { schedule } from '@genoffice/project-scheduling'
@@ -65,6 +66,7 @@ import {
   taskXml,
   STANDARD_CALENDAR_XML,
 } from './mspdi-fixtures.js'
+import { e01Minimal } from './mspdi-export-fixtures.js'
 import { encodeUtf8 } from '../src/utf8.js'
 
 // ---- helpers ------------------------------------------------------------
@@ -1075,8 +1077,15 @@ describe('PROJECT-015 — adapter surface + identity + boundary', () => {
     expect(r.document.dependencies).toHaveLength(2)
   })
 
-  it('mspdiFileAdapter has NO export method (PROJECT-016 unauthorized)', () => {
-    expect((mspdiFileAdapter as Record<string, unknown>).export).toBeUndefined()
+  it('mspdiFileAdapter.export exists and is the canonical export path (PROJECT-016)', () => {
+    // PROJECT-015 delivered the adapter import-only; PROJECT-016 authorized
+    // and added the export direction behind the same adapter boundary.
+    const r = mspdiFileAdapter.export(e01Minimal())
+    expect(r.bytes.length).toBeGreaterThan(0)
+    expect(r.diagnostics.every((d) => d.severity !== 'error')).toBe(true)
+    const back = mspdiFileAdapter.import(r.bytes)
+    expectNoErrors(back.diagnostics)
+    expect(back.document.tasks).toHaveLength(1)
   })
 
   it('MSPDI_READ info diagnostic is emitted on success', () => {
