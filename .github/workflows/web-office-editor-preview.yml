@@ -98,4 +98,5 @@ jobs:
 
       - name: Report preview URL
         if: always()
-        run: echo "Web Office Editor preview: ${{ steps.deploy.outputs.url }}"
+        run: |
+          echo "Web Office Editor preview: ${{ steps.deploy.outputs.url }}"
