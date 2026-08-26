@@ -18,6 +18,9 @@ export default tseslint.config(
       'scripts/drivers/**',
       'apps/*/build/**',
       'packages/*/src/vendor/**',
+      // Pinned-download MPXJ sidecar artifacts (PROJECT-018): gitignored
+      // third-party distribution + corpus — never linted, never committed.
+      'packages/project-mpp-host/.sidecar-deps/**',
       // Generated esbuild bundle committed for the Vercel serverless function
       // (rebuilt by `bun run build:api` on every deploy — never hand-edited).
       'api/serverless.mjs',

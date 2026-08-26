@@ -1,0 +1,6 @@
+# Downloaded sidecar dependencies (never committed — LGPL artifacts stay
+# external to the repository; see corpus/corpus-manifest.json and
+# scripts/fetch-sidecar-deps.mjs):
+.sidecar-deps/
+# Scratch conversion workspaces:
+.tmp/

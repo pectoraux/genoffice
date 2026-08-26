@@ -54,3 +54,14 @@ jobs:
         run: npm run typecheck -w @genoffice/project-file
       - name: Test project-file
         run: npm test -w @genoffice/project-file
+      - name: Setup Java (MPXJ sidecar)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Fetch MPP sidecar dependencies
+        run: node packages/project-mpp-host/scripts/fetch-sidecar-deps.mjs
+      - name: Typecheck project-mpp-host
+        run: npm run typecheck -w @genoffice/project-mpp-host
+      - name: Test project-mpp-host
+        run: npm test -w @genoffice/project-mpp-host
