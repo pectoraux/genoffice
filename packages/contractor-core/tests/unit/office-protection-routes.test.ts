@@ -18,7 +18,7 @@ const FILE_BYTES = Buffer.from('placeholder-xlsx-bytes').toString('base64')
 
 async function save(plan: {
   edits?: unknown[]
-  sheetProtections?: unknown[]
+  sheetProtections?: unknown
   workbookProtectionState?: unknown
 }): Promise<{ status: number; body: Record<string, unknown> }> {
   const res = await routeOffice({
