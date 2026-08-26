@@ -80,3 +80,16 @@ PROJECT-016 (MSPDI export) reuses the accepted package boundary — the exporter
 ```
 
 `@genoffice/project-file` STILL does NOT statically depend on `@genoffice/project-scheduling` — the exporter delegates validation to `validateProjectDocument` (`@genoffice/project-engine`) and never consults `DerivedSchedule` or runs a scheduler (a static source guard in the test suite asserts the absence of the scheduling import). The MSPDI XML writer is a pure-TypeScript serializer (`src/mspdi/xml-writer.ts`) — NO external XML library, NO `DOMParser`/`XMLSerializer`, NO Node `fs` (architecture-lock §13). The PROJECT-015 test-suite precedent applies: tests import `schedule`/`resolveCalendar` from `@genoffice/project-scheduling` to prove round-tripped documents schedule identically, but the package itself does not. The work-item chain `014 → 015 → 016` is complete; `016 → 017` (MPP feasibility) remains the next edge.
+
+## Package dependency edges (PROJECT-017)
+
+PROJECT-017 (MPP adapter feasibility) is an investigation — it introduces NO new package and NO new package edge. The added artifacts are `spec/project/mpp-feasibility.md` (the report deliverable) and `packages/project-file/tests/mpp-feasibility.test.ts` (a discipline suite importing only `vitest` plus `?raw` module sources — the report, `packages/project-file/package.json`, and `spec/project/architecture-lock.md`; no runtime import of any kind, no `node:`/`fs`/network access, satisfying the same CI boundary grep as every other project-file test).
+
+Static package dependencies remain exactly as accepted since PROJECT-014:
+
+```text
+@genoffice/project-file → @genoffice/project-engine → @genoffice/project-contracts
+@genoffice/project-file → @genoffice/project-contracts (direct, for types + brand helpers)
+```
+
+The spike that grounds the report ran entirely outside the repository (MPXJ 16.7.0 + OpenJDK 21 in a disposable `/tmp` workspace); nothing entered any package. The work-item chain `014 → 015 → 016 → 017` is complete; `017 → 018` (MPP import) remains the next edge — contingent on the Principal Architect accepting the report's recommended strategy (externalized MPXJ sidecar + foundation-level normalization-only adapter contract; see `spec/project/mpp-feasibility.md` §15/§16). MPP export (PROJECT-019) is recommended for rescoping to a diagnostic-only deliverable per report §17.
