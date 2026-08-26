@@ -516,3 +516,54 @@ Stage Summary:
 - EXCEL-018-specific code correctness is fully green: unit tests (183/183),
   typecheck, production build, EXCEL-018 E2E (3/3), Excel regression batch 1
   (28/28), and CI `web` job (the canonical web gate).
+
+---
+
+## 2026-08-26 — EXCEL-018 post-push CI evidence (final)
+
+Task ID: EXCEL-018-post-push-evidence
+Agent: Z.ai (Implementation Agent, session resume)
+
+Task:
+
+- Collect post-push CI evidence for commit 951470d.
+- Diagnose any remaining CI failures.
+- Run deployed E2E against the pushed commit.
+- Leave the workflow status at ARCHITECT_REVIEW — the architect owns VERIFIED.
+
+Work Log:
+
+- Pushed fix commit `951470d` to `origin/web-office-editor`.
+- PR #1 head updated to `951470d` (verified via GitHub API).
+- CI re-ran on `951470d`:
+  - `web` job (canonical EXCEL-018 gate): SUCCESS — typecheck + unit + production build + 77 Playwright browser E2E tests all green (7.2 min runtime). This independently verifies EXCEL-018 on CI.
+  - `test` job: FAILURE — but the prior format:check failure is now FIXED. The remaining failure is `npm run lint` reporting 350 pre-existing lint errors across non-EXCEL-018 files: desktop Electron apps (`apps/sheets`, `apps/docs`, `apps/slides` — frozen surfaces), other web screens (`BOQ.tsx`, `Bid.tsx`, `Estimate.tsx`, `WordEditor.tsx`), other packages (`contractor-core`, `platform-electron`), and skill scripts (`skills/pdf`, `skills/podcast-generate`, `skills/stock-analysis-skill`, `skills/video-generation`, `skills/web-shader-extractor`). NONE of my EXCEL-018 files (`dedupe.ts`, `useExcelRuntime.ts`, `Ribbon.tsx`, `dedupe.test.ts`, `ribbon-remove-duplicates.spec.ts`, `architecture.test.ts`, `fixtures.ts`, `theme.css`) appear in the lint errors. My YAML fix unblocked format:check which then exposed pre-existing lint debt.
+  - `e2e` job: FAILURE — 10 failures out of 36 tests in the FROZEN desktop Electron shell suite (`apps/shell/**`). 4 failures are `chromium_headless_shell-1234 binary missing` (Playwright/runner environment issue, not code), and 6 are desktop sheets Electron test failures (`sheets-ribbon-batch`, `sheets-insert-gallery`, `sheets-move-rows` — all frozen-surface tests that I did not touch). The desktop Electron suite has nothing to do with EXCEL-018 (the web app suite passed via the `web` job).
+  - `foundation` job: FAILURE — pre-existing structural condition. The Project Foundation workflow's "Verify branch isolation" step diffs `origin/main...HEAD` and flags any change to `apps/sheets/`, `apps/web/src/screens/excel/`, `packages/xlsx-gateway/`, or `packages/docx-engine/`. Since `web-office-editor` carries the entire Excel parity phase work (EXCEL-001 through EXCEL-019), this check fails for EVERY commit on the branch — not a regression from EXCEL-018.
+  - `web-office-editor-preview` workflow: FAILED at "Verify deployed Excel/Web parity" step (61 of 77 deployed E2E tests fail with `TimeoutError: locator.click` at `loginByDemoOwner` — `getByRole('button', { name: 'Owner' })` cannot find the demo login button). Root cause: the workflow's `VERCEL_PROJECT_ID` secret points to a DIFFERENT Vercel project under `ekonplacidegmailcoms-projects` (the deployed preview URL `genoffice-mbjcnc903-ekonplacidegmailcoms-projects.vercel.app` returns Next.js HTML with `/_next/static/...` paths — a completely different app), NOT the genoffice Vite project that produces `genoffice.vercel.app`. The deployed app is not the GenOffice web app, so login fails universally. This is a GitHub Actions secret misconfiguration — not an EXCEL-018 code issue. It would fail identically for any commit pushed to `web-office-editor`.
+- Production deployment `genoffice.vercel.app` is reachable (HTTP 200, "Contractor GenOffice" title), but it's the production deployment from `main` (bundle hash `DTLz9NXJ` differs from my local `B0iaYdNe`), so it does NOT yet have EXCEL-018 deployed. The architect must merge PR #1 to `main` for EXCEL-018 to reach production.
+
+Local evidence recap (this session, all green):
+
+- Pure dedupe algorithm: `apps/web/src/office/dedupe.ts` (89 LOC, zero imports) is a verbatim port of frozen desktop reference `apps/sheets/src/renderer/dedupe.ts` (line-for-line identical semantics).
+- Wiring: `apps/web/src/screens/excel/useExcelRuntime.ts:721-809` mirrors `apps/sheets/src/renderer/ribbon-actions.ts:1267-1309` (fail-closed on `<2` rows, fail-closed on `removed===0`, pad-with-nulls, only-rewrite-changed-rows, `FWorksheet.getRange().setValues()` through the canonical facade).
+- Frozen-surface diff `git diff --stat 711c8f2 HEAD -- apps/sheets apps/docs apps/shell packages/platform-electron packages/renderer-bridge` is EMPTY — no frozen surfaces touched.
+- No new mutation-family or save-plan writer introduced (the only new file under `apps/web/src/office/*.ts` is `dedupe.ts` — a pure algorithm module).
+- Unit tests (vitest): 183/183 pass (10 test files including `dedupe.test.ts` 14/14 and `architecture.test.ts` 23/23 with 8 new EXCEL-018 canonical-path guards).
+- Typecheck (`tsc --noEmit`): exit 0.
+- Production build (`vite build`): succeeds in 19.12s.
+- EXCEL-018 E2E (`ribbon-remove-duplicates.spec.ts`): 3/3 pass (basic dupes + header + multi-column key + styles survive + formula semantic + save/reopen + XML inspection; no-op fail-closed; `<2-row` fail-closed).
+- Mandatory regression E2E (13 specs, 57 tests, all green): excel-shell 15, excel-browser 1, excel-format 3, excel-formula 8, excel-structural 2 (batch 1, 28/28, 3.1m); ribbon-data 4 (including the architect's sort/formula semantic gate at line 537 — relative refs rewrite, absolute refs untouched), ribbon-view 3, ribbon-filter 5, ribbon-data-validation 7, ribbon-review-notes 5, ribbon-home-persistence 3, ribbon-insert 1, word-browser 1 (batch 2, 29/29, 3.7m).
+- Total local E2E: 60/60 (3 + 28 + 29).
+
+CI evidence recap (commit `951470d`, all green for EXCEL-018):
+
+- `web` job: 77/77 Playwright browser E2E pass on CI in 7.2 min — includes all 3 EXCEL-018 tests AND the architect's sort/formula semantic gate. This is the canonical CI gate for web app code correctness.
+
+Stage Summary:
+
+- Implementation complete and pushed to PR #1 (head `951470d`).
+- All EXCEL-018-specific code correctness evidence is GREEN (local + CI `web` job).
+- Pre-existing CI failures (`foundation`, `test`/lint, `e2e`/Electron) are out of scope for EXCEL-018 and would fail identically for any commit on `web-office-editor` — they reflect either broader codebase debt or the PR's branch strategy.
+- Deployed E2E in the `web-office-editor-preview` workflow fails due to a GitHub Actions secret misconfiguration (`VERCEL_PROJECT_ID` pointing to a Next.js Vercel project, not the genoffice Vite project). This is an infrastructure fix the architect must apply — it is not blocked by EXCEL-018 code.
+- Workflow status remains ARCHITECT_REVIEW. Z.ai (implementer) does NOT own the VERIFIED decision.
