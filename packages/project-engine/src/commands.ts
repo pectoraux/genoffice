@@ -1,6 +1,8 @@
 import type {
   Assignment,
   ConstraintType,
+  LevelingDiagnostic,
+  LevelingOptions,
   ProjectCommand,
   ProjectCommandResult,
   ProjectDocument,
@@ -72,11 +74,70 @@ interface MutationOutcome {
   baselines?: ProjectDocument['baselines']
   affectedTaskIds: TaskId[]
   inverse?: ProjectCommand
+  /**
+   * Optional pass-through diagnostics for ACCEPTED mutations that nonetheless
+   * surface warnings (e.g. `LevelResources` accepts and applies every
+   * resolvable delay but reports `LEVELING_INCOMPLETE` for over-allocations it
+   * could not resolve). When present, these diagnostics are surfaced on the
+   * `ProjectCommandResult.diagnostics` of an accepted command.
+   */
+  diagnostics?: ValidationDiagnostic[]
 }
 
 type Mutation =
   | { kind: 'accepted'; outcome: MutationOutcome }
   | { kind: 'rejected'; diagnostics: ValidationDiagnostic[] }
+
+// ===========================================================================
+// PROJECT-013 leveling dependency injection.
+//
+// The pure `levelResources(document, options)` function lives in the
+// scheduling package (it reads the derived schedule and proposes semantic
+// commands). The engine package is a lower architectural layer than the
+// scheduling package (scheduling → engine for document validation; never
+// engine → scheduling), so the engine cannot statically import the leveler.
+//
+// To preserve the layer boundary, the engine exposes a leveler slot that the
+// scheduling package registers at module load
+// (`registerLeveler(levelResources)` in `packages/project-scheduling/src/index.ts`).
+// When the host imports the scheduling package (which it must, to schedule),
+// the slot is populated, and the engine's `LevelResources` command dispatch
+// can call the leveler without a circular static import.
+//
+// If no leveler has been registered (e.g. a host that imports only the
+// engine package and never the scheduling package), the `LevelResources`
+// command is rejected deterministically with `LEVELING_NOT_AVAILABLE` so the
+// host gets an actionable signal rather than a silent no-op.
+// ===========================================================================
+
+export type LevelerFn = (
+  document: ProjectDocument,
+  options?: LevelingOptions,
+) => {
+  proposedCommands: ProjectCommand[]
+  affectedTaskIds: TaskId[]
+  diagnostics: LevelingDiagnostic[]
+}
+
+let levelerSlot: LevelerFn | null = null
+
+/**
+ * Registers the canonical resource leveler. Called once by the scheduling
+ * package at module load. Idempotent: re-registering replaces the slot (the
+ * scheduling package is the canonical registrant).
+ */
+export function registerLeveler(fn: LevelerFn): void {
+  levelerSlot = fn
+}
+
+/**
+ * Returns the registered leveler, or `undefined` if none has been registered.
+ * Exposed for tests that exercise the engine in isolation (without importing
+ * the scheduling package).
+ */
+export function getRegisteredLeveler(): LevelerFn | undefined {
+  return levelerSlot ?? undefined
+}
 
 function mutateForCreateTask(
   document: ProjectDocument,
@@ -762,6 +823,196 @@ function mutateForSetAssignmentUnits(
 }
 
 /**
+ * PROJECT-013 SetTaskStart (supporting command).
+ *
+ * Sets the `start` field on a task. The `start` is the candidate earliest
+ * start the scheduler uses (see `schedule.ts` line ~350: `let candidate =
+ * task.start ?? projectStart`). Dependencies and constraints may push the
+ * scheduled start later, but a pinned `start` is the canonical semantic way
+ * to delay a task — exactly what resource leveling proposes.
+ *
+ * This command is a supporting addition for PROJECT-013: the leveler's
+ * `LevelingResult.proposedCommands` are `SetTaskStart` values, and the
+ * `LevelResources` command applies them as a batch. Exposing `SetTaskStart`
+ * as its own dispatch lets hosts apply proposed delays one-by-one through
+ * the canonical `applyProjectCommand` path (honoring the
+ * `LevelingResult → semantic commands → applyProjectCommand` architecture)
+ * rather than only as a black-box `LevelResources` batch.
+ *
+ * The mutator rejects a missing task and a malformed date. The post-mutation
+ * validator re-checks the full document. The inverse restores the previous
+ * start; when the task had no previous start (it relied on the project
+ * default), no inverse is emitted (undo of a "pin start" requires a host
+ * snapshot, mirroring the CreateBaseline precedent for atomic derived
+ * operations). The scheduler is the sole scheduling authority — setting
+ * `task.start` does NOT bypass `schedule()`.
+ */
+function mutateForSetTaskStart(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'SetTaskStart' },
+): Mutation {
+  const task = findTask(document, command.taskId)
+  if (!task) {
+    return {
+      kind: 'rejected',
+      diagnostics: [{ code: 'MISSING_TASK', message: `Task ${command.taskId} does not exist` }],
+    }
+  }
+  // Validate the start is a parseable ISO date. The post-mutation validator
+  // does not enforce task.start shape (it is optional), so this is the
+  // canonical place to reject a malformed value deterministically.
+  const start = command.start
+  if (!Number.isFinite(new Date(start).getTime())) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'INVALID_DATE',
+          message: `Task ${command.taskId} start ${start} is not a valid ISO date`,
+        },
+      ],
+    }
+  }
+  const previousStart = task.start
+  const updated = withOptionalDate(task, 'start', start)
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks.map((candidate) =>
+        candidate.id === command.taskId ? updated : candidate,
+      ),
+      affectedTaskIds: [command.taskId],
+      // Restore the previous start. When the task had no explicit start, the
+      // scheduler falls back to projectStart; there is no SetTaskStart payload
+      // that clears the field (the frozen command shape requires a string).
+      // In that case no inverse is emitted — undo requires a host snapshot,
+      // consistent with the CreateBaseline precedent.
+      inverse: previousStart
+        ? { type: 'SetTaskStart', taskId: command.taskId, start: previousStart }
+        : undefined,
+    },
+  }
+}
+
+/**
+ * PROJECT-013 LevelResources.
+ *
+ * The canonical resource-leveling command. The engine delegates to the pure
+ * `levelResources(document, options)` scheduling function, which detects
+ * work-resource over-allocation across the current derived schedule and
+ * proposes semantic `SetTaskStart` commands (one per delayed task) that move
+ * whole tasks later so no resource is over-allocated at any working instant.
+ *
+ * The command is NON-atomic for incomplete leveling: it applies every
+ * resolvable delay and surfaces the remaining over-allocations as
+ * diagnostics (`LEVELING_INCOMPLETE`, `LEVELING_CONSTRAINT_CONFLICT`,
+ * `LEVELING_NO_ELIGIBLE_TASK`, etc.). This is the documented canonical
+ * behavior — the host inspects diagnostics to see exactly what could and
+ * could not be resolved. The input document is never silently mutated: every
+ * applied delay is a semantic `SetTaskStart` (also exposed in the
+ * `LevelingResult.proposedCommands`), and the scheduler remains the sole
+ * scheduling authority (the host re-schedules after leveling).
+ *
+ * `LevelResources` carries an optional `taskIds` scope filter (the frozen
+ * command shape). The full `LevelingOptions` (date window, critical/priority
+ * policy) are passed by callers via the pure `levelResources()` function; the
+ * `LevelResources` engine command uses the documented defaults (critical
+ * tasks levelable, priority respected, deadlines not constraints).
+ *
+ * The command does NOT carry an inverse: leveling is an atomic derived
+ * operation whose effect is a batch of `SetTaskStart` commands, and the
+ * frozen `ProjectCommand` union has no batch-undo command. Undo requires a
+ * host-level document snapshot (mirroring the CreateBaseline precedent).
+ * Baselines, dependencies, assignments, resources, and identities are NEVER
+ * mutated by leveling — only the current schedule's `task.start` candidates
+ * move.
+ */
+function mutateForLevelResources(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'LevelResources' },
+): Mutation {
+  // The leveler lives in the scheduling package (it reads the derived
+  // schedule). The engine package is a lower layer and cannot statically
+  // import the scheduling package, so the leveler is injected through the
+  // `registerLeveler` slot at module load by the scheduling package.
+  const leveler = levelerSlot
+  if (!leveler) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'LEVELING_NOT_AVAILABLE',
+          message: 'Resource leveling is not available; the scheduling package was not imported',
+        },
+      ],
+    }
+  }
+  // Build LevelingOptions from the frozen command shape. The command carries
+  // only the scope filter; the engine applies the documented default policy
+  // (critical tasks levelable, priority respected, deadlines not constraints).
+  // Hosts that need a non-default policy call `levelResources()` directly (in
+  // the scheduling package) and apply the proposed commands individually via
+  // `SetTaskStart`.
+  const options: LevelingOptions = command.taskIds ? { taskIds: command.taskIds } : {}
+  const result = leveler(document, options)
+  // Map leveling diagnostics to the engine's flat { code, message } shape.
+  // The richer LevelingDiagnostic (with severity/taskId/resourceId) is
+  // preserved on the LevelingResult returned by the pure leveler.
+  const diagnostics: ValidationDiagnostic[] = result.diagnostics.map((d) => ({
+    code: d.code,
+    message: d.message,
+  }))
+  // No proposed commands → nothing to apply. Return the document unchanged
+  // with the leveling diagnostics surfaced (info: no over-allocation; warning:
+  // no eligible task / constraint conflict / incomplete). These are NOT
+  // rejections — the command ran successfully; the host inspects diagnostics.
+  if (result.proposedCommands.length === 0) {
+    return {
+      kind: 'accepted',
+      outcome: {
+        tasks: document.tasks,
+        affectedTaskIds: [],
+        diagnostics,
+      },
+    }
+  }
+  // Apply the proposed SetTaskStart commands through the SAME canonical
+  // mutation primitive used by the individual `SetTaskStart` command path
+  // (`mutateForSetTaskStart`). This guarantees there is exactly ONE
+  // authoritative task-start mutation implementation in the engine;
+  // `LevelResources` cannot develop semantics different from `SetTaskStart`
+  // (task-existence validation, date parsing, the `withOptionalDate` field
+  // update, and inverse computation are all shared). The leveler emits one
+  // SetTaskStart per delayed task (deduplicated, sorted by TaskId), so the
+  // batch is small and the per-command copy is negligible. The per-command
+  // inverses are intentionally discarded: `LevelResources` has no batch-undo
+  // (the frozen `ProjectCommand` union has no batch-inverse command); undo
+  // requires a host snapshot, mirroring the CreateBaseline precedent.
+  let tasks = document.tasks
+  for (const proposed of result.proposedCommands) {
+    if (proposed.type !== 'SetTaskStart') continue
+    const mutation = mutateForSetTaskStart({ ...document, tasks }, proposed)
+    if (mutation.kind === 'rejected') {
+      // The leveler only emits SetTaskStart for existing tasks with valid
+      // dates, so a rejection here indicates a leveler/scheduler divergence.
+      // Surface it as a diagnostic and continue applying the remaining
+      // commands rather than silently dropping the task.
+      diagnostics.push(...mutation.diagnostics)
+      continue
+    }
+    tasks = mutation.outcome.tasks
+  }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks,
+      affectedTaskIds: result.affectedTaskIds,
+      diagnostics,
+    },
+  }
+}
+
+/**
  * Applies a semantic ProjectCommand to a ProjectDocument.
  *
  * Pure and deterministic: the same document plus the same command sequence
@@ -827,6 +1078,12 @@ export function applyProjectCommand(
       case 'SetAssignmentUnits':
         mutation = mutateForSetAssignmentUnits(document, command)
         break
+      case 'SetTaskStart':
+        mutation = mutateForSetTaskStart(document, command)
+        break
+      case 'LevelResources':
+        mutation = mutateForLevelResources(document, command)
+        break
       default:
         mutation = {
           kind: 'rejected',
@@ -867,7 +1124,11 @@ export function applyProjectCommand(
       result: {
         commandId,
         accepted: true,
-        diagnostics: [],
+        // Surface pass-through diagnostics from accepted mutations (e.g.
+        // LevelResources accepts and applies every resolvable delay but
+        // reports LEVELING_INCOMPLETE warnings). Empty for commands that
+        // produce no warnings.
+        diagnostics: mutation.outcome.diagnostics ?? [],
         affectedTaskIds: mutation.outcome.affectedTaskIds,
         inverse: mutation.outcome.inverse,
       },
