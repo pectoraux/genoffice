@@ -963,3 +963,27 @@ Stage Summary:
   identical to the prior session's commit 951470d.
 - Workflow state: ARCHITECT_REVIEW / CHANGES REQUIRED → CORRECTION
   SUBMITTED. NOT VERIFIED — the architect owns the VERIFIED decision.
+
+---
+
+Task ID: EXCEL-020-impl
+Agent: Z.ai (Implementation Agent)
+Task: Implement EXCEL-020 Sheet Protection / Workbook Protection on the merged main (640c6c9) — forensic audit → canonical contract → wire → browser → E2E → regression.
+
+Work Log:
+
+- Ground-truth check: cloned pectoraux/genoffice @ 640c6c9 (the PR #1 merge commit), working tree clean, EXCEL-018 correction confirmed merged. The EXCEL-020 ledger entry was READY and sequenced next.
+- Phase A forensic audit (read-only): the gateway WRITE side already existed and was unit-tested (applySheetProtection / applyWorkbookProtection / applyProtectedRanges + planCellEditsToXlsx's sheetProtections arg 10, protectedRangeStates arg 24); the desktop ships journal-only toggle semantics (recordSheetProtection DROPS an entry when the desired state matches the file's original; password-bearing elements refuse both directions) and does NOT enforce protection live; the desktop's cell locked/hidden flags journal neutral WorkbookStyleEdit deltas. The GAPS were: readBasicWorkbook parsed no protection state; applyCellEditsToXlsx (the web route's buffer→buffer entry) had no workbookProtectionState parameter; the wire contract had no sheetProtections/workbookProtectionState; the web Ribbon carried a disabled "Protect Sheet" stub documenting the missing family.
+- Gateway read: parseSheetProtectionState + parseWorkbookProtectionState (xlsx-protection.ts) → WorksheetState.sheetProtection + WorkbookSnapshot.workbookProtection (workbook.types.ts), both carrying hasPassword for BOTH password forms (legacy hash + modern algorithmName/hashValue), wired into readBasicWorkbook (absent field = no element).
+- Gateway write: applyCellEditsToXlsx gained the trailing workbookProtectionState parameter (pass-through to planCellEditsToXlsx → the existing applyWorkbookProtection).
+- Wire: BrowserWorkbookSavePlan.sheetProtections + workbookProtectionState with expectSheetProtectionState / expectWorkbookProtectionState strict validation (unknown fields — including password-bearing payloads — are 400s; MAX_SHEET_PROTECTIONS = 1,000); handleSaveWorkbook passes both families; office-client.ts mirrors the types.
+- Browser: ExcelEditor seeds protection file-state refs from the snapshot, owns toggle journals with the desktop's recordSheetProtection/recordWorkbookProtection semantics (toggle-back drops the entry → no-op save emits nothing → XML preserved), refuses password-protected sheets/structures up front with the desktop's own status strings, conditionally emits both families on save, and merges the journal into the file refs after save. The Ribbon's Review → Protection group is fully wired: Protect Sheet / Unprotect Sheet (echo label flips with the effective state), Protect Workbook / Unprotect Workbook, Lock Cell / Unlock Cell (journal canonical protectionLocked style-only CellEdits — the desktop's neutral-delta path).
+- Tests: gateway xlsx-protection-roundtrip.test.ts (22 tests: parsers, read integration, write, round-trip, no-op preservation, fail-closed both password forms, verbatim re-affirm, unknown sheet); wire office-protection-routes.test.ts (12 tests); architecture guards (7 new, 31 total); E2E ribbon-protection.spec.ts (5 tests through real HTTP: read+echo, protect→wire→XML→reopen, unprotect round-trip with toggle-back semantics, editable-vs-locked via the REAL ribbon + no-op preservation, negative authorization with password elements surviving verbatim).
+- Regression: gateway 567/567, contractor-core 390+4 skipped, web 204/204, browser E2E 83/83 (excel-browser 1, excel-shell 15, excel-format 3, excel-formula 7, excel-structural 2, ribbon-data 4 incl. the sort/formula semantic gate, ribbon-data-validation 7, ribbon-filter 5, ribbon-review-notes 5, ribbon-home-persistence 3, ribbon-insert 1, ribbon-view 3, ribbon-remove-duplicates 4, ribbon-protection 5, word specs 18). Typecheck exit 0 across web/contractor-core/xlsx-gateway; prettier clean on all changed files; frozen surfaces (apps/sheets, apps/docs, apps/shell, packages/platform-electron, packages/renderer-bridge) untouched.
+
+Stage Summary:
+
+- EXCEL-020 implemented on the EXISTING canonical families — no new engine path, no browser-side OOXML, no parallel protection model, no wire-breaking change (both new save-plan fields are optional).
+- Password semantics are fail-closed at every layer (browser guard → wire rejection → gateway SheetProtectionError); desktop-parity journal semantics preserve byte-for-byte no-op saves.
+- Scope note: Allow Edit Ranges (protectedRanges) stays desktop-only — not in the EXCEL-020 verification list; the engine-side writer (applyProtectedRanges) remains available for a future work item.
+- Workflow state: IMPLEMENTED / PENDING ARCHITECT REVIEW. NOT VERIFIED — the architect owns the VERIFIED decision.

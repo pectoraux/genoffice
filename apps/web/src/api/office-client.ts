@@ -141,6 +141,24 @@ export interface BrowserWorkbookSavePlan {
     readonly sheetName: string
     readonly notes: readonly SheetNote[]
   }[]
+  /**
+   * Per-sheet protection states (Review → Protect Sheet, EXCEL-020). Each
+   * entry carries the journaled toggle decision for one sheet — the engine
+   * adds/removes the worksheet's `<sheetProtection>` element. No password
+   * support: the browser refuses to unprotect a password-protected sheet
+   * up front (fail-closed parity with the desktop) and the engine would
+   * reject it anyway.
+   */
+  readonly sheetProtections?: readonly {
+    readonly sheetName: string
+    readonly protected: boolean
+  }[]
+  /**
+   * Desired workbook structure protection (Review → Protect Workbook,
+   * EXCEL-020). null/absent = untouched — the engine leaves workbook.xml's
+   * `<workbookProtection>` alone.
+   */
+  readonly workbookProtectionState?: { readonly lockStructure: boolean } | null
   readonly [key: string]: unknown
 }
 

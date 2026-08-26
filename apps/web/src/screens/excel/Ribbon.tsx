@@ -30,19 +30,23 @@
  *            tableAdditions / visualAdditions / chartEdits families
  *            (applyCellEditsToXlsx accepts them but routeOffice does not
  *            pass them through).
- *   Data → Filter / Data Validation — the wire save plan does not expose
- *          filterStates / dvStates families. (Filter was later enabled
- *          via Phase 4 Inc. 4; Data Validation was enabled via Inc. 5.)
  *   Formulas → Show formulas / Name Manager — needs pageSetupStates.
  *             showFormulas (a page-setup field) and definedNamesState,
  *             neither wired through the web save plan.
- *   Review → Protect Sheet — the wire save plan does not expose
- *            sheetProtections families. (New Comment was enabled via
- *            Phase 4 Inc. 6.)
  *   Page Layout → all commands — pageSetupStates exists in the wire but
  *            only frozenRows/frozenColumns are wired by the web shell;
  *            orientation/margins/print area remain disabled until the
  *            web shell emits them.
+ *
+ * EXCEL-020 (Review → Protection): ENABLED. Protect Sheet / Unprotect
+ * Sheet journals the canonical sheetProtections family; Protect Workbook /
+ * Unprotect Workbook journals workbookProtectionState; Lock Cell / Unlock
+ * Cell journal WorkbookStyleEdit.protectionLocked style-only CellEdits
+ * (the desktop's neutral-delta path — Univer's OSS presets carry no
+ * cell-protection model). Password-protected sheets/structures are refused
+ * up front (fail-closed — the gateway rejects them too). The editor itself
+ * does not enforce protection (desktop parity: enforcement lives in the
+ * saved file, for Excel and other readers).
  *
  * EXCEL-018 (Data → Remove Duplicates): ENABLED. The command opens a
  * small inline dialog with a "My data has headers" checkbox (default
@@ -187,7 +191,33 @@ const NULL_STATE: ExcelRuntimeState = {
   seq: 0,
 }
 
-export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
+/**
+ * EXCEL-020 protection surface (Review → Protection group). The shell
+ * (ExcelEditor) owns the journal + file state and passes it down here;
+ * the buttons only reflect the echo and call back.
+ */
+export interface RibbonProtectionProps {
+  /** Effective protection of the active sheet; null = no live sheet. */
+  readonly sheetProtected: boolean | null
+  /** The active sheet's file state carries a password (fail-closed). */
+  readonly sheetHasPassword: boolean
+  /** Effective structure lock; null = no file open. */
+  readonly workbookLocked: boolean | null
+  /** The workbook structure carries a password (fail-closed). */
+  readonly workbookHasPassword: boolean
+  readonly onToggleSheetProtection: () => void
+  readonly onToggleWorkbookProtection: () => void
+  /** Set the selection's protectionLocked flag (Lock Cell / Unlock Cell). */
+  readonly onSetCellsLocked: (locked: boolean) => void
+}
+
+export function Ribbon({
+  api,
+  protection,
+}: {
+  api: ExcelRuntimeApi | null
+  protection?: RibbonProtectionProps | null
+}) {
   const [tab, setTab] = useState<TabId>('home')
   // EXCEL-018 — Remove Duplicates dialog state. Mirrors the desktop's
   // `setShowDedupeDialog(true)` flow: the Data → Remove Duplicates
@@ -622,12 +652,48 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
               />
             </Group>
             <Group label="Protection">
-              {/* Disabled: the wire save plan does not expose
-                  sheetProtections. */}
+              {/* EXCEL-020 — Protect Sheet / Unprotect Sheet. Journal-only
+                  semantics (desktop parity): the toggle records the desired
+                  state, the save writes the canonical sheetProtections
+                  family, and the label flips with the effective echo. The
+                  title IS the accessible name (exact) — the rich feedback
+                  (no-password note, enforcement note) lives in the status
+                  messages, exactly like the desktop's message strings. */}
               <RibbonButton
-                label="Protect Sheet"
-                title="Protect Sheet — disabled: the web save plan does not yet expose the sheetProtections family"
-                disabled
+                label={protection?.sheetProtected ? 'Unprotect Sheet' : 'Protect Sheet'}
+                title={protection?.sheetProtected ? 'Unprotect Sheet' : 'Protect Sheet'}
+                active={protection?.sheetProtected === true}
+                disabled={disabled}
+                onClick={() => protection?.onToggleSheetProtection()}
+              />
+              {/* EXCEL-020 — Protect Workbook / Unprotect Workbook: the
+                  structure lock, written through the canonical
+                  workbookProtectionState family. */}
+              <RibbonButton
+                label={protection?.workbookLocked ? 'Unprotect Workbook' : 'Protect Workbook'}
+                title={protection?.workbookLocked ? 'Unprotect Workbook' : 'Protect Workbook'}
+                active={protection?.workbookLocked === true}
+                disabled={disabled}
+                onClick={() => protection?.onToggleWorkbookProtection()}
+              />
+              {/* EXCEL-020 — Lock Cell / Unlock Cell: journal canonical
+                  WorkbookStyleEdit.protectionLocked deltas for the
+                  selection (the desktop's Format Cells → Protection
+                  neutral-delta path). Together with a protected sheet this
+                  is Excel's editable-vs-locked semantics in the file:
+                  unlocked cells stay editable, everything else is
+                  read-only for readers that enforce protection. */}
+              <RibbonButton
+                label="Lock Cell"
+                title="Lock Cell"
+                disabled={disabled}
+                onClick={() => protection?.onSetCellsLocked(true)}
+              />
+              <RibbonButton
+                label="Unlock Cell"
+                title="Unlock Cell"
+                disabled={disabled}
+                onClick={() => protection?.onSetCellsLocked(false)}
               />
             </Group>
           </>

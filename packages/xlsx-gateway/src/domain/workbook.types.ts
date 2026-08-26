@@ -94,11 +94,33 @@ export interface WorksheetState {
    * and reads it back via this field on reopen.
    */
   readonly notes?: readonly SheetNote[] | undefined
+  /**
+   * Sheet protection state parsed from the worksheet's <sheetProtection>
+   * element. Absent means the worksheet carries NO element (not
+   * protected); present with `protected: false` means an element exists
+   * but protection is disabled. `hasPassword` marks either password form
+   * (legacy hash or modern algorithmName/hashValue) — unprotecting such a
+   * sheet fails closed, so the browser must refuse the toggle up front.
+   * The web Sheets shell (Review → Protect Sheet) journals changes
+   * through the canonical SheetProtectionState save family and reads the
+   * state back via this field on reopen, so protection survives
+   * round-trip.
+   */
+  readonly sheetProtection?:
+    Readonly<{ readonly protected: boolean; readonly hasPassword: boolean }> | undefined
 }
 
 export interface WorkbookSnapshot {
   readonly revision: number
   readonly sheets: readonly WorksheetState[]
+  /**
+   * Workbook structure protection parsed from workbook.xml's
+   * <workbookProtection> element. Absent means no element. The web shell
+   * (Review → Protect Workbook) journals changes through the canonical
+   * workbook-protection save family and reads the state back on reopen.
+   */
+  readonly workbookProtection?:
+    Readonly<{ readonly lockStructure: boolean; readonly hasPassword: boolean }> | undefined
 }
 
 export interface CellChange {
