@@ -567,3 +567,333 @@ Stage Summary:
 - Pre-existing CI failures (`foundation`, `test`/lint, `e2e`/Electron) are out of scope for EXCEL-018 and would fail identically for any commit on `web-office-editor` — they reflect either broader codebase debt or the PR's branch strategy.
 - Deployed E2E in the `web-office-editor-preview` workflow fails due to a GitHub Actions secret misconfiguration (`VERCEL_PROJECT_ID` pointing to a Next.js Vercel project, not the genoffice Vite project). This is an infrastructure fix the architect must apply — it is not blocked by EXCEL-018 code.
 - Workflow status remains ARCHITECT_REVIEW. Z.ai (implementer) does NOT own the VERIFIED decision.
+
+---
+
+## 2026-08-26 — EXCEL-018 architect CHANGES REQUIRED: forensic audit + structural-row fix
+
+Task ID: EXCEL-018-architect-fix
+Agent: Z.ai (Implementation Agent, architect review response)
+
+Task:
+
+- The architect reviewed the EXCEL-018 implementation at HEAD `501b885`
+  and returned CHANGES REQUIRED. The architect's specific objection:
+  the current implementation reads computed values with `FRange.getValues()`
+  and rewrites moved rows via `FWorksheet.getRange(...).setValues(...)`,
+  which DESTROYS formulas on moved rows (the test comments even document
+  this loss as "intentional" — that is exactly what the architect is
+  rejecting).
+- The architect directed a forensic audit FIRST (no coding until
+  complete) to determine whether the canonical engine already has a
+  safe formula/style-preserving primitive for Remove Duplicates.
+
+Work Log (Phase A — Forensic Audit):
+
+- Audited the live implementation:
+  - `apps/web/src/office/dedupe.ts` — pure value-level algorithm
+    (mirrors frozen desktop `apps/sheets/src/renderer/dedupe.ts`).
+  - `apps/web/src/screens/excel/useExcelRuntime.ts:721-812` —
+    `removeDuplicates(hasHeader)`: reads `range.getValues()` (computed
+    results), dedupes, pads with nulls back to original selection height,
+    rewrites per-row via `ws.getRange(startRow+offset, ...).setValues(...)`
+    only when row content changed. Comments at lines 773-778 explicitly
+    state: "Rows that DID change are written via setValues — the existing
+    subscription captures them as writeValue CellEdits" — i.e. MOVED rows
+    become COMPUTED LITERALS. Their formulas are LOST. This is the bug.
+  - `apps/web/tests/e2e/ribbon-remove-duplicates.spec.ts` — current E2E
+    asserts (line 246): `B5 = 30 (B7 formula result, formula LOST)` — the
+    test is hard-coded to PROVE the lossy behavior.
+
+- Audited the canonical structural primitives already in the engine:
+
+  - `apps/web/src/api/office-client.ts:47-76` defines the
+    `BrowserStructuralOp` family: `insert-rows | remove-rows | insert-cols
+| remove-cols | merge-cells | unmerge-cells | reorder-rows`. The
+    `reorder-rows` kind carries a `range` + `order` permutation map in
+    Univer's native DEST→SRC shape. Documented at line 53-55:
+    "the gateway permutes <row> blocks atomically, so the entire cell
+    record (styles, numfmt, formulas, hyperlinks) travels with the row."
+
+  - `apps/web/src/screens/ExcelEditor.tsx:115-121, 1190-1242` already
+    subscribes to `sheet.mutation.remove-rows` (via the
+    `STRUCTURAL_MUTATION_IDS` set). The handler:
+    1. Reads `{ subUnitId, range: { startRow, endRow, ... } }` from
+       Univer's `remove-rows` mutation params.
+    2. Pushes `{ kind: 'remove-rows', index: start, count }` to
+       `structuralRef` (the per-sheet structural-ops journal).
+    3. Rebases any prior `dirtyRef` cell-edits via `shiftIndex` so
+       pre-edit cell coordinates track through the row shift.
+       This is the EXACT journal path that `excel-structural.spec.ts` (the
+       existing E2E for Insert/Delete Rows) already exercises through the
+       REAL Univer facade `ws.deleteRows(row, n)`.
+
+  - `packages/xlsx-gateway/src/gateway/xlsx-structure.ts:84-126` —
+    `applyStructuralOps(wsXml, ops, sheetName)`. Dispatch table:
+    - `reorder-rows` → `transformSheetRowsByPermutation` (renumbers
+      `<row>` r= and inner `<c>` r= ONLY; cell contents travel
+      UNTOUCHED inside their `<c>` elements; `transformFormulas` is
+      SKIPPED for this op per Excel's sort semantics).
+    - `insert-rows` / `remove-rows` → `transformSheetRows` (renumbers
+      `<row>` r= AND inner `<c>` r=) + `transformFormulas` (rewrites
+      `<f>` bodies, formula1/formula2 in DV, ref= on shared/array
+      anchors) + `transformRangedFeatures` (shifts merges, autoFilter,
+      hyperlink, dataValidation sqref, conditionalFormatting sqref).
+    - `move-rows` (whole-row move bijection) — supported but not needed.
+
+  - `packages/xlsx-gateway/src/gateway/xlsx-structure.ts:1177-1271` —
+    `shiftFormulaText` + `shiftReferenceToken`: shifts ALL reference
+    tokens (relative AND absolute) by the op's `Shift`. Absolute `$`
+    markers are PRESERVED via the `colDollar`/`rowDollar` capture groups
+    (lines 1239-1246, 1254, 1268-1269). Whole-row refs (`$1:$5`) and
+    whole-column refs (`A:A`) are handled separately (lines 1220-1237).
+    References to cells INSIDE the deleted range throw
+    `StructuralShiftError` — fail-closed (line 1209-1213). This is
+    Excel's exact behavior: deleting a row makes any reference TO that
+    row a #REF! (here it fails the save instead — the journal rejects
+    the save rather than corrupting it).
+
+  - `apps/web/tests/e2e/excel-structural.spec.ts:67-94` — the existing
+    E2E proves `ws.deleteRows(row, n)` (the Univer facade) fires
+    `sheet.mutation.remove-rows`, journaled by the ExcelEditor as
+    `{ kind: 'remove-rows', index, count }` in the save plan, applied
+    by the gateway atomically. Line 238: the saved payload asserts
+    `{ sheetName: 'Data', ops: [{ kind: 'remove-rows', index: 0, count: 1 }] }`.
+    This is the proven canonical path for row deletion.
+
+Audit answers (A1-A9):
+
+A1. YES. Remove Duplicates can be expressed as a sequence of
+`remove-rows` structural ops — one per duplicate row, in
+DESCENDING row-index order so earlier deletes don't shift later
+indices. The surviving rows compact upward atomically; their
+cell records (formulas, styles, merges, numfmt, hyperlinks,
+notes, DV) travel inside their `<c>` elements and `<row>` blocks.
+
+A2. YES. Existing `remove-rows` machinery preserves formulas/styles
+automatically: - `transformSheetRows` renumbers `<row>` r= and inner `<c>` r=
+(the cell content stays untouched inside the `<c>` element). - `transformFormulas` rewrites `<f>` bodies via
+`shiftFormulaText` so references to cells BELOW the deletion
+point shift up by `count` (matching Excel's behavior). - `transformRangedFeatures` shifts merges, autoFilter,
+hyperlink sqref, dataValidation sqref, and
+conditionalFormatting sqref to track the row deletion.
+This is provably the SAME machinery Excel uses for Edit → Delete
+Row, and the same path `excel-structural.spec.ts` already
+exercises end-to-end.
+
+A3. N/A — `remove-rows` alone is sufficient; no `reorder-rows` + delete
+combo is needed. The dedupe algorithm produces the SET of
+duplicate row indices; the runtime issues one `deleteRows` call
+per duplicate in descending order; the gateway's
+`transformSheetRows` + `transformFormulas` + `transformRangedFeatures`
+does the rest.
+
+A4. Relative references are REWRITTEN to track the moved cell. When
+row 7 (formula `=B6` referencing Cherry/30 in row 6) shifts up
+to row 5 because rows 3 and 5 were deleted, the formula
+references B6 — which itself shifted up to B4 (Cherry/30 moved
+from row 6 to row 4 because of the two deletes above it). The
+gateway's `shiftFormulaText` rewrites `=B6` to `=B4` so the
+formula continues to reference Cherry/30. This matches Excel's
+actual Remove Duplicates behavior.
+
+A5. Absolute references ($A$1) ALSO shift when the referenced row is
+below the deletion point — the `$` markers are preserved by
+`shiftReferenceToken`'s `colDollar`/`rowDollar` capture groups,
+but the row number itself shifts. This is Excel's exact
+behavior: deleting a row shifts ALL subsequent row indices
+(whether absolute or relative); the `$` only protects against
+formula AUTOFILL / drag-shift, not against row DELETION.
+
+A6. Row-level styles, cell styles, merges, heights, hidden state,
+notes, validations, filters, conditional formatting all travel
+atomically with the row: - Cell styles: live inside `<c s="...">` s= attribute →
+untouched by `transformSheetRows` (only r= is renumbered). - Row heights/hidden/outline: live inside `<row ht="..."
+          hidden="..." outlineLevel="...">` attributes → untouched. - Merges: shifted by `transformRangedFeatures` via
+`moveRefRange`. - Hyperlinks, dataValidation sqref, conditionalFormatting sqref:
+shifted by `transformRangedFeatures` via `moveRefRange`. - Notes: live in `xl/worksheets/sheetN.xml` as `<legacyDrawing>`
+references + the comment part (`xl/commentsN.xml`) keyed by
+ref. Univer's note subscription snapshots the LIVE note
+model declaratively (`collectNoteStates`), so the note ref
+coordinates are re-snapshotted AFTER structural ops land. - Filters: declarative snapshot (`collectFilterStates`). - DV: declarative snapshot (`collectDvStates`).
+
+A7. YES. The browser doesn't need to read formulas/styles at all.
+The flow is: 1. Read COMPUTED VALUES via `range.getValues()` (for the
+duplicate-detection comparison only — same call the desktop
+makes). 2. Compute the SET of duplicate row indices (the dedupe
+algorithm returns indices, not values). 3. For each duplicate (in DESCENDING row order), call
+`ws.deleteRows(startRow + offset, 1)`. Univer's live model
+handles the cell-record movement atomically. 4. ExcelEditor's existing `STRUCTURAL_MUTATION_IDS`
+subscription journals each `sheet.mutation.remove-rows` as
+a `remove-rows` structural op in the save plan. 5. Gateway's `applyStructuralOps` applies each op atomically
+at OOXML level.
+No browser-side OOXML parser, no JSZip, no formula engine. The
+browser only exchanges typed `BrowserStructuralOp` payloads.
+
+A8. YES. The canonical `remove-rows` structural op family is the
+existing primitive. No new family, no new wire field, no new
+gateway function. The save plan already carries `structuralOps`
+(added for EXCEL-011 Insert/Delete Rows); EXCEL-018 just EMITS
+`remove-rows` ops through that existing channel.
+
+A9. The desktop Remove Duplicates (`apps/sheets/src/renderer/dedupe.ts` + `apps/sheets/src/renderer/ribbon-actions.ts:1267-1309`) IS
+architecturally lossy — it pads with nulls and rewrites via
+`setValues`, so moved rows become computed literals. The prior
+web implementation copied that lossy recipe verbatim. The
+architect's audit explicitly states: "desktop parity is not
+sufficient to satisfy the frozen web parity acceptance
+requirement." The frozen requirement at
+`spec/excel/verification-matrix.md:39` explicitly lists
+"formulas and styles remain attached to retained rows" and
+"save/reopen yields identical values and structure" — these
+CANNOT be satisfied by value-level rewriting; they REQUIRE
+structural row deletion.
+
+Decision: Option 1 — express Remove Duplicates as canonical
+`remove-rows` structural ops (one per duplicate row, descending
+order). No new mutation family, no new wire field, no new gateway
+function. Reuse the EXACT structural path `excel-structural.spec.ts`
+already proves for Insert/Delete Rows.
+
+Stage Summary (audit only — no code changes yet):
+
+- The canonical engine ALREADY has a safe formula/style-preserving
+  primitive for Remove Duplicates: the `remove-rows` structural op.
+- The current `setValues`-based implementation is a wrong turn; it
+  destroys formulas on moved rows and the E2E test explicitly proves
+  the loss. This is the ROOT CAUSE the architect identified.
+- The fix is mechanical: replace the value-rewrite path in
+  `useExcelRuntime.removeDuplicates` with `ws.deleteRows(...)` calls
+  (one per duplicate, descending). Update the architecture test to
+  require the structural path. Rewrite the E2E to assert formula
+  preservation + reference rewriting. Add the second regression case
+  with absolute/relative/mixed reference types.
+
+---
+
+## 2026-018 — EXCEL-018 implementation: structural remove-rows path (architect fix)
+
+Task ID: EXCEL-018-structural-implementation
+Agent: Z.ai (Implementation Agent)
+
+Task:
+
+- Implement the architect's correction: Replace the formula-destroying
+  `setValues` rewrite with the canonical structural `remove-rows` path.
+- Add the architect's two mandatory regression cases.
+- Run the full local regression suite.
+
+Work Log (Implementation):
+
+- `apps/web/src/office/dedupe.ts`:
+  - Added `dedupeRowIndices(rows, hasHeader)` — the canonical EXCEL-018
+    entry point. Returns `{ keptIndices, duplicateIndices, removed }`.
+    Pure (zero imports). `dedupeRows` kept for backward compat (delegates
+    to dedupeRowIndices and maps keptIndices through the input matrix).
+- `apps/web/src/screens/excel/useExcelRuntime.ts`:
+  - Replaced the entire `removeDuplicates` callback body. New flow:
+    1. Read computed values via `range.getValues()` (comparison only).
+    2. `dedupeRowIndices(values, hasHeader)` → duplicate row offsets.
+    3. For each duplicate offset in DESCENDING order, call
+       `ws.deleteRows(startRow + offset, 1)`.
+  - Each `deleteRows` fires `sheet.mutation.remove-rows`, journaled by
+    ExcelEditor's existing `STRUCTURAL_MUTATION_IDS` subscription as a
+    `{ kind: 'remove-rows', index, count: 1 }` structural op in the
+    save plan. The gateway's `applyStructuralOps` applies each op
+    atomically (`transformSheetRows` + `transformFormulas` +
+    `transformRangedFeatures`).
+  - No `setValues` call anywhere in the removeDuplicates body (enforced
+    by the new architecture test).
+- `apps/web/tests/architecture.test.ts`:
+  - Updated the EXCEL-018 guard block from "canonical cell-edit path"
+    to "canonical structural remove-rows path".
+  - New guard: `useExcelRuntime.removeDuplicates does NOT rewrite moved
+rows via setValues` — locates the removeDuplicates useCallback body
+    by bracket-walking and asserts it calls `.deleteRows(` and does NOT
+    call `.setValues(` and does NOT contain a "padded" variable.
+  - New guard: dedupe.ts must export `dedupeRowIndices`.
+  - Kept: purity guards (no Univer/electron/node/fs/jszip imports),
+    getValues guard, Ribbon button-enabled guard, no-OOXML guard,
+    no-new-family guard.
+- `apps/web/tests/dedupe.test.ts`:
+  - Extended with a dedicated `dedupeRowIndices` describe-block (13 new
+    tests): basic index return, header semantics, the architect's
+    mandatory Apple/Banana/Cherry fixture (kept=[0,1,3,5,6],
+    duplicates=[2,4]), all-columns key, no-op empty array, null vs
+    empty-string, number vs text, boolean vs text, header-only, purity,
+    descending-deletion stability, and a dedupeRows/dedupeRowIndices
+    parity test.
+- `apps/web/tests/e2e/fixtures.ts`:
+  - Added `buildExcelDedupeMixedReferencesFixture()` — the architect's
+    second regression case: a "DedupeMixed" sheet with 3 duplicate rows
+    (rows 3, 5, 7) and a survivor row (Banana at row 4) carrying FOUR
+    formulas (C4="=$D$6" absolute, D4="=A6" relative, E4="=$A6" mixed
+    col-$, F4="=A$6" mixed row-$) referencing Cherry/Anchor at row 6
+    (outside the dedupe selection A1:B7).
+- `apps/web/tests/e2e/ribbon-remove-duplicates.spec.ts`:
+  - Test 1 REWRITTEN (architect mandatory regression): asserts
+    B5 formula text is "=B4" in Univer's live model (formula PRESERVED,
+    reference rewritten B6→B4 — NOT the literal 30), A4 carries
+    Cherry/30 (the referenced cell compacted), rows 6/7 are DELETED
+    (no "padding" nulls), the save plan carries exactly 2
+    `{kind:'remove-rows', index:2/4, count:1}` ops in structuralOps
+    (NOT a new family), the saved XML carries `<f>B4</f>` at B5, and
+    the reopened snapshot carries formula "=B4" (with leading "=" per
+    the canonical readBasicWorkbook parser; cell.value is null for
+    formula cells — the parser drops the cached <v>).
+    Also asserts: NO CellEdit at B5 carries value=30 without a formula
+    (the architect's explicit failure mode).
+  - Test 2 NEW (architect second regression): asserts all four
+    reference types survive compaction with their references rewritten
+    ($D$6→$D$4, A6→A4, $A6→$A4, A$6→A$4), in Univer's live model AND
+    the saved XML AND the reopened snapshot. Asserts the save plan
+    carries exactly 3 remove-rows ops (indices 2, 4, 6).
+  - Tests 3/4 (no-op fail-closed, <2-rows fail-closed) kept verbatim.
+
+Local Results (all green):
+
+- Typecheck (`tsc --noEmit -p apps/web`): exit 0.
+- Prettier: all 6 changed files pass `--check`.
+- Web unit suite (vitest): 197/197 pass (10 files; includes the 27
+  dedupe tests and 24 architecture tests with the new structural
+  guards).
+- EXCEL-018 E2E (4 tests): ALL PASS —
+  1. mandatory regression (formula PRESERVED, B6→B4 rewritten, rows
+     deleted, structuralOps on the wire, saved XML has <f>B4</f>,
+     reopen carries formula "=B4") — 9.4s
+  2. second regression (all four reference types rewritten
+     $D$6→$D$4 / A6→A4 / $A6→$A4 / A$6→A$4) — 8.1s
+  3. no-op fail-closed — 7.0s
+  4. <2-rows fail-closed — 7.3s
+- Mandatory regression suite (architect's list), all green:
+  - excel-structural: 2/2 (26.6s)
+  - excel-formula: 7/7 (1.1m)
+  - excel-format: 3/3
+  - excel-browser: 1/1
+  - excel-shell: 15/15 (1.8m)
+  - ribbon-data: 4/4 (45.7s) — INCLUDING the architect's
+    sort/formula semantic gate (test 3: "relative refs rewrite,
+    absolute refs untouched")
+  - ribbon-data-validation: 7/7 (1.0m)
+  - ribbon-filter: 5/5 (45.4s)
+  - ribbon-review-notes: 5/5
+  - ribbon-home-persistence: 3/3
+  - ribbon-insert: 1/1
+  - word-browser: 1/1 (11.3s)
+- Total local E2E: 47/47 (4 EXCEL-018 + 43 regression) all green.
+- Frozen-surface check:
+  `git diff --stat -- apps/sheets apps/docs apps/shell
+ packages/platform-electron packages/renderer-bridge`
+  is EMPTY — no frozen surfaces touched.
+
+Stage Summary:
+
+- The canonical structural `remove-rows` path is implemented and proven.
+- The architect's two mandatory regression cases both pass end-to-end
+  through the REAL browser + REAL HTTP + REAL gateway boundary.
+- The formula on a compacted row is PRESERVED as a formula with its
+  reference rewritten to track the moved referenced cell — NOT
+  converted to a computed literal.
+- Ready to commit, push, and verify CI.
+- Workflow state remains ARCHITECT_REVIEW / CHANGES REQUIRED (the
+  architect owns the VERIFIED decision).

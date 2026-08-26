@@ -32,11 +32,23 @@ import type { BrowserUniverRuntime } from '../../office/create-browser-univer'
 import { parseAddress, parseRange } from '../../office/cell-address'
 // EXCEL-018 — Remove Duplicates. The pure dedupe algorithm lives in
 // `apps/web/src/office/dedupe.ts`; this hook wires it through the live
-// Univer facade. The dedupe result is written back per-row via
-// FWorksheet.getRange(row, col, 1, width).setValues(...), which fires
-// sheet.mutation.set-range-values — the SAME mutation channel Sort uses,
-// journaled by ExcelEditor's existing subscription as CellEdits.
-import { dedupeRows } from '../../office/dedupe'
+// Univer facade. The dedupe result is applied as a sequence of structural
+// `remove-rows` ops — one per duplicate row, in DESCENDING offset order
+// so earlier deletes don't shift later indices. Each delete fires
+// `sheet.mutation.remove-rows`, journaled by ExcelEditor's existing
+// `STRUCTURAL_MUTATION_IDS` subscription as a `remove-rows` structural
+// op in the save plan. The gateway's `applyStructuralOps` applies each
+// op atomically: `transformSheetRows` renumbers `<row>` r= and inner
+// `<c>` r= (cell contents — value, formula text, style ref, hyperlink,
+// comment pointer — travel untouched inside their `<c>` elements);
+// `transformFormulas` rewrites `<f>` bodies via `shiftFormulaText`
+// (relative + absolute + mixed refs all track the moved cells — the `$`
+// markers are preserved by `shiftReferenceToken`'s colDollar/rowDollar
+// capture groups); `transformRangedFeatures` shifts merges, autoFilter,
+// hyperlink sqref, dataValidation sqref, and conditionalFormatting sqref.
+// This is the EXACT canonical path `excel-structural.spec.ts` already
+// proves for Insert/Delete Rows — no value-rewrite, no formula loss.
+import { dedupeRowIndices } from '../../office/dedupe'
 
 /** Selection format the ribbon echoes — a trimmed view of IStyleData. */
 export interface SelectionFormat {
@@ -240,27 +252,43 @@ export interface ExcelRuntimeApi {
   /**
    * EXCEL-018 — Remove Duplicates.
    *
-   * Reads the live Univer active range's COMPUTED values, dedupes them
-   * (case-insensitive text, type-strict, header preserved when
-   * `hasHeader === true`), and writes the result back per-row through
-   * `FWorksheet.getRange(row, col, 1, width).setValues([[...row]])` —
-   * which fires `sheet.mutation.set-range-values`, the SAME mutation
-   * channel Sort uses. ExcelEditor's existing subscription captures
-   * each write as a CellEdit via `cellEditFromMutation`, and on save
-   * the canonical `applyCellEditsToXlsx` writes the deduped values
-   * into the XLSX — the cell-edit family is the canonical authority.
+   * Reads the live Univer active range's COMPUTED values (the dedupe
+   * comparison only uses resolved results — same call the desktop's
+   * `ribbon-actions.ts:1285` makes), computes the set of duplicate row
+   * INDICES via the pure `dedupeRowIndices` algorithm in
+   * `apps/web/src/office/dedupe.ts`, and issues one
+   * `ws.deleteRows(startRow + offset, 1)` call per duplicate in
+   * DESCENDING offset order so earlier deletes don't shift later
+   * indices.
    *
-   * Rows that DIDN'T change (same value at the same offset) are NOT
-   * rewritten — their formulas/styles survive (mirrors the desktop's
-   * reference algorithm in apps/sheets/src/renderer/dedupe.ts +
-   * ribbon-actions.ts:1267-1309 verbatim). Rows that moved (their
-   * content was at a higher offset, now at a lower offset because
-   * duplicates were removed before them) ARE rewritten with the
-   * source row's COMPUTED value — the destination's formula is
-   * replaced with a literal value (this is the desktop's documented
-   * trade-off: "moved rows land as their computed values"). Padding
-   * rows at the bottom (where dedupe shrank the range) are written
-   * with nulls (cell clear).
+   * Each `deleteRows` call fires `sheet.mutation.remove-rows`, journaled
+   * by ExcelEditor's existing `STRUCTURAL_MUTATION_IDS` subscription as
+   * a `{ kind: 'remove-rows', index, count: 1 }` structural op in the
+   * save plan. On save, the canonical `applyStructuralOps` path in
+   * xlsx-gateway applies each op atomically: `transformSheetRows`
+   * renumbers `<row>` r= and inner `<c>` r= (cell contents travel
+   * UNTOUCHED inside their `<c>` elements — formulas, styles, numfmt,
+   * fills, borders, hyperlinks, comments, shared-formula si=, DV refs),
+   * `transformFormulas` rewrites `<f>` bodies via `shiftFormulaText`
+   * (relative + absolute + mixed references all track the moved cells
+   * — the `$` markers are preserved by `shiftReferenceToken`'s
+   * colDollar/rowDollar capture groups; references to deleted rows
+   * throw `StructuralShiftError` — fail-closed), and
+   * `transformRangedFeatures` shifts merges, autoFilter, hyperlink sqref,
+   * dataValidation sqref, and conditionalFormatting sqref to track the
+   * row deletion.
+   *
+   * This is the EXACT canonical path `excel-structural.spec.ts` already
+   * proves for Insert/Delete Rows — no value-rewrite, no formula loss.
+   * Surviving rows compact UPWARD atomically with all their cell records
+   * (formulas/styles/merges/numfmt/etc.); relative formula references
+   * rewrite to track the moved referenced cell (e.g. `=B6` in row 7
+   * that referenced Cherry/30 in row 6 becomes `=B4` after dedupe
+   * because Cherry/30 moved from row 6 to row 4); absolute references
+   * ($A$1) preserve their `$` markers but shift their row indices when
+   * the referenced cell is below a deletion point (matching Excel's
+   * actual row-deletion semantics); mixed references ($A1 / A$1)
+   * preserve their `$` markers and shift the non-dollar component.
    *
    * @param hasHeader When true, the first row of the selection is
    *   preserved verbatim and is excluded from the seen-set / removal
@@ -730,12 +758,14 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
       // desktop's ribbon action emits `appDedupeSelectRows` ("Select the
       // rows to check for duplicates first.") on `range.getHeight() < 2`.
       const height = range.getHeight()
-      const width = range.getWidth()
       if (height < 2) return { kind: 'select' }
       // Read the computed values — `FRange.getValues()` returns the
       // resolved result for formula cells (Univer's documented facade
       // contract, same call the desktop's `ribbon-actions.ts:1285`
-      // makes). The `?? null` normalization mirrors the desktop's
+      // makes). The dedupe comparison uses COMPUTED RESULTS, not formula
+      // text — two rows with the same result but different formulas ARE
+      // duplicates (matches the desktop's behavior exactly). The `?? null`
+      // normalization mirrors the desktop's
       // `.map((row) => row.map((value) => value ?? null))`.
       let values: (string | number | boolean | null)[][]
       try {
@@ -753,50 +783,40 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
         const detail = error instanceof Error ? error.message : ''
         return { kind: 'error', message: detail === '' ? 'Read failed' : `Read failed: ${detail}` }
       }
-      const { rows: deduped, removed } = dedupeRows(values, hasHeader)
+      // Pure algorithm: returns the SET of duplicate row INDICES (0-based
+      // offsets relative to the selection's startRow). The runtime never
+      // rewrites moved rows via setValues — that path destroys formulas
+      // (a moved `=B6` becomes the literal computed value `30`).
+      // Instead the runtime issues structural `remove-rows` ops.
+      const { duplicateIndices, removed } = dedupeRowIndices(values, hasHeader)
       // No-op fail-closed: when nothing was removed, no mutation is fired
       // and a status message surfaces (matches desktop's `appNoDuplicates`).
       if (removed === 0) {
         return { kind: 'noop', message: 'No duplicate rows found in the selection.' }
       }
-      // Pad the deduped matrix with null rows back to the original selection
-      // height — the in-place rewrite leaves blank rows at the bottom of
-      // the selection where duplicates were removed (matches the desktop's
-      // `while (rows.length < values.length) rows.push(null)` step).
-      const padded: (string | number | boolean | null)[][] = deduped.map((row) => [...row])
-      while (padded.length < values.length) {
-        padded.push(Array.from({ length: width }, () => null))
-      }
       const startRow = range.getRow()
-      const startColumn = range.getColumn()
       try {
-        // Only rewrite rows whose content actually changed. This is the
-        // formula-fidelity preservation step: unchanged rows keep their
-        // formulas/styles intact (no set-range-values mutation fires for
-        // them, so the existing journal has no CellEdit at that offset).
-        // Rows that DID change are written via setValues — the existing
-        // subscription captures them as writeValue CellEdits.
-        for (let offset = 0; offset < padded.length; offset++) {
-          const newRow = padded[offset]
-          const oldRow = values[offset]
-          let same = oldRow !== undefined && oldRow.length === newRow.length
-          if (same) {
-            for (let i = 0; i < newRow.length; i++) {
-              if (newRow[i] !== oldRow[i]) {
-                same = false
-                break
-              }
-            }
-          }
-          if (same) continue
-          // FWorksheet.getRange(row, col, numRows, numCols).setValues(matrix)
-          // — the canonical Univer facade for in-place range writes. Fires
-          // sheet.mutation.set-range-values per cell, captured by the
-          // existing subscription. A `null` value clears the cell (the
-          // facade's documented behavior; same as Clear All).
-          ws.getRange(startRow + offset, startColumn, 1, width).setValues([
-            [...newRow],
-          ] as unknown as never)
+        // Issue one `ws.deleteRows(row, 1)` call per duplicate in
+        // DESCENDING offset order so earlier deletes don't shift later
+        // indices. Each call fires `sheet.mutation.remove-rows`, journaled
+        // by ExcelEditor's existing `STRUCTURAL_MUTATION_IDS`
+        // subscription as a `{ kind: 'remove-rows', index, count: 1 }`
+        // structural op in the save plan. The gateway's
+        // `applyStructuralOps` applies each op atomically:
+        // `transformSheetRows` renumbers `<row>` r= and inner `<c>` r=
+        // (cell contents travel UNTOUCHED inside their `<c>` elements),
+        // `transformFormulas` rewrites `<f>` bodies via
+        // `shiftFormulaText` (relative + absolute + mixed references all
+        // track the moved cells — the `$` markers are preserved by
+        // `shiftReferenceToken`'s colDollar/rowDollar capture groups),
+        // and `transformRangedFeatures` shifts merges, autoFilter,
+        // hyperlink sqref, dataValidation sqref, conditionalFormatting
+        // sqref. This is the EXACT canonical path
+        // `excel-structural.spec.ts` already proves for Insert/Delete
+        // Rows — no value-rewrite, no formula loss.
+        for (let i = duplicateIndices.length - 1; i >= 0; i--) {
+          const offset = duplicateIndices[i]!
+          ws.deleteRows(startRow + offset, 1)
         }
         refresh()
         return { kind: 'done', removed }
@@ -804,7 +824,7 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
         const detail = error instanceof Error ? error.message : ''
         return {
           kind: 'error',
-          message: detail === '' ? 'Write failed' : `Write failed: ${detail}`,
+          message: detail === '' ? 'Delete failed' : `Delete failed: ${detail}`,
         }
       }
     },

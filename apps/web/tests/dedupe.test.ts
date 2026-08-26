@@ -1,22 +1,33 @@
 /**
  * Unit tests for the pure dedupe algorithm (EXCEL-018).
  *
- * Mirrors the desktop reference at apps/sheets/tests/dedupe.test.ts
- * verbatim — the same fixtures and assertions — so the web parity is
- * provable from source: the same algorithm runs in both hosts.
- *
- * The dedupe function lives in apps/web/src/office/dedupe.ts and is a
- * PURE function — no Univer, no journal, no save plan. The
- * useExcelRuntime hook wires it through the live Univer facade (read
- * values, dedupe, write back per-row via FWorksheet.getRange(...).
- * setValues(...) which fires sheet.mutation.set-range-values — the
- * SAME canonical mutation channel Sort uses). The end-to-end save/
- * reopen path is exercised by the E2E suite at
- * apps/web/tests/e2e/ribbon-remove-duplicates.spec.ts.
+ * Covers BOTH exports of `apps/web/src/office/dedupe.ts`:
+ *   - `dedupeRows(rows, hasHeader)` — the legacy value-level entry
+ *     (kept for backward compat; mirrors the desktop reference
+ *     algorithm at apps/sheets/tests/dedupe.test.ts verbatim).
+ *   - `dedupeRowIndices(rows, hasHeader)` — the canonical EXCEL-018
+ *     entry point. Returns the SET of duplicate row INDICES (0-based
+ *     offsets relative to the input matrix). The runtime issues one
+ *     `ws.deleteRows(startRow + offset, 1)` call per duplicate in
+ *     DESCENDING offset order so earlier deletes don't shift later
+ *     indices. Each call fires `sheet.mutation.remove-rows`, journaled
+ *     by ExcelEditor's existing `STRUCTURAL_MUTATION_IDS` subscription
+ *     as a `remove-rows` structural op in the save plan. The gateway's
+ *     `applyStructuralOps` applies each op atomically —
+ *     `transformSheetRows` renumbers `<row>` r= and inner `<c>` r=
+ *     (cell contents travel UNTOUCHED inside their `<c>` elements),
+ *     `transformFormulas` rewrites `<f>` bodies via `shiftFormulaText`
+ *     (relative + absolute + mixed references all track the moved
+ *     cells — the `$` markers are preserved by `shiftReferenceToken`'s
+ *     colDollar/rowDollar capture groups), and `transformRangedFeatures`
+ *     shifts merges, autoFilter, hyperlink sqref, dataValidation sqref,
+ *     conditionalFormatting sqref. This is the EXACT canonical path
+ *     `excel-structural.spec.ts` already proves for Insert/Delete Rows —
+ *     no value-rewrite, no formula loss.
  */
 import { describe, expect, it } from 'vitest'
 
-import { dedupeRows } from '../src/office/dedupe'
+import { dedupeRows, dedupeRowIndices } from '../src/office/dedupe'
 
 describe('dedupeRows', () => {
   it('keeps the first occurrence and reports the removed count', () => {
@@ -203,5 +214,222 @@ describe('dedupeRows', () => {
       ['a', 1],
       ['a', 1],
     ])
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────────
+// dedupeRowIndices — the canonical EXCEL-018 entry point.
+//
+// Returns the SET of duplicate row INDICES (0-based offsets relative
+// to the input matrix). The runtime issues `ws.deleteRows(startRow +
+// offset, 1)` per duplicate in DESCENDING offset order so earlier
+// deletes don't shift later indices. This is the structural `remove-rows`
+// path — formulas/styles/merges/etc. travel atomically with the row.
+// ──────────────────────────────────────────────────────────────────────────
+
+describe('dedupeRowIndices', () => {
+  it('returns the indices of duplicate rows (0-based, ascending) and the count', () => {
+    //   row 0: A, 1   ← first occurrence, kept
+    //   row 1: B, 2   ← first occurrence, kept
+    //   row 2: A, 1   ← duplicate of row 0 — DELETE
+    //   row 3: A, 2   ← first occurrence, kept
+    //   row 4: B, 2   ← duplicate of row 1 — DELETE
+    const { keptIndices, duplicateIndices, removed } = dedupeRowIndices(
+      [
+        ['a', 1],
+        ['b', 2],
+        ['a', 1],
+        ['a', 2],
+        ['b', 2],
+      ],
+      false,
+    )
+    expect(keptIndices, 'kept indices (ascending)').toEqual([0, 1, 3])
+    expect(duplicateIndices, 'duplicate indices (ascending)').toEqual([2, 4])
+    expect(removed).toBe(2)
+  })
+
+  it('never marks the header row as a duplicate', () => {
+    //   row 0: Name (header)  ← preserved verbatim AND never matched
+    //   row 1: Name           ← NOT a duplicate of the header
+    //   row 2: name           ← duplicate of row 1 (case-insensitive)
+    const { keptIndices, duplicateIndices, removed } = dedupeRowIndices(
+      [['Name'], ['Name'], ['name']],
+      true,
+    )
+    expect(keptIndices).toEqual([0, 1])
+    expect(duplicateIndices).toEqual([2])
+    expect(removed).toBe(1)
+  })
+
+  it('treats the header as data when hasHeader is false', () => {
+    // Same fixture as above, but hasHeader=false → row 0 IS in the
+    // seen-set, so a later row matching it gets removed.
+    const { keptIndices, duplicateIndices, removed } = dedupeRowIndices(
+      [['Name'], ['Name'], ['name']],
+      false,
+    )
+    expect(keptIndices).toEqual([0])
+    expect(duplicateIndices).toEqual([1, 2])
+    expect(removed).toBe(2)
+  })
+
+  it("handles the architect's mandatory regression case (Apple/Banana/Cherry)", () => {
+    // The architect's mandatory EXCEL-018 regression fixture:
+    //   row 0: Name, Qty        (header — kept)
+    //   row 1: Apple, 10        (first — kept)
+    //   row 2: Apple, 10        (DUP of row 1 — DELETE)
+    //   row 3: Banana, 20       (first — kept)
+    //   row 4: Apple, 10        (DUP of row 1 — DELETE)
+    //   row 5: Cherry, 30       (first — kept)
+    //   row 6: Apple, 30 (=B6)  (first — kept; result 30 differs from row 1's 10)
+    //
+    // The runtime will issue ws.deleteRows(startRow + 4, 1) then
+    // ws.deleteRows(startRow + 2, 1) — descending order so earlier
+    // deletes don't shift later indices. The survivor at row 6 (the
+    // =B6 formula row) compacts to row 4 after the two deletes; the
+    // gateway's transformFormulas rewrites =B6 → =B4 (Cherry/30
+    // shifted from row 6 to row 4).
+    const { keptIndices, duplicateIndices, removed } = dedupeRowIndices(
+      [
+        ['Name', 'Qty'],
+        ['Apple', 10],
+        ['Apple', 10],
+        ['Banana', 20],
+        ['Apple', 10],
+        ['Cherry', 30],
+        ['Apple', 30],
+      ],
+      true,
+    )
+    expect(keptIndices, 'header + 4 unique data rows kept').toEqual([0, 1, 3, 5, 6])
+    expect(duplicateIndices, 'two duplicates at rows 2 and 4').toEqual([2, 4])
+    expect(removed).toBe(2)
+  })
+
+  it('uses ALL selected columns as the comparison key', () => {
+    // All rows are identical EXCEPT one selected comparison column:
+    //   row 0: A, 1
+    //   row 1: A, 1   ← duplicate of row 0 (both columns match)
+    //   row 2: A, 2   ← NOT a duplicate (column 1 differs)
+    //   row 3: A, 1   ← duplicate of row 0
+    const { duplicateIndices, removed } = dedupeRowIndices(
+      [
+        ['A', 1],
+        ['A', 1],
+        ['A', 2],
+        ['A', 1],
+      ],
+      false,
+    )
+    expect(duplicateIndices).toEqual([1, 3])
+    expect(removed).toBe(2)
+  })
+
+  it('returns an empty duplicateIndices array when there are no duplicates (no-op)', () => {
+    // The runtime MUST NOT fire any ws.deleteRows calls when the dedupe
+    // finds no duplicates — this is the fail-closed no-op path that
+    // surfaces the "No duplicate rows found" status message.
+    const { keptIndices, duplicateIndices, removed } = dedupeRowIndices(
+      [
+        ['A', 1],
+        ['B', 2],
+        ['C', 3],
+      ],
+      false,
+    )
+    expect(keptIndices).toEqual([0, 1, 2])
+    expect(duplicateIndices).toEqual([])
+    expect(removed).toBe(0)
+  })
+
+  it('distinguishes blank cells from empty-string cells (null vs "")', () => {
+    const { duplicateIndices, removed } = dedupeRowIndices(
+      [
+        [null],
+        [''],
+        [null], // duplicate of row 0
+        [''], // duplicate of row 1
+      ],
+      false,
+    )
+    expect(duplicateIndices).toEqual([2, 3])
+    expect(removed).toBe(2)
+  })
+
+  it('distinguishes number from text with the same printed form', () => {
+    // 1 (number) and '1' (string) are NOT duplicates — type-strict.
+    const { duplicateIndices, removed } = dedupeRowIndices([[1], ['1'], [1]], false)
+    expect(duplicateIndices).toEqual([2])
+    expect(removed).toBe(1)
+  })
+
+  it('distinguishes boolean from text with the same printed form', () => {
+    const { duplicateIndices, removed } = dedupeRowIndices([[true], ['true'], [true]], false)
+    expect(duplicateIndices).toEqual([2])
+    expect(removed).toBe(1)
+  })
+
+  it('preserves a 1-row input with hasHeader=true (header-only, no data)', () => {
+    const { keptIndices, duplicateIndices, removed } = dedupeRowIndices([['Header']], true)
+    expect(keptIndices).toEqual([0])
+    expect(duplicateIndices).toEqual([])
+    expect(removed).toBe(0)
+  })
+
+  it('does not mutate the input rows', () => {
+    const input: ReadonlyArray<ReadonlyArray<string | number | null>> = [
+      ['a', 1],
+      ['a', 1],
+    ]
+    dedupeRowIndices(input, false)
+    expect(input).toEqual([
+      ['a', 1],
+      ['a', 1],
+    ])
+  })
+
+  it('returned indices are stable for descending-order deletion', () => {
+    // The contract: duplicateIndices is ASCENDING. The runtime iterates
+    // the array in REVERSE (descending) so earlier deletes don't shift
+    // later indices. This test verifies the ascending contract holds
+    // for a fixture where the descending order is essential.
+    const { duplicateIndices } = dedupeRowIndices(
+      [
+        ['A'],
+        ['B'],
+        ['A'], // dup of row 0
+        ['C'],
+        ['B'], // dup of row 1
+        ['D'],
+        ['A'], // dup of row 0
+      ],
+      false,
+    )
+    expect(duplicateIndices).toEqual([2, 4, 6])
+    // Descending iteration: 6, 4, 2 — each delete doesn't shift the
+    // remaining indices (the remaining dups are at lower row indices).
+    const descending = [...duplicateIndices].sort((a, b) => b - a)
+    expect(descending).toEqual([6, 4, 2])
+  })
+
+  it('dedupeRowIndices and dedupeRows agree on the kept rows (parity)', () => {
+    // The legacy dedupeRows returns the kept-row MATRIX; the canonical
+    // dedupeRowIndices returns the kept-row INDICES. The two must agree:
+    //   dedupeRows(...).rows must equal dedupeRowIndices(...).keptIndices
+    //   mapped through the input matrix.
+    const input: ReadonlyArray<ReadonlyArray<string | number | null>> = [
+      ['Name', 'Qty'],
+      ['Apple', 10],
+      ['Apple', 10],
+      ['Banana', 20],
+      ['Apple', 10],
+      ['Cherry', 30],
+      ['Apple', 30],
+    ]
+    const legacy = dedupeRows(input, true)
+    const canonical = dedupeRowIndices(input, true)
+    expect(legacy.rows).toEqual(canonical.keptIndices.map((i) => [...input[i]!]))
+    expect(legacy.removed).toBe(canonical.removed)
   })
 })

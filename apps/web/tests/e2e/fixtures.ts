@@ -2244,3 +2244,192 @@ export async function buildExcelDedupeFixture(): Promise<Buffer> {
 
   return toBytes(zip)
 }
+
+/**
+ * Deterministic XLSX for the EXCEL-018 architect's mandatory second
+ * regression case — formula preservation across reference types
+ * (absolute / relative / mixed / external-to-selection).
+ *
+ * The selection is A1:B7 (the dedupe range). The dedupe MUST preserve
+ * the formulas on the survivor row that gets compacted (Banana at
+ * row 4 → row 3), and the gateway MUST rewrite every reference type
+ * to track the moved referenced cell (Cherry at row 6 → row 4 after
+ * the two dedupes; the Anchor cell at D6 → D4).
+ *
+ * Sheet "DedupeMixed" (visible):
+ *   Row 1 — header: A1="Name" (s=1), B1="Qty" (s=1)
+ *   Row 2 — A2="Apple"  (s=2 italic), B2=10
+ *   Row 3 — A3="Apple"  (s=2 italic), B3=10   ← full duplicate of row 2 (DELETE)
+ *   Row 4 — A4="Banana" (s=4 bold),    B4=20
+ *                                     C4="=$D$6"  ← absolute ref to D6 (outside selection)
+ *                                     D4="=A6"    ← relative ref to A6 (inside selection)
+ *                                     E4="=$A6"   ← mixed: col $, row relative — to A6
+ *                                     F4="=A$6"   ← mixed: col relative, row $ — to A6
+ *   Row 5 — A5="Apple"  (s=2 italic), B5=10   ← full duplicate of row 2 (DELETE)
+ *   Row 6 — A6="Cherry" (s=0),        B6=30
+ *                                     D6="Anchor" ← target of C4's $D$6 (outside selection)
+ *   Row 7 — A7="Apple"  (s=2 italic), B7=10   ← full duplicate of row 2 (DELETE)
+ *
+ * Dedupe with hasHeader=true on A1:B7 must DELETE rows 3, 5, 7 (3
+ * duplicates). The runtime issues ws.deleteRows(startRow+6, 1),
+ * ws.deleteRows(startRow+4, 1), ws.deleteRows(startRow+2, 1) in
+ * DESCENDING order. The survivor at row 4 (Banana, with the four
+ * formulas in Cols C-F) compacts to row 3; the survivor at row 6
+ * (Cherry, the target of the formulas) compacts to row 4. The
+ * gateway's transformFormulas rewrites every reference:
+ *   - $D$6 → $D$4   (absolute: $ preserved, row 6→4 below deletions)
+ *   - A6 → A4       (relative: row 6→4)
+ *   - $A6 → $A4     (mixed col $, row relative: $ preserved, row 6→4)
+ *   - A$6 → A$4     (mixed col relative, row $: $ preserved, row 6→4)
+ *
+ * After dedupe:
+ *   Row 1: Name, Qty (header preserved)
+ *   Row 2: Apple, 10 (first occurrence preserved)
+ *   Row 3: Banana, 20 with formulas C3="=$D$4" D3="=A4" E3="=$A4" F3="=A$4"
+ *   Row 4: Cherry, 30 with D4="Anchor" (was D6)
+ *
+ * The formulas' COMPUTED VALUES all become "Cherry" (from A4) and
+ * "Anchor" (from D4) — but the test must distinguish the formula
+ * TEXT surviving from the computed result happening to be the same.
+ */
+export async function buildExcelDedupeMixedReferencesFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="DedupeMixed" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  // Shared strings: header labels + fruit names + the Anchor cell text.
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="9" uniqueCount="6">
+  <si><t>Name</t></si>
+  <si><t>Qty</t></si>
+  <si><t>Apple</t></si>
+  <si><t>Banana</t></si>
+  <si><t>Cherry</t></si>
+  <si><t>Anchor</t></si>
+</sst>`,
+  )
+
+  // Styles — same 5 cellXfs as the basic dedupe fixture (parity).
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="3">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><color rgb="FF9C3B00"/><name val="Calibri"/></font>
+    <font><i/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="5">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`,
+  )
+
+  // Worksheet: 7 rows in cols A,B + an Anchor cell at D6 + four
+  // formulas at C4,D4,E4,F4 (on the survivor Banana row). Row 4's
+  // B-column value (20) differs from row 2's B-column value (10), so
+  // row 4 is NOT a duplicate of row 2 — kept.
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s" s="1"><v>0</v></c>
+      <c r="B1" t="s" s="1"><v>1</v></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s" s="2"><v>2</v></c>
+      <c r="B2"><v>10</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="s" s="2"><v>2</v></c>
+      <c r="B3"><v>10</v></c>
+    </row>
+    <row r="4">
+      <c r="A4" t="s" s="4"><v>3</v></c>
+      <c r="B4"><v>20</v></c>
+      <c r="C4"><f>$D$6</f><v>Anchor</v></c>
+      <c r="D4"><f>A6</f><v>Cherry</v></c>
+      <c r="E4"><f>$A6</f><v>Cherry</v></c>
+      <c r="F4"><f>A$6</f><v>Cherry</v></c>
+    </row>
+    <row r="5">
+      <c r="A5" t="s" s="2"><v>2</v></c>
+      <c r="B5"><v>10</v></c>
+    </row>
+    <row r="6">
+      <c r="A6" t="s"><v>4</v></c>
+      <c r="B6"><v>30</v></c>
+      <c r="D6" t="s"><v>5</v></c>
+    </row>
+    <row r="7">
+      <c r="A7" t="s" s="2"><v>2</v></c>
+      <c r="B7"><v>10</v></c>
+    </row>
+  </sheetData>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}

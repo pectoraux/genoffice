@@ -271,25 +271,48 @@ describe('architecture: regression patterns', () => {
   })
 })
 
-// ── EXCEL-018: Remove Duplicates canonical-path guards ─────────────────────
+// ── EXCEL-018: Remove Duplicates canonical structural path guards ─────────
 //
-// Remove Duplicates is implemented as a value-level rewrite through the
-// EXISTING cell-edit mutation family (sheet.mutation.set-range-values →
-// cellEditFromMutation → savePlan.edits → applyCellEditsToXlsx). The
-// guards below enforce that no future "shortcut" introduces:
+// Remove Duplicates is implemented as a sequence of canonical
+// `remove-rows` structural ops — one per duplicate row, in DESCENDING
+// offset order so earlier deletes don't shift later indices. Each
+// delete fires `sheet.mutation.remove-rows` (Univer's row-deletion
+// mutation), journaled by ExcelEditor's existing
+// `STRUCTURAL_MUTATION_IDS` subscription as a `{ kind: 'remove-rows',
+// index, count: 1 }` structural op in the save plan. The gateway's
+// `applyStructuralOps` applies each op atomically:
+//   - `transformSheetRows` renumbers `<row>` r= and inner `<c>` r=
+//     (cell contents — value, formula text, style ref, hyperlink,
+//     comment pointer, shared-formula si= — travel UNTOUCHED inside
+//     their `<c>` elements).
+//   - `transformFormulas` rewrites `<f>` bodies via `shiftFormulaText`
+//     (relative + absolute + mixed references all track the moved
+//     cells — the `$` markers are preserved by `shiftReferenceToken`'s
+//     colDollar/rowDollar capture groups; references to deleted rows
+//     throw `StructuralShiftError` — fail-closed).
+//   - `transformRangedFeatures` shifts merges, autoFilter, hyperlink
+//     sqref, dataValidation sqref, and conditionalFormatting sqref.
+//
+// This is the EXACT canonical path `excel-structural.spec.ts` already
+// proves for Insert/Delete Rows — no value-rewrite, no formula loss.
+// The guards below enforce that no future "shortcut" re-introduces:
+//   - a value-level rewrite via FWorksheet.setValues that DESTROYS
+//     formulas on moved rows (the architect's EXPLICIT objection to
+//     the prior implementation — "moved rows become computed values"
+//     is explicitly NOT accepted as formula preservation),
 //   - a parallel XLSX engine in the browser (jszip / OOXML construction
 //     inside the dedupe path),
 //   - a new save-plan family or wire field for "dedupe ops",
-//   - a non-canonical write path that bypasses FWorksheet.setValues /
-//     FRange.setValue (which would skip the set-range-values journal
-//     subscription and lose save/reopen fidelity).
+//   - a non-canonical write path that bypasses ws.deleteRows /
+//     FWorksheet.deleteRows (which would skip the structural-ops
+//     journal subscription and lose save/reopen fidelity).
 //
 // The dedupe module is a PURE function — it must not import Univer, the
 // gateway, the save plan, or any host API. The wiring happens in
 // useExcelRuntime, which calls the dedupe with the values it read from
 // the live Univer range.
 
-describe('architecture: EXCEL-018 Remove Duplicates uses the canonical cell-edit path', () => {
+describe('architecture: EXCEL-018 Remove Duplicates uses the canonical structural remove-rows path', () => {
   const dedupePath = join(WEB_ROOT, 'src', 'office', 'dedupe.ts')
   const runtimePath = join(WEB_ROOT, 'src', 'screens', 'excel', 'useExcelRuntime.ts')
   const ribbonPath = join(WEB_ROOT, 'src', 'screens', 'excel', 'Ribbon.tsx')
@@ -321,27 +344,70 @@ describe('architecture: EXCEL-018 Remove Duplicates uses the canonical cell-edit
     ).toEqual([])
   })
 
-  it('dedupe.ts exports the dedupeRows function', () => {
+  it('dedupe.ts exports both dedupeRows (legacy) and dedupeRowIndices (canonical)', () => {
     expect(existsSync(dedupePath), `${dedupePath} should exist`).toBe(true)
     const content = readFileSync(dedupePath, 'utf8')
     expect(content).toMatch(/export\s+function\s+dedupeRows\b/)
+    // The canonical entry point returns { keptIndices, duplicateIndices,
+    // removed } — the runtime uses this to issue `ws.deleteRows(...)` per
+    // duplicate (structural path), NOT a value-rewrite via setValues.
+    expect(content).toMatch(/export\s+function\s+dedupeRowIndices\b/)
   })
 
-  it('useExcelRuntime.ts wires removeDuplicates through FWorksheet.getRange().setValues', () => {
-    // The canonical write path is FWorksheet.getRange(row, col, numRows,
-    // numCols).setValues(matrix) — the SAME facade Sort uses, firing
-    // sheet.mutation.set-range-values which is journaled by the existing
-    // subscription. A shortcut that writes via setValueForCell per cell
-    // would still be canonical (same mutation id), but a shortcut that
-    // writes via a private worksheet cellDataMatrix bypass would NOT.
-    // The guard below catches the latter.
+  it('useExcelRuntime.ts wires removeDuplicates through ws.deleteRows (structural path)', () => {
+    // The canonical structural write path is FWorksheet.deleteRows(row,
+    // count) — fires sheet.mutation.remove-rows, journaled by the
+    // existing STRUCTURAL_MUTATION_IDS subscription as a remove-rows
+    // structural op. A value-level shortcut via FWorksheet.getRange().
+    // setValues would fire sheet.mutation.set-range-values and DESTROY
+    // formulas on moved rows (a moved `=B6` becomes the literal
+    // computed value `30`). The architect explicitly rejected this
+    // path; this guard enforces the structural path.
     expect(existsSync(runtimePath), `${runtimePath} should exist`).toBe(true)
     const content = readFileSync(runtimePath, 'utf8')
     expect(content).toMatch(/removeDuplicates/)
-    expect(content).toMatch(/\.setValues\(/)
+    expect(content).toMatch(/\.deleteRows\(/)
     // The dedupe algorithm is delegated to the pure module — no inline
-    // reimplementation of the comparison key.
+    // reimplementation of the comparison key. The canonical entry point
+    // is dedupeRowIndices (returns indices, not values).
     expect(content).toMatch(/from\s+['"][^'"]*office\/dedupe['"]/)
+    expect(content).toMatch(/dedupeRowIndices/)
+  })
+
+  it('useExcelRuntime.removeDuplicates does NOT rewrite moved rows via setValues', () => {
+    // The prior implementation rewrote moved rows with their computed
+    // values via FWorksheet.getRange(...).setValues(...), which DESTROYS
+    // formulas on moved rows. The architect explicitly rejected this:
+    // "The current behavior 'moved rows become computed values' is
+    // explicitly NOT accepted as formula preservation." The guard below
+    // catches any reintroduction of a setValues call inside the
+    // removeDuplicates function body.
+    expect(existsSync(runtimePath), `${runtimePath} should exist`).toBe(true)
+    const content = readFileSync(runtimePath, 'utf8')
+    // Locate the removeDuplicates callback body — from
+    // `const removeDuplicates = useCallback(` to its closing `)`.
+    const startMatch = content.match(/const\s+removeDuplicates\s+=\s+useCallback\(/)
+    expect(startMatch, 'removeDuplicates useCallback present').not.toBeNull()
+    const startIdx = startMatch!.index! + startMatch![0].length
+    // Find the matching close `)` of useCallback. The body is bracket-
+    // balanced; we walk forward counting ( / ) and stop at the first
+    // standalone `)` that closes the useCallback call.
+    let depth = 1
+    let i = startIdx
+    while (i < content.length && depth > 0) {
+      const ch = content[i]
+      if (ch === '(') depth++
+      else if (ch === ')') depth--
+      i++
+    }
+    const body = content.slice(startIdx, i - 1)
+    // The body MUST call deleteRows (the structural path).
+    expect(body, 'removeDuplicates body must call ws.deleteRows').toMatch(/\.deleteRows\(/)
+    // The body MUST NOT call .setValues( — that path destroys formulas.
+    expect(body, 'removeDuplicates body must NOT call .setValues(').not.toMatch(/\.setValues\(/)
+    // The body MUST NOT pad with nulls and rewrite via getRange — the
+    // structural path deletes rows atomically; no padding is needed.
+    expect(body, 'removeDuplicates body must NOT pad with null rows').not.toMatch(/padded/)
   })
 
   it('useExcelRuntime.removeDuplicates reads computed values via getValues()', () => {
@@ -403,8 +469,9 @@ describe('architecture: EXCEL-018 Remove Duplicates uses the canonical cell-edit
   it('ExcelEditor save plan does NOT introduce a "dedupeOps" or "removeDuplicates" family', () => {
     // The canonical save plan (BrowserWorkbookSavePlan) exposes the
     // families: edits, structuralOps, pageSetupStates, filterStates,
-    // dvStates, noteStates. Remove Duplicates must NOT add a new
-    // family — it emits CellEdits through the EXISTING edits channel.
+    // dvStates, noteStates. Remove Duplicates emits `remove-rows` ops
+    // through the EXISTING structuralOps channel — it MUST NOT add a
+    // new top-level family.
     const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
     expect(existsSync(editorPath), `${editorPath} should exist`).toBe(true)
     const content = readFileSync(editorPath, 'utf8')
@@ -426,7 +493,7 @@ describe('architecture: EXCEL-018 Remove Duplicates uses the canonical cell-edit
     const violations = lines.filter((line) => newFamilyPatterns.some((re) => re.test(line)))
     expect(
       violations,
-      'ExcelEditor save plan must NOT introduce a new dedupe family — emit CellEdits through the existing edits channel',
+      'ExcelEditor save plan must NOT introduce a new dedupe family — emit remove-rows ops through the existing structuralOps channel',
     ).toEqual([])
   })
 })
