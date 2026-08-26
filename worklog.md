@@ -897,3 +897,69 @@ Stage Summary:
 - Ready to commit, push, and verify CI.
 - Workflow state remains ARCHITECT_REVIEW / CHANGES REQUIRED (the
   architect owns the VERIFIED decision).
+
+---
+
+## 2026-08-26 — EXCEL-018 correction pushed: CI evidence (commit 82a87c9)
+
+Task ID: EXCEL-018-correction-ci-evidence
+Agent: Z.ai (Implementation Agent)
+
+Task:
+
+- Push the architect correction (commit 82a87c9) and collect CI evidence.
+- Verify the canonical `web` job (the EXCEL-018 gate) is green.
+- Classify any remaining failures as pre-existing or new.
+
+Work Log:
+
+- Pushed commit `82a87c9` to origin/web-office-editor (PR #1 head updated).
+- CI results for `82a87c9`:
+  - `web` job (canonical EXCEL-018 gate): SUCCESS. All steps green:
+    Typecheck (web app + office API host), Unit tests, Production build
+    (web app), Install Playwright chromium, Playwright browser E2E (real
+    Vite + API stack — 77 tests including all 4 EXCEL-018 tests and the
+    architect's sort/formula semantic gate).
+  - `test` job: FAILURE at the Lint step — pre-existing (350 lint errors
+    across non-EXCEL-018 files: frozen desktop apps apps/sheets,
+    apps/docs, apps/slides; other web screens BOQ.tsx/Bid.tsx/
+    Estimate.tsx/WordEditor.tsx; other packages contractor-core,
+    platform-electron; skill scripts). Identical to the prior session's
+    commit 951470d. None of my EXCEL-018 files appear in the lint errors.
+  - `e2e` job: FAILURE at the "E2E (Electron shell)" step — pre-existing
+    (the FROZEN desktop Electron suite; chromium-headless-shell binary
+    missing + desktop sheets test failures). Identical to the prior
+    session's commit. The web Playwright suite (the EXCEL-018-relevant
+    one) passes via the `web` job.
+  - `Project foundation` workflow: FAILURE — pre-existing structural
+    condition (the branch-isolation check diffs origin/main...HEAD and
+    flags apps/sheets/, apps/web/src/screens/excel/, packages/
+    xlsx-gateway/ changes; web-office-editor carries the whole parity
+    phase so this fails for EVERY commit on the branch).
+  - `Web Office Editor Preview` workflow: FAILURE at the "Verify deployed
+    Excel/Web parity" step — pre-existing infrastructure issue (verified
+    in the job logs: the VERCEL_PROJECT_ID secret deploys to
+    ekonplacidegmailcoms-projects/genoffice, a DIFFERENT Vercel project;
+    the deployed preview URL genoffice-5azrj6jwr-ekonplacidegmailcoms-
+    projects.vercel.app is not the genoffice web app, so the E2E demo
+    login (getByRole('button', { name: 'Owner' })) times out
+    universally). Identical to the prior session's commit. This is a
+    GitHub Actions secret misconfiguration the architect must fix; it
+    would fail identically for any commit pushed to this branch.
+    Notably, all build/deploy steps in this workflow ARE green
+    (typecheck, unit tests, deterministic API bundle, web build, Vercel
+    deploy) — only the deployed-parity E2E step fails, on the wrong app.
+
+Stage Summary:
+
+- The EXCEL-018 correction is pushed at commit 82a87c9.
+- The canonical `web` CI gate is GREEN — independently verifying
+  typecheck, unit tests (197/197), production build, and all 77
+  Playwright browser E2E tests (including the 4 EXCEL-018 tests and the
+  architect's sort/formula semantic gate) on a clean CI machine.
+- All other CI failures are pre-existing and unrelated to EXCEL-018
+  (lint debt, frozen Electron suite environment, branch-isolation
+  structural condition, Vercel secret misconfiguration) — each verified
+  identical to the prior session's commit 951470d.
+- Workflow state: ARCHITECT_REVIEW / CHANGES REQUIRED → CORRECTION
+  SUBMITTED. NOT VERIFIED — the architect owns the VERIFIED decision.
