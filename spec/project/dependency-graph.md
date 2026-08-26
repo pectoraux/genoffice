@@ -58,3 +58,14 @@ The `.gproj` adapter lives in `@genoffice/project-file`. Its static package depe
 ```
 
 `@genoffice/project-file` does NOT depend on `@genoffice/project-scheduling` (the scheduling package is a logical work-item dependency `006 → 014`, not a static package import — the file format stores canonical input only; derived scheduling state is re-computed by the scheduling engine on load). The adapter has NO React, Electron, Node, browser, HTTP, or MPP/MSPDI imports (architecture-lock §13). The `project-foundation.yml` CI workflow greps `packages/project-file` for forbidden imports alongside `project-contracts`, `project-engine`, and `project-scheduling`.
+
+## Package dependency edges (PROJECT-015)
+
+PROJECT-015 (MSPDI import) reuses the accepted PROJECT-014 `@genoffice/project-file` package boundary — the MSPDI adapter lives beside the `.gproj` adapter under `packages/project-file/src/mspdi/**`. Its static package dependencies are unchanged:
+
+```text
+@genoffice/project-file → @genoffice/project-engine → @genoffice/project-contracts
+@genoffice/project-file → @genoffice/project-contracts (direct, for types + brand helpers)
+```
+
+`@genoffice/project-file` STILL does NOT statically depend on `@genoffice/project-scheduling` at the package level — the MSPDI importer delegates semantic validation to `validateProjectDocument` (`@genoffice/project-engine`) and produces a canonical `ProjectDocument`; the scheduling engine runs on that document at the host/test layer (the PROJECT-015 test suite imports `schedule` from `@genoffice/project-scheduling` to prove imported documents are schedulable, but the package itself does not). The MSPDI adapter ships a pure-TypeScript XML tokenizer (`src/mspdi/xml-parser.ts`) — NO external XML library, NO `DOMParser`, NO Node `fs` (architecture-lock §13). No MSPDI export surface exists (PROJECT-016 is unauthorized); the work-item dependency `014 → 015 → 016` is preserved.
