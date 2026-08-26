@@ -437,3 +437,69 @@ PROJECT-012 proves the canonical CPM model across: multiple critical paths (two 
 ### PROJECT-013 boundary
 
 PROJECT-012 does NOT implement `LevelResources`, resource leveling heuristics, resource-driven task movement, resource optimization, or over-allocation resolution. PROJECT-013 (resource leveling) is blocked until PROJECT-012 is independently accepted. PROJECT-012 may consume PROJECT-011 work/cost inputs only where useful for tests but does NOT change resource scheduling semantics.
+
+## PROJECT-013 — Resource leveling canonical semantic clarifications
+
+PROJECT-013 implements deterministic resource leveling as an ENGINE operation that produces semantic commands. The canonical operation is:
+
+```text
+levelResources(projectDocument, options) → LevelingResult
+      → proposedCommands (SetTaskStart[])
+      → applyProjectCommand (LevelResources applies the batch)
+      → schedule(projectDocumentAfterLeveling)
+      → DerivedSchedule
+```
+
+The leveler is a pure deterministic function in `packages/project-scheduling`. It detects work-resource over-allocation across the current derived schedule, deterministically selects which eligible task to delay to resolve each conflict, and emits semantic `SetTaskStart` commands that — when applied through the canonical `applyProjectCommand` and re-scheduled — move whole tasks later in time so no resource is asked to work above its `maxUnits` at any working instant. The leveler MUST NOT mutate the input document; the scheduler remains the sole scheduling authority.
+
+### Architecture — frozen command + dependency injection
+
+The frozen `LevelResources` command shape (`{ type: 'LevelResources'; taskIds?: TaskId[] }`) carries only the scope filter. The full `LevelingOptions` (date window, critical/priority/deadline policy) are passed by callers via the pure `levelResources()` function; the `LevelResources` engine command uses the documented default policy.
+
+The engine package is a lower architectural layer than the scheduling package (scheduling → engine for document validation; never engine → scheduling statically). To preserve the layer boundary, the engine exposes a leveler slot (`registerLeveler(fn)`) that the scheduling package registers at module load. When the host imports the scheduling package (which every host that schedules must do), the slot is populated, and the engine's `LevelResources` command dispatch can call the leveler without a circular static import. If no leveler has been registered (a host that imports only the engine package and never the scheduling package), the `LevelResources` command is rejected deterministically with `LEVELING_NOT_AVAILABLE`.
+
+### SetTaskStart — supporting command
+
+PROJECT-013 also implements the `SetTaskStart` command dispatch (the command was in the frozen union but previously fell through to `UNSUPPORTED_COMMAND`). `SetTaskStart` sets the `task.start` field — the candidate earliest start the scheduler uses. The leveler's `LevelingResult.proposedCommands` are `SetTaskStart` values; exposing `SetTaskStart` dispatch lets hosts apply proposed delays one-by-one through the canonical `applyProjectCommand` path (honoring the `LevelingResult → semantic commands → applyProjectCommand` architecture) rather than only as a black-box `LevelResources` batch. The mutator rejects a missing task and a malformed date. The inverse restores the previous start; when the task had no previous start, no inverse is emitted (undo requires a host snapshot, mirroring the `CreateBaseline` precedent).
+
+### Leveling policy (canonical defaults)
+
+- **Scope**: `taskIds` restricts leveling to the named subset (by `TaskId`). When undefined or empty, every auto-scheduled leaf task in the document is in scope. Out-of-scope tasks still contribute to demand (they are the immovable side of a conflict); only in-scope tasks can be delayed.
+- **Date window**: `levelingDateWindow` (`{ start?, finish? }`) restricts over-allocation detection to assignments whose scheduled window overlaps the window. When undefined, the entire project span is considered.
+- **Manual tasks**: ALWAYS protected. `task.manualScheduled === true` is never delayed; the leveler treats it as immovable and emits `LEVELING_PROTECTED_MANUAL` when it is the only resolvable side.
+- **Critical tasks**: `respectCritical` (default `false`) protects critical tasks. When true, a critical task is never delayed; the leveler picks the non-critical side. When both sides are critical and protection is on, the leveler emits `LEVELING_PROTECTED_CRITICAL`. The default (false) means critical tasks ARE levelable and may extend the project — leveling may produce negative slack, observable in the re-scheduled `DerivedSchedule`.
+- **Priority**: `respectPriority` (default `true`) uses `task.priority` to order conflict resolution. Higher priority is kept in place; lower priority is delayed first (mirrors the MS Project "higher priority = harder to move" convention).
+- **Tie-breaking** (deterministic, locale-free): when priority is equal (or `respectPriority` is off), the task with the earlier `scheduledStart` is kept; when starts are equal, the task with the lexicographically smaller `TaskId` is kept. The leveler NEVER uses `Date.now()`, `Math.random()`, `localeCompare`, or array position as ordering identity.
+- **Constraints**: hard constraints (`mustStartOn`, `mustFinishOn`) make a task immovable. Soft constraints are respected as floors/ceilings on the delayed start/finish: `startNoEarlierThan` clamps the new start up to the SNET date; `startNoLaterThan` and `finishNoLaterThan` reject delays that would push the task past the ceiling (`LEVELING_CONSTRAINT_CONFLICT`); `finishNoEarlierThan` is always satisfied when delaying (later finish); `asLateAsPossible` allows delaying (negative slack may result).
+- **Deadlines**: a deadline is NOT a constraint and is never mutated. Leveling may produce a deadline miss; the re-scheduled `DerivedSchedule` exposes `deadlineVariance`/`deadlineMissed` faithfully. `respectDeadlines` (default `false`) — when true, the leveler refuses to delay a task past its deadline and emits `LEVELING_DEADLINE_CONFLICT`.
+- **Milestones**: zero-duration milestones have no work demand and are never levelable for capacity. They are skipped.
+- **Summaries**: summary tasks are never directly delayed. Conflicts are always attributed to leaf tasks. A summary's rolled-up dates reflect its children's movement after re-scheduling.
+- **Splitting**: NOT supported by the frozen `Task` model (a task has a single contiguous `[start, finish]` window). Leveling moves whole tasks only. A single assignment whose `units` exceed `resource.maxUnits` cannot be resolved by moving the task and emits `LEVELING_INCOMPLETE` (splitting is deferred to PROJECT-045).
+- **Negative slack**: leveling may produce negative slack (delaying a critical task extends the project). The leveler does not clamp slack; the re-scheduled `DerivedSchedule` reports it faithfully.
+- **Identity preservation**: the leveler NEVER changes `TaskId`, `DependencyId`, `ResourceId`, `AssignmentId`, or any baseline snapshot. Baselines are immutable; only the current schedule's `task.start` candidates move.
+
+### Over-allocation detection
+
+The leveler detects over-allocation by sweeping assignment-interval endpoints per work resource. For each work resource, it collects assignment intervals `{ start, finish, units }` from the derived schedule (only assignments on tasks that contribute to demand — leaf tasks with non-zero duration, including manual tasks; milestones and zero-duration tasks have empty windows and are skipped; summaries-with-children are skipped because their own assignments would double-count rolled-up children). At each sweep point, the effective capacity is the resource's `maxUnits` OR the tightest covering availability window's `units` (availability windows define the resource's max units over time, MS Project semantics). An over-allocation is any maximal window where combined `units` exceed effective capacity. Conflicts are sorted deterministically (by `resourceId`, then window start, then the sorted `TaskId` set of the conflicting sides).
+
+### Conflict resolution
+
+For each conflict, the leveler partitions sides into delayable vs protected (manual, summary, milestone, out-of-scope, hard-constrained, or critical-when-`respectCritical`). If no side is delayable, it emits the most specific diagnostic (`LEVELING_PROTECTED_CRITICAL` / `LEVELING_PROTECTED_MANUAL` / `LEVELING_CONSTRAINT_CONFLICT` / `LEVELING_NO_ELIGIBLE_TASK`). Otherwise it picks the side with the largest keep-score (lowest priority, latest start, largest `TaskId`) to delay. The new start is the latest `scheduledFinish` of the OTHER sides, advanced to the next working instant in the RESOURCE's resolved calendar (so the resource is never asked to work outside its own calendar; the task's own calendar is then re-applied by `schedule()` when computing the scheduled start from the pinned `task.start` candidate). The new start is then validated against the delayed task's soft constraints (SNET clamp, SNLT/FNLT ceiling) and deadline policy. If validation fails, the leveler emits `LEVELING_CONSTRAINT_CONFLICT` or `LEVELING_DEADLINE_CONFLICT` and leaves that conflict unresolved.
+
+The leveler iterates: propose a delay → apply to the working copy → re-schedule → re-detect → repeat until no conflicts remain or no eligible sides. A task delayed multiple times across iterations is deduplicated in `proposedCommands` (keep the LAST `SetTaskStart` per task); the full audit trail remains in `actions`.
+
+### Determinism contract
+
+Given the same serialized `ProjectDocument` and `LevelingOptions`, the leveler produces byte-identical `proposedCommands`, `actions`, `overallocations`, and `diagnostics`. Reversed task arrays, reversed assignment arrays, reversed resource arrays, and serialized round-trips (JSON parse) all produce the same output. Repeated leveling runs are byte-identical. Leveling an already-leveled document is a no-op (`LEVELING_NO_OVERALLOCATION`). The leveler never depends on wall-clock time, `Math.random`, `localeCompare`, or array position as identity.
+
+### Impossible / incomplete leveling
+
+When an over-allocation cannot be resolved without violating protected constraints (or without splitting, which is deferred to PROJECT-045), the leveler does NOT silently return a partially modified document and claim success. It applies every resolvable delay and surfaces the remaining conflicts as diagnostics (`LEVELING_INCOMPLETE`, `LEVELING_CONSTRAINT_CONFLICT`, `LEVELING_NO_ELIGIBLE_TASK`, `LEVELING_PROTECTED_CRITICAL`, `LEVELING_PROTECTED_MANUAL`, `LEVELING_DEADLINE_CONFLICT`). The `LevelResources` engine command is NON-atomic for incomplete leveling: it accepts and applies every resolvable delay, and the diagnostics make the incompleteness explicit (never silent). The `overallocations` list flags each conflict as `resolved: true` or `resolved: false` so downstream layers can see exactly what was and was not eliminated.
+
+### Baseline + identity protection
+
+Leveling never mutates baseline snapshots, baseline IDs, captured dates, or historical work/cost. After leveling, the current `DerivedSchedule` may differ from the baseline; that difference is observable through existing baseline comparison (`compareBaseline`). Leveling never mutates `TaskId`, `DependencyId`, `ResourceId`, `AssignmentId`, or dependency structure — the leveled document's dependency graph remains acyclic and the same set of identities is preserved.
+
+### PROJECT-045 boundary
+
+PROJECT-013 is the first resource-leveling implementation. It is NOT the final advanced leveling system. PROJECT-045 (advanced resource leveling) may add: task splitting, resource-pool-aware leveling, advanced priority/ordering rules, effort-driven task reshaping, and other advanced constraints. The PROJECT-013 frozen `LevelingOptions` and `LevelingResult` shapes are extensible (additional optional fields can be added without breaking the contract), but the canonical `levelResources(document, options) → LevelingResult` operation and the `LevelResources → proposedCommands → applyProjectCommand → schedule` architecture are frozen.

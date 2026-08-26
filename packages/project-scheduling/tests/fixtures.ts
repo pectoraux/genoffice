@@ -210,6 +210,7 @@ export interface DocumentParts {
   calendars?: Calendar[]
   resources?: Resource[]
   assignments?: Assignment[]
+  baselines?: Baseline[]
   startDate?: ISODateTime
 }
 
@@ -228,7 +229,7 @@ export function makeDocument(parts: DocumentParts = {}): ProjectDocument {
     assignments: parts.assignments ?? [],
     dependencies: parts.dependencies ?? [],
     calendars: parts.calendars ?? [calendar],
-    baselines: [],
+    baselines: parts.baselines ?? [],
     customFields: [],
     views: [],
     tables: [],

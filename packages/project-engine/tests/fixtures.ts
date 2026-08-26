@@ -25,6 +25,23 @@ import type {
 
 const standardDay = (): CalendarPeriod[] => [{ startMinute: 540, endMinute: 1020 }]
 
+// PROJECT-013: deterministic working-day constants (8-hour Mon–Fri week).
+// These mirror the scheduling-package fixtures so engine tests can assert
+// exact ISO-8601 instants without re-deriving them per test.
+export const MONDAY = '2026-08-03T09:00:00.000Z'
+export const MONDAY_FINISH = '2026-08-03T17:00:00.000Z'
+export const TUESDAY = '2026-08-04T09:00:00.000Z'
+export const TUESDAY_FINISH = '2026-08-04T17:00:00.000Z'
+export const WEDNESDAY = '2026-08-05T09:00:00.000Z'
+export const WEDNESDAY_FINISH = '2026-08-05T17:00:00.000Z'
+export const THURSDAY = '2026-08-06T09:00:00.000Z'
+export const THURSDAY_FINISH = '2026-08-06T17:00:00.000Z'
+export const FRIDAY = '2026-08-07T09:00:00.000Z'
+export const FRIDAY_FINISH = '2026-08-07T17:00:00.000Z'
+
+/** Working-minutes helper (shorthand for `asWorkingMinutes(n)`). */
+export const wm = asWorkingMinutes
+
 export const standardWeek = (): Record<number, CalendarPeriod[]> => ({
   0: [],
   1: standardDay(),

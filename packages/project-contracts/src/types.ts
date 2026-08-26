@@ -1,5 +1,11 @@
 export type Brand<T, Name extends string> = T & { readonly __brand: Name }
 
+// `ProjectCommand` is defined in `./commands.js` and references several types
+// from this file. The reference is type-only (erased at runtime), so the
+// mutual type-only dependency between `types.ts` and `commands.ts` does not
+// create a runtime circular import.
+import type { ProjectCommand } from './commands.js'
+
 export type TaskId = Brand<string, 'TaskId'>
 export type ResourceId = Brand<string, 'ResourceId'>
 export type AssignmentId = Brand<string, 'AssignmentId'>
@@ -451,6 +457,239 @@ export interface BaselineVariance {
 export interface BaselineComparison {
   baselineId: BaselineId
   variances: Record<TaskId, BaselineVariance>
+}
+
+// ---- PROJECT-013 resource leveling ----
+/**
+ * PROJECT-013 canonical leveling policy options.
+ *
+ * The leveler is a pure deterministic function
+ * `levelResources(document, options): LevelingResult`. It detects work-resource
+ * over-allocation across the current derived schedule, deterministically
+ * selects which eligible task to delay to resolve each conflict, and emits
+ * semantic `SetTaskStart` commands that — when applied through the canonical
+ * `applyProjectCommand` and re-scheduled — move whole tasks later in time so
+ * no resource is asked to work above its `maxUnits` at any working instant.
+ *
+ * The leveler MUST NOT mutate the input document. The returned
+ * `LevelingResult.proposedCommands` are the semantic output; the host (or the
+ * `LevelResources` engine command) applies them and then re-schedules. The
+ * scheduler remains the sole scheduling authority; leveling only proposes
+ * task-date commands that flow back through the canonical pipeline.
+ *
+ * Policy decisions (documented in `spec/project/requirements.md`):
+ *
+ * - **Scope**: `taskIds` restricts leveling to the named subset (by `TaskId`).
+ *   When undefined or empty, every auto-scheduled leaf task in the document is
+ *   in scope. Scope is consulted at conflict resolution: a conflict between an
+ *   in-scope and an out-of-scope task delays the in-scope task (the out-of-
+ *   scope task is treated as immovable for this leveling pass).
+ * - **Date window**: `levelingDateWindow` ({ start?, finish? }) restricts
+ *   over-allocation detection to assignments whose scheduled window overlaps
+ *   the window. When undefined, the entire project span is considered.
+ * - **Manual tasks**: ALWAYS protected. `task.manualScheduled === true` is
+ *   never delayed; the leveler treats it as immovable and, if it is the only
+ *   resolvable side of a conflict, emits `LEVELING_PROTECTED_MANUAL`.
+ * - **Critical tasks**: `respectCritical` (default `false`) protects critical
+ *   tasks. When true, a critical task is never delayed; the leveler picks the
+ *   non-critical side. When both sides are critical and protection is on, the
+ *   leveler emits `LEVELING_PROTECTED_CRITICAL`.
+ * - **Priority**: `respectPriority` (default `true`) uses `task.priority` to
+ *   order conflict resolution. Higher priority is kept in place; lower
+ *   priority is delayed first (mirrors the MS Project "higher priority =
+ *   harder to move" convention).
+ * - **Tie-breaking** (deterministic, locale-free): when priority is equal (or
+ *   `respectPriority` is off), the task with the earlier `scheduledStart` is
+ *   kept; when starts are equal, the task with the lexicographically smaller
+ *   `TaskId` is kept. The leveler NEVER uses `Date.now()`, `Math.random()`,
+ *   `localeCompare`, or array position as ordering identity.
+ * - **Constraints**: hard constraints (`mustStartOn`, `mustFinishOn`) make a
+ *   task immovable. Soft constraints are respected as floors/ceilings on the
+ *   delayed start/finish:
+ *     • `startNoEarlierThan`: the new start is clamped up to the SNET date.
+ *     • `startNoLaterThan`: the new start must be ≤ SNLT; otherwise
+ *       `LEVELING_CONSTRAINT_CONFLICT`.
+ *     • `finishNoEarlierThan`: always satisfied when delaying (later finish).
+ *     • `finishNoLaterThan`: the new finish must be ≤ FNLT; otherwise
+ *       `LEVELING_CONSTRAINT_CONFLICT`.
+ *     • `asLateAsPossible`: delaying is allowed (already at late dates);
+ *       negative slack may result, observable through the re-scheduled
+ *       `DerivedSchedule`.
+ * - **Deadlines**: a deadline is NOT a constraint. Leveling may produce a
+ *   deadline miss; the re-scheduled `DerivedSchedule` exposes
+ *   `deadlineVariance`/`deadlineMissed` faithfully. `respectDeadlines`
+ *   (default `false`) — when true, the leveler refuses to delay a task past
+ *   its deadline and emits `LEVELING_DEADLINE_CONFLICT` instead.
+ * - **Milestones**: zero-duration milestones have no work demand and are
+ *   never levelable for capacity. They are skipped.
+ * - **Summaries**: summary tasks are never directly delayed. Conflicts are
+ *   always attributed to leaf tasks.
+ * - **Splitting**: NOT supported by the frozen `Task` model (a task has a
+ *   single contiguous `[start, finish]` window). Leveling moves whole tasks
+ *   only. A single assignment whose `units` exceed `resource.maxUnits` cannot
+ *   be resolved by moving the task and emits `LEVELING_INCOMPLETE` (splitting
+ *   is deferred to PROJECT-045).
+ * - **Negative slack**: leveling may produce negative slack (delaying a
+ *   critical task extends the project). This is observable in the re-scheduled
+ *   `DerivedSchedule`; the leveler does not clamp slack.
+ * - **Identity preservation**: the leveler NEVER changes `TaskId`,
+ *   `DependencyId`, `ResourceId`, `AssignmentId`, or any baseline snapshot.
+ *   Baselines are immutable; only the current schedule moves.
+ *
+ * Determinism contract: given the same serialized `ProjectDocument` and
+ * `LevelingOptions`, the leveler produces byte-identical
+ * `LevelingResult.proposedCommands` and `diagnostics`. Reversed task arrays,
+ * reversed assignment arrays, reversed resource arrays, and serialized
+ * round-trips all produce the same output.
+ */
+export interface LevelingOptions {
+  /** Restricts leveling to the named subset of tasks (by `TaskId`). */
+  taskIds?: TaskId[]
+  /** Restricts over-allocation detection to assignments overlapping this window. */
+  levelingDateWindow?: { start?: ISODateTime; finish?: ISODateTime }
+  /**
+   * When true, critical tasks (totalSlack ≤ 0) are protected from delay.
+   * Default false — critical tasks are levelable and may extend the project.
+   */
+  respectCritical?: boolean
+  /**
+   * When true, `task.priority` orders conflict resolution (higher priority is
+   * kept in place). Default true.
+   */
+  respectPriority?: boolean
+  /**
+   * When true, leveling refuses to delay a task past its `deadline` and emits
+   * `LEVELING_DEADLINE_CONFLICT`. Default false — deadlines are not
+   * constraints and may be missed (the re-scheduled DerivedSchedule reports
+   * `deadlineMissed` faithfully).
+   */
+  respectDeadlines?: boolean
+}
+
+/**
+ * A single over-allocation detected by the leveler.
+ *
+ * `resourceId` is the over-allocated work resource. `assignmentIds` are the
+ * conflicting assignments (all on `resourceId`). `taskIds` are the
+ * corresponding tasks. `peakDemand` is the maximum combined `units` observed
+ * at any working instant in the conflict window; `maxUnits` is the resource's
+ * capacity. `window` is the { start, finish } interval where the
+ * over-allocation was detected (assignment-scheduled endpoints, not working
+ * minutes). `resolved` is true when the leveler proposed a delay that
+ * eliminates this over-allocation in the working copy.
+ */
+export interface LevelingOverallocation {
+  resourceId: ResourceId
+  assignmentIds: AssignmentId[]
+  taskIds: TaskId[]
+  peakDemand: number
+  maxUnits: number
+  window: { start: ISODateTime; finish: ISODateTime }
+  resolved: boolean
+}
+
+/**
+ * A leveling action proposed by the leveler. Each action is a semantic
+ * `SetTaskStart` command plus the reason it was proposed and the conflict it
+ * resolves. The `proposedCommand` is the canonical semantic output: the host
+ * (or the `LevelResources` engine command) applies it through
+ * `applyProjectCommand` and then re-schedules.
+ */
+export interface LevelingAction {
+  taskId: TaskId
+  resourceId: ResourceId
+  /** The original scheduled start (before this action's delay). */
+  originalStart: ISODateTime
+  /** The proposed new start (the kept task's scheduledFinish, advanced to the
+   * next working instant in the resource's resolved calendar, clamped to any
+   * SNET floor). */
+  newStart: ISODateTime
+  /** The semantic command the host applies to realize this delay. */
+  proposedCommand: ProjectCommand
+  /** The conflict that triggered this action (over-allocation signature). */
+  reason: 'over-allocation'
+  /** The assignment on the delayed task that participates in the conflict. */
+  assignmentId: AssignmentId
+}
+
+/**
+ * PROJECT-013 canonical leveling diagnostic codes. The leveler emits these
+ * in `LevelingResult.diagnostics` (and the engine surfaces them through
+ * `ProjectCommandResult.diagnostics`) so the host can report exactly why a
+ * leveling pass did or did not fully resolve every over-allocation.
+ *
+ * - `LEVELING_NO_OVERALLOCATION`: no work-resource over-allocation was
+ *   detected; the document is already level (info).
+ * - `LEVELING_INCOMPLETE`: at least one over-allocation could not be fully
+ *   resolved without splitting or reducing units (e.g. a single 200%
+ *   assignment on a 100% resource). The leveler applied every resolvable
+ *   delay and reports the remaining conflict (warning).
+ * - `LEVELING_CONSTRAINT_CONFLICT`: delaying the chosen task would violate a
+ *   hard or ceiling soft constraint (SNLT/FNLT/MFO/MSO). The leveler did not
+ *   move that task and reports the conflict (warning).
+ * - `LEVELING_NO_ELIGIBLE_TASK`: a conflict exists but no eligible task can be
+ *   delayed (all sides are manual, summary, milestone, out-of-scope, or
+ *   protected by policy). The conflict remains (warning).
+ * - `LEVELING_PROTECTED_CRITICAL`: `respectCritical` is on and every side of
+ *   the conflict is critical. The conflict remains (warning).
+ * - `LEVELING_PROTECTED_MANUAL`: a conflict involves a manual task on the only
+ *   resolvable side. Manual tasks are never delayed; the conflict remains
+ *   (warning).
+ * - `LEVELING_DEADLINE_CONFLICT`: `respectDeadlines` is on and delaying the
+ *   chosen task would push it past its deadline. The conflict remains
+ *   (warning).
+ * - `LEVELING_SCOPE_EMPTY`: the `taskIds` scope filter matched no tasks
+ *   (info). No leveling was performed.
+ */
+export type LevelingDiagnosticCode =
+  | 'LEVELING_NO_OVERALLOCATION'
+  | 'LEVELING_INCOMPLETE'
+  | 'LEVELING_CONSTRAINT_CONFLICT'
+  | 'LEVELING_NO_ELIGIBLE_TASK'
+  | 'LEVELING_PROTECTED_CRITICAL'
+  | 'LEVELING_PROTECTED_MANUAL'
+  | 'LEVELING_DEADLINE_CONFLICT'
+  | 'LEVELING_SCOPE_EMPTY'
+
+export interface LevelingDiagnostic {
+  code: LevelingDiagnosticCode
+  severity: 'info' | 'warning' | 'error'
+  message: string
+  taskId?: TaskId
+  resourceId?: ResourceId
+  assignmentId?: AssignmentId
+}
+
+/**
+ * PROJECT-013 leveling result. Pure and deterministic: the same serialized
+ * `ProjectDocument` + `LevelingOptions` always produces byte-identical
+ * `proposedCommands`, `actions`, `overallocations`, and `diagnostics`.
+ *
+ * The leveler does NOT mutate the input document. The host applies
+ * `proposedCommands` (typically via the `LevelResources` engine command, which
+ * applies them as a batch and returns a new document) and then calls
+ * `schedule()` on the result. The scheduler remains the sole scheduling
+ * authority.
+ *
+ * `overallocations` lists every conflict detected (in deterministic order:
+ * sorted by `resourceId`, then by conflict window start, then by the sorted
+ * `TaskId` set of the conflicting assignments). `resolved` flags whether the
+ * leveler's proposed delays eliminate that conflict in the working copy.
+ * `actions` lists every `SetTaskStart` proposed, in deterministic
+ * application order. `affectedTaskIds` is the sorted unique set of tasks the
+ * actions move.
+ */
+export interface LevelingResult {
+  /** Semantic commands the host applies (in order) to realize the leveling. */
+  proposedCommands: ProjectCommand[]
+  /** Per-action detail (one entry per proposed delay). */
+  actions: LevelingAction[]
+  /** Every over-allocation detected, with `resolved` flags. */
+  overallocations: LevelingOverallocation[]
+  /** Sorted unique set of tasks the proposed actions move. */
+  affectedTaskIds: TaskId[]
+  /** Diagnostics surfacing incomplete / impossible / no-op leveling. */
+  diagnostics: LevelingDiagnostic[]
 }
 
 export interface ProjectSavePlan {
