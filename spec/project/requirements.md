@@ -758,13 +758,13 @@ MSPDI `<Duration>`/`<Work>` are ISO-8601 durations (`PT8H0M0S`); the time-part (
 
 MSPDI `<LinkLag>` is stored in **tenths of the unit declared by `<LinkLagFormat>`**, and every supported working lag unit applies its own explicit conversion to integer `lagMinutes` (PROJECT-015 correction round 1 — this table is authoritative):
 
-| `LinkLagFormat` | unit           | conversion to `lagMinutes`                     |
-|-----------------|----------------|------------------------------------------------|
+| `LinkLagFormat` | unit           | conversion to `lagMinutes`                                     |
+| --------------- | -------------- | -------------------------------------------------------------- |
 | 1               | working minute | `LinkLag / 10` (non-multiple-of-10 → `INVALID_MSPDI_DURATION`) |
-| 3               | working hour   | `LinkLag / 10 × 60` (always whole minutes)     |
-| 5               | working day    | `LinkLag / 10 × MinutesPerDay`                 |
-| 7               | working week   | `LinkLag / 10 × MinutesPerWeek`                |
-| 9               | working month  | `LinkLag / 10 × DaysPerMonth × MinutesPerDay`  |
+| 3               | working hour   | `LinkLag / 10 × 60` (always whole minutes)                     |
+| 5               | working day    | `LinkLag / 10 × MinutesPerDay`                                 |
+| 7               | working week   | `LinkLag / 10 × MinutesPerWeek`                                |
+| 9               | working month  | `LinkLag / 10 × DaysPerMonth × MinutesPerDay`                  |
 
 The day/week/month factors are the project-level conversion settings declared by the MSPDI itself (`<MinutesPerDay>`, `<MinutesPerWeek>`, `<DaysPerMonth>` on the `<Project>` root). When the file declares no factor, the MSPDI default settings apply (480 / 2400 / 20 — the documented 8-hour-day, 40-hour-week, 20-day-month Microsoft Project defaults); using the format default is the MSPDI-defined semantics, not an approximation, so no diagnostic is emitted for an absent declaration. Factor validation is lazy with respect to the lag formats actually present (correction round 2): a declared factor is validated only when a dependency carrying a lag format that uses it is encountered — `MinutesPerDay` for day (5) and month (9) lags, `MinutesPerWeek` for week (7) lags, `DaysPerMonth` + `MinutesPerDay` for month (9) lags. Minute (1) and hour (3) lags are factor-independent and never trigger factor validation, so malformed declarations that no present lag format uses produce no diagnostic and never poison an otherwise valid import. A malformed declared factor that a present lag format uses (non-positive or non-integer) emits `INVALID_MSPDI` naming the declaration — at most once per declaration, regardless of how many dependencies use it — and the affected lag converts with the documented default (a declared value is never silently approximated). Any conversion that does not yield a whole minute emits `INVALID_MSPDI_DURATION` and defaults the lag to 0 (dependency retained — never silently rounded, never silently dropped). The factors are import-time conversion parameters only — the canonical `ProjectDocument` stores the resulting integer `WorkingMinutes`, never the factors themselves.
 
@@ -810,13 +810,13 @@ Refusal: a document that fails `validateProjectDocument` is NOT exported — zer
 
 ### Identity mapping (reverse of PROJECT-015)
 
-| Canonical source                        | MSPDI field            | Mapping                                              |
-| --------------------------------------- | ---------------------- | ---------------------------------------------------- |
-| `Task.uid` / `Resource.uid`             | `<UID>`                | verbatim (non-negative integers; otherwise synthesized with `INVALID_MSPDI_EXPORT`) |
-| `Calendar.id` matching `c<uid>`         | `<Calendar><UID>`      | parsed uid                                           |
-| `Calendar.id` otherwise                 | `<Calendar><UID>`      | smallest unused non-negative integer (deterministic; `UNREPRESENTABLE_MSPDI_VALUE` warning — id remaps consistently, references included) |
-| `Assignment.id` matching `a<uid>`       | `<Assignment><UID>`    | parsed uid / synthesized as above                    |
-| `Baseline.id` matching `b<slot>`        | baseline slot index    | parsed slot / synthesized as above (slots 0..10)     |
+| Canonical source                  | MSPDI field         | Mapping                                                                                                                                   |
+| --------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `Task.uid` / `Resource.uid`       | `<UID>`             | verbatim (non-negative integers; otherwise synthesized with `INVALID_MSPDI_EXPORT`)                                                       |
+| `Calendar.id` matching `c<uid>`   | `<Calendar><UID>`   | parsed uid                                                                                                                                |
+| `Calendar.id` otherwise           | `<Calendar><UID>`   | smallest unused non-negative integer (deterministic; `UNREPRESENTABLE_MSPDI_VALUE` warning — id remaps consistently, references included) |
+| `Assignment.id` matching `a<uid>` | `<Assignment><UID>` | parsed uid / synthesized as above                                                                                                         |
+| `Baseline.id` matching `b<slot>`  | baseline slot index | parsed slot / synthesized as above (slots 0..10)                                                                                          |
 
 `TaskId`/`ResourceId` are NEVER exported as MSPDI UIDs (architecture-lock §4). No random IDs, no clock reads, no array position as identity: synthesis is a pure function of the document content (ids parsed in code-point order take their uid; the rest take the smallest unused integers in canonical order).
 

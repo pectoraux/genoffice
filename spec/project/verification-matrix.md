@@ -97,7 +97,6 @@ PROJECT-015 (MSPDI import) must include at minimum:
 - package-boundary: `packages/project-file` (including the new `src/mspdi/**` source and `tests/mspdi*`) greps clean for forbidden imports (`react`/`electron`/`node:`/`http`/`https`) — zero matches; the `project-foundation.yml` CI gate runs typecheck+test for `project-file` (which now includes the MSPDI suite).
 - architecture-lock.md unchanged; no forbidden surfaces touched; no MSPDI/MPP runtime dependency introduced (the XML parser is a pure-TypeScript tokenizer shipped in the package).
 
-
 ## PROJECT-016 evidence requirements
 
 PROJECT-016 (MSPDI export) must include at minimum:

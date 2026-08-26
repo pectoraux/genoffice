@@ -70,7 +70,6 @@ PROJECT-015 (MSPDI import) reuses the accepted PROJECT-014 `@genoffice/project-f
 
 `@genoffice/project-file` STILL does NOT statically depend on `@genoffice/project-scheduling` at the package level — the MSPDI importer delegates semantic validation to `validateProjectDocument` (`@genoffice/project-engine`) and produces a canonical `ProjectDocument`; the scheduling engine runs on that document at the host/test layer (the PROJECT-015 test suite imports `schedule` from `@genoffice/project-scheduling` to prove imported documents are schedulable, but the package itself does not). The MSPDI adapter ships a pure-TypeScript XML tokenizer (`src/mspdi/xml-parser.ts`) — NO external XML library, NO `DOMParser`, NO Node `fs` (architecture-lock §13). No MSPDI export surface exists (PROJECT-016 is unauthorized); the work-item dependency `014 → 015 → 016` is preserved.
 
-
 ## Package dependency edges (PROJECT-016)
 
 PROJECT-016 (MSPDI export) reuses the accepted package boundary — the exporter lives in `packages/project-file/src/mspdi/**` beside the importer, behind the same `MspdiFileAdapter`/`ProjectFileAdapter` surface (now `inspect` + `import` + `export`). Static package dependencies are unchanged:
