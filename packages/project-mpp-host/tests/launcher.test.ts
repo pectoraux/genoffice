@@ -79,11 +79,17 @@ function fakeLauncher(
 }
 
 describe('launcher failure classes (fake sidecar, real process management)', () => {
-  it('MPP_SIDECAR_UNAVAILABLE: the executable cannot be started (wrapped: exit 127 + "failed to execute" maps precisely)', async () => {
-    // Default 'required' policy on a host with the mechanism: the missing
+  it('MPP_SIDECAR_UNAVAILABLE: the executable cannot be started (wrapped: exit 127 + "failed to execute" maps precisely; probe-aware)', async () => {
+    // On a host WITH the mechanism (default 'required' policy): the missing
     // java executable surfaces as the wrapper's exit 127 + "failed to
     // execute" stderr — mapped back to the semantically-correct
-    // MPP_SIDECAR_UNAVAILABLE, never a misleading "conversion exited":
+    // MPP_SIDECAR_UNAVAILABLE, never a misleading "conversion exited". On a
+    // host WITHOUT the mechanism (e.g. a CI runner that restricts
+    // unprivileged user namespaces): the default policy FAILS CLOSED with
+    // MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE instead — equally precise,
+    // and the wrapper-branch mapping itself is then covered by the
+    // deterministic fake-unshare behavioral test. Both outcomes asserted:
+    const capability = await probeNetworkIsolation()
     const launcher = new MppSidecarLauncher({
       mpxjHome: '/nonexistent',
       javaExecutable: '/definitely/not/a/real/binary',
@@ -93,10 +99,14 @@ describe('launcher failure classes (fake sidecar, real process management)', () 
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.diagnostics).toHaveLength(1)
-      expect(result.diagnostics[0].code).toBe(MPP_SIDECAR_UNAVAILABLE)
+      if (capability.supported) {
+        expect(result.diagnostics[0].code).toBe(MPP_SIDECAR_UNAVAILABLE)
+        expect(result.diagnostics[0].message).toContain('could not be started')
+      } else {
+        expect(result.diagnostics[0].code).toBe(MPP_SIDECAR_NETWORK_ISOLATION_UNAVAILABLE)
+      }
       expect(result.diagnostics[0].severity).toBe('error')
       expect(result.diagnostics[0].stage).toBe('sidecar')
-      expect(result.diagnostics[0].message).toContain('could not be started')
     }
   })
 
