@@ -70,7 +70,7 @@ shipping:
 
 - `@byteink/mppjs` (MIT wrapper around a GraalVM AOT native MPXJ binary):
   failed on headless Linux in our own spike (`UnsatisfiedLinkError: No
-  awt`), and LGPL §4 relinking duties are practically impossible with an
+awt`), and LGPL §4 relinking duties are practically impossible with an
   AOT static binary. Not used.
 - Aspose.Tasks (the only programmatic MPP writer): commercial SDK —
   rejected (MPP export is out of scope by direction).
