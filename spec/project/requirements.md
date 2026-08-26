@@ -696,7 +696,7 @@ The serializer uses NO `Date.now()`, NO random UUID generation, NO `localeCompar
 
 ## PROJECT-015 — MSPDI XML import
 
-MSPDI (Microsoft Project Data Interchange) is an XML format. The importer maps MSPDI XML into the existing canonical `ProjectDocument` and delegates semantic validation to the accepted engine. The adapter does NOT become the canonical model; MSPDI-specific identity is NOT preserved as GenOffice identity; no MSPDI XML is written into React/browser code. Import-only (MSPDI export is PROJECT-016, unauthorized here; MPP is PROJECT-017–019).
+MSPDI (Microsoft Project Data Interchange) is an XML format. The importer maps MSPDI XML into the existing canonical `ProjectDocument` and delegates semantic validation to the accepted engine. The adapter does NOT become the canonical model; MSPDI-specific identity is NOT preserved as GenOffice identity; no MSPDI XML is written into React/browser code. Import-only as delivered (MSPDI export is PROJECT-016, delivered after this increment; MPP is PROJECT-017–019).
 
 ### Architecture
 
@@ -704,7 +704,7 @@ MSPDI (Microsoft Project Data Interchange) is an XML format. The importer maps M
 MSPDI XML → MSPDIAdapter → ProjectDocument → validateProjectDocument → schedule
 ```
 
-The MSPDI adapter lives in `@genoffice/project-file` beside the accepted `.gproj` adapter (PROJECT-014). It reuses the existing `ProjectFileAdapter` boundary, `ImportDiagnostic` contract, brand-promotion helpers, and `validateProjectDocument` pipeline — it does NOT introduce a second file-adapter abstraction. It exposes `inspect` + `import` only (NO `export` — PROJECT-016 is unauthorized). The adapter depends ONLY on `@genoffice/project-contracts` and `@genoffice/project-engine`; it has NO React, Electron, Node, browser, HTTP, or external-XML-library dependencies (the XML parser is a pure-TypeScript tokenizer shipped in the package — the XML analog of the `.gproj` UTF-8 codec).
+The MSPDI adapter lives in `@genoffice/project-file` beside the accepted `.gproj` adapter (PROJECT-014). It reuses the existing `ProjectFileAdapter` boundary, `ImportDiagnostic` contract, brand-promotion helpers, and `validateProjectDocument` pipeline — it does NOT introduce a second file-adapter abstraction. It exposed `inspect` + `import` only as delivered (PROJECT-016 later added `export` behind the same boundary). The adapter depends ONLY on `@genoffice/project-contracts` and `@genoffice/project-engine`; it has NO React, Electron, Node, browser, HTTP, or external-XML-library dependencies (the XML parser is a pure-TypeScript tokenizer shipped in the package — the XML analog of the `.gproj` UTF-8 codec).
 
 ### Identity mapping
 
@@ -789,3 +789,87 @@ Import-only. The acceptance invariant: `MSPDI XML → import → ProjectDocument
 ### Determinism
 
 Proven by the test suite: (1) same MSPDI bytes → same `ProjectDocument` bytes; (2) equivalent element-order variation → identical canonical `ProjectDocument`; (3) every valid golden imports with zero error-level diagnostics and passes `validateProjectDocument` + `schedule` deterministically. The importer uses NO `Date.now()`, NO random IDs, NO host locale, NO system timezone.
+
+## PROJECT-016 — MSPDI XML export
+
+Deterministic export from the canonical `ProjectDocument` to MSPDI XML, behind the same `ProjectFileAdapter` boundary as the `.gproj` adapter (PROJECT-014) and the MSPDI importer (PROJECT-015). The canonical `ProjectDocument` remains the source of truth; MSPDI-specific XML structures never become canonical domain state. No second file-adapter abstraction; no renderer/Electron/browser/Node code (the XML writer is the pure-TypeScript `src/mspdi/xml-writer.ts`, the serialization analog of the accepted pure-TS parser).
+
+### Architecture
+
+```text
+ProjectDocument → MSPDIAdapter.export → MSPDI XML
+```
+
+`exportMspdi(document)` returns `{ bytes, diagnostics }`. The adapter (`mspdiFileAdapter`) now exposes `inspect` + `import` + `export` — the same host-neutral contract shape as `gprojFileAdapter`.
+
+### Round-trip semantics
+
+The primary acceptance invariant: `ProjectDocument → exportMspdi → importMspdi → ProjectDocument` must be **semantically equivalent** for all supported PROJECT-014/015 fields (properties, tasks, hierarchy, identity, dependencies, lagMinutes, constraints, deadlines, progress, calendars, resources, assignments, baselines, custom fields), and the re-derived `DerivedSchedule` must match after re-scheduling. Byte-identical MSPDI XML is NOT required by the format (many equivalent serializations exist); what is required is that the SAME document always serializes to byte-identical **canonical** XML. For import-convention documents (identities following the accepted PROJECT-015 mapping), the round-trip is byte-identical at the canonical-document level (provable via `serializeGproj`).
+
+Refusal: a document that fails `validateProjectDocument` is NOT exported — zero bytes, one `INVALID_MSPDI_EXPORT` error, and the engine's diagnostics surfaced verbatim as error-level entries. The exporter never serializes semantically invalid canonical state.
+
+### Identity mapping (reverse of PROJECT-015)
+
+| Canonical source                        | MSPDI field            | Mapping                                              |
+| --------------------------------------- | ---------------------- | ---------------------------------------------------- |
+| `Task.uid` / `Resource.uid`             | `<UID>`                | verbatim (non-negative integers; otherwise synthesized with `INVALID_MSPDI_EXPORT`) |
+| `Calendar.id` matching `c<uid>`         | `<Calendar><UID>`      | parsed uid                                           |
+| `Calendar.id` otherwise                 | `<Calendar><UID>`      | smallest unused non-negative integer (deterministic; `UNREPRESENTABLE_MSPDI_VALUE` warning — id remaps consistently, references included) |
+| `Assignment.id` matching `a<uid>`       | `<Assignment><UID>`    | parsed uid / synthesized as above                    |
+| `Baseline.id` matching `b<slot>`        | baseline slot index    | parsed slot / synthesized as above (slots 0..10)     |
+
+`TaskId`/`ResourceId` are NEVER exported as MSPDI UIDs (architecture-lock §4). No random IDs, no clock reads, no array position as identity: synthesis is a pure function of the document content (ids parsed in code-point order take their uid; the rest take the smallest unused integers in canonical order).
+
+### Lag export representation
+
+The deterministic canonical representation is **working minutes**: `LinkLagFormat = 1` with `LinkLag = lagMinutes × 10` (the exact inverse of the accepted import conversion for format 1). A lag whose `LinkLag` would fall outside the safe-integer range is exported as lag 0 with an `INVALID_MSPDI_EXPORT_LAG` **error** (the dependency is retained — lag semantics are never silently changed or rounded). Project-level factor declarations (`<MinutesPerDay>`/`<MinutesPerWeek>`/`<DaysPerMonth>`) are NOT emitted: the canonical document stores no factors (they are import-time conversion parameters only), minute-format lags are factor-independent, and values are never invented.
+
+### WBS / hierarchy / task order
+
+Tasks are exported in **hierarchical-DFS order** (parents before children; sibling order = the canonical task array order). `OutlineNumber` and `WBS` are a **deterministic projection** of `parentTaskId` + sibling order (`1`, `1.1`, `1.2`, …) — exactly the form the accepted importer reconstructs parents from, so the exported hierarchy imports back into the same canonical `parentTaskId` relationships. WBS is not canonical identity. A canonical `task.wbs` that differs from the derived outline is replaced by the derived value with an `UNREPRESENTABLE_MSPDI_VALUE` warning (hierarchy relationships stay exact); a task array order that is not DFS (a child preceding its parent) is canonicalized to DFS order with an `UNSUPPORTED_MSPDI_EXPORT_FEATURE` warning (sibling order preserved). Task sibling order IS semantically meaningful — reordering siblings legitimately changes the XML.
+
+### Deterministic XML ordering
+
+Explicit ordering everywhere; no `localeCompare` (code-point comparisons), no randomness, no clock reads, no host timezone, no object-insertion-order dependence (record keys re-sorted):
+
+- Project root children: `SaveVersion`, `UID` (canonical `properties.id`; warning when empty), `Name`, `StartDate`, `FinishDate`?, `StatusDate`?, `LastSaved`? (baseline capturedAt carrier, only when baselines exist — never invented), then `Calendars`?, `ExtendedAttributes`?, `Tasks`?, `Resources`?, `Assignments`? (containers only when non-empty).
+- Calendars: default calendar first (marked `IsBaseCalendarDefault`), then ascending UID; `WeekDays` always all seven (`DayType` 1..7, `DayWorking` derived from period presence); exceptions sorted by date; working periods sorted by start.
+- Tasks: DFS order (above); within a task the fixed field order is `UID, ID, Name, WBS, OutlineNumber, OutlineLevel, Summary, Milestone, Manual, Type, ConstraintType?, ConstraintDate?, Deadline?, Priority, CalendarUID?, Start?, Finish?, Duration, Work, RemainingWork, ActualWork, Cost, ActualCost, RemainingCost, PercentComplete, PhysicalPercentComplete?, Notes?, PredecessorLink*, baseline slots (ascending), ExtendedAttribute*` (custom-field values sorted by field id).
+- Resources: ascending UID; availability periods sorted by start.
+- Assignments: sorted by (task UID, resource UID) — the semantic assignment key.
+- Dependencies: sorted by (successor UID, predecessor UID, link type); emitted as `PredecessorLink` elements on the successor.
+- Custom-field definitions: sorted by `FieldID`; baselines: ascending slot.
+
+Reordered-but-equivalent canonical inputs (calendars, resources, assignments, dependencies, custom fields, exceptions, availability periods) produce **identical** XML bytes; task sibling order changes legitimately produce different bytes.
+
+### Calendars
+
+`BaseCalendarUID` is preserved (inheritance is NOT flattened). The accepted importer materializes all seven weekday keys, so a canonical derived calendar with a partial `workingWeek` (absent keys inherit the base chain under `resolveCalendar`) is **materialized**: every weekday key emits the child's own periods when present, otherwise the nearest ancestor's periods for that key (never-working when no ancestor defines it). This is the sanctioned normalization — the resolved semantics are exactly recoverable (the round-tripped calendar re-resolves identically) and it is disclosed with an `MSPDI_EXPORT_NORMALIZED` info diagnostic. It is a pure record walk over `baseCalendarId` links, not a scheduling computation. A working period ending at 24:00 (`endMinute` 1440) is emitted as `24:00:00` with an `UNREPRESENTABLE_MSPDI_VALUE` warning (the importer's HH:MM:SS rule drops it on re-import). Exceptions export `<Start>`/`<Finish>` as the date at `T00:00:00` with the exception's working periods (recurring/multi-day shapes do not exist canonically).
+
+### Derived state policy
+
+The exporter never consults `DerivedSchedule` and never runs a scheduler (static source guard: no scheduling-package import, no derived-schedule references). The only derived projections are format-mandated and documented: the outline number projection and the weekday materialization (both above). Neither computes dates or durations.
+
+### Baselines
+
+Baseline snapshots export into MSPDI baseline slots (`Baseline`, `Baseline1`..`Baseline10`) with task snapshot `Start`/`Finish`/`Duration`/`Work`/`Cost`; slot ordering is ascending and deterministic. `capturedAt` has no per-baseline MSPDI representation: a uniform capturedAt round-trips exactly through the `<LastSaved>` carrier; divergent values are carried by the first (lowest-slot) baseline's capturedAt with `UNREPRESENTABLE_MSPDI_VALUE` warnings for the rest. `task.baseline` (the derived reverse index) is reconstructed empty by the accepted importer: a non-empty index is disclosed with an `UNSUPPORTED_MSPDI_EXPORT_FEATURE` warning; a listing with no matching snapshot is dropped with a warning. No unsupported baseline metadata is invented.
+
+### Custom fields
+
+Definitions export as `ExtendedAttribute` (`FieldID` = canonical id, `Alias` = name, `Type` = the canonical type literal `text|number|boolean|date`); values export per task (number → decimal text, boolean → `true`/`false`, null → `FieldID` with no `Value`). Field type is never silently changed. Two importer-side re-parse limitations are disclosed with `UNREPRESENTABLE_MSPDI_VALUE` warnings rather than silently accepted: string values that re-parse as number/boolean, and non-finite numeric values.
+
+### Unsupported-feature policy (no silent loss)
+
+Every dropped, re-projected, or non-reconstructible piece of canonical state is named by a diagnostic. Export codes: `INVALID_MSPDI_EXPORT` (refusal; also uid synthesis), `INVALID_MSPDI_EXPORT_LAG` (unrepresentable lag — exported 0 with error), `UNREPRESENTABLE_MSPDI_VALUE` (identity remap, 24:00 period ends, divergent capturedAt, empty names, non-integer/negative durations, wbs re-projection, numeric-looking string values), `UNSUPPORTED_MSPDI_EXPORT_FEATURE` (emitted-but-not-reconstructed state: `physicalPercentComplete`, multiple notes collapsed into the single `<Notes>` field, non-empty `task.baseline` index, view/table/filter/group definitions, non-DFS task order), `MSPDI_EXPORT_NORMALIZED` (weekday materialization info), `MSPDI_WRITTEN` (info). Views/tables/filters/groups have no MSPDI representation and are not exported (one warning with the count).
+
+### XML representation / security
+
+Pure-TypeScript writer (`src/mspdi/xml-writer.ts`): no `eval`, no `Function`, no arbitrary constructors, no browser DOM APIs, no Node APIs, no external XML libraries. Explicit escaping in text contexts (`&` `<` `>` and CR as `&#xD;`) and attribute contexts (additionally `"` `'`, tab/LF as numeric references); element/attribute names validated against the XML name production so malformed markup is impossible by construction. Deterministic physical layout: XML declaration, LF endings, two-space indentation, one element per line, inline text leaves. The five built-in named entities are exactly the set the accepted parser resolves, so exported text round-trips losslessly.
+
+### External compatibility evidence boundary
+
+PROJECT-016 establishes (1) internal round-trip correctness (export → accepted importer → semantically equivalent canonical document) and (2) MSPDI structural correctness of the emitted XML (namespace, root element, `SaveVersion` 16, valid element/attribute structure, correct enumeration codes). It does NOT claim verified Microsoft Project compatibility: no real Microsoft-Project-generated MSPDI corpus was available in the environment, and interop details that only real Microsoft consumers can validate (e.g. the `<Exception>` element shape — the exporter emits `<Start>`/`<Finish>` direct children per the accepted PROJECT-015 importer contract rather than the Microsoft `TimePeriod` wrapper, project-level `<UID>`, string-typed `<Type>` on `ExtendedAttribute` definitions) are explicitly **unproven claims**. External validation with real Microsoft Project files is deferred to the compatibility work (PROJECT-020 / PROJECT-047).
+
+### Determinism proof
+
+(1) The same document exports to byte-identical XML across repeated calls (asserted three times and across all valid goldens). (2) Reordered semantically-equivalent non-identity collections produce identical bytes. (3) Representative goldens (E01 full document, E04 lag encoding) are asserted against hand-embedded canonical XML so the writer cannot drift silently. (4) The exporter/writer source carries no clock, no randomness, and no locale-aware comparison (static source guard).

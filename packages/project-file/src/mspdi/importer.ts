@@ -1,17 +1,18 @@
 /**
- * PROJECT-015 — MSPDI XML → canonical `ProjectDocument` importer.
+ * PROJECT-015 / PROJECT-016 — MSPDI XML ↔ canonical `ProjectDocument` adapter.
  *
- * Architectural flow (PROJECT-015 brief):
+ * Architectural flow:
  *
  *   MSPDI XML → MSPDIAdapter → ProjectDocument → validateProjectDocument →
- *   canonical scheduling engine
+ *   canonical scheduling engine                                     (PROJECT-015)
+ *   ProjectDocument → MSPDIAdapter.export → MSPDI XML                (PROJECT-016)
  *
  * The adapter does NOT become the canonical model. MSPDI-specific identity is
  * NOT preserved as GenOffice identity (see `./identity.ts`). No MSPDI XML is
  * written into React/browser code (this package has no React/browser imports —
- * `project-foundation.yml` greps it). No MSPDI export is implemented
- * (PROJECT-016 is explicitly unauthorized); the `MspdiFileAdapter` exposes
- * only `inspect` + `import`, the minimal shared-adapter typing.
+ * `project-foundation.yml` greps it). The export direction lives in
+ * `./exporter.ts` behind this same adapter (`inspect` + `import` + `export`) —
+ * no second file-adapter abstraction.
  *
  * Pipeline (mirrors the accepted PROJECT-014 `.gproj` adapter conventions):
  *
@@ -111,18 +112,21 @@ import {
   UNSUPPORTED_MSPDI_FEATURE,
   UNSUPPORTED_MSPDI_VERSION,
 } from './diagnostics.js'
+import { exportMspdi, type MspdiExportResult } from './exporter.js'
 
 export interface MspdiImportResult {
   document: ProjectDocument
   diagnostics: ImportDiagnostic[]
 }
 
-/** Minimal shared-adapter typing: import + inspect only (NO export —
- * PROJECT-016 MSPDI export is explicitly unauthorized). */
+/** The MSPDI adapter surface: inspect + import (PROJECT-015) + export
+ * (PROJECT-016). Implements the same host-neutral `ProjectFileAdapter`
+ * contract shape as `gprojFileAdapter`. */
 export interface MspdiFileAdapter {
   readonly format: typeof MSPDI_FORMAT
   inspect(input: Uint8Array, metadata?: ProjectFileMetadata): ProjectFileMetadata
   import(input: Uint8Array, metadata?: ProjectFileMetadata): MspdiImportResult
+  export(document: ProjectDocument): MspdiExportResult
 }
 
 type Diag = ImportDiagnostic
@@ -1356,9 +1360,11 @@ export function inspectMspdi(
   }
 }
 
-/** The canonical MSPDI file adapter (import + inspect only; NO export). */
+/** The canonical MSPDI file adapter (import + inspect from PROJECT-015;
+ * export from PROJECT-016). */
 export const mspdiFileAdapter: MspdiFileAdapter = {
   format: MSPDI_FORMAT,
   inspect: (input, metadata) => inspectMspdi(input, metadata),
   import: (input, metadata) => importMspdi(input, metadata),
+  export: (document) => exportMspdi(document),
 }

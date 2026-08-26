@@ -1,20 +1,23 @@
 /**
- * PROJECT-014 / PROJECT-015 — Native `.gproj` adapter + MSPDI XML importer.
+ * PROJECT-014 / PROJECT-015 / PROJECT-016 — Native `.gproj` adapter + MSPDI
+ * XML import/export.
  *
  * Public surface:
  *   - `ProjectFileAdapter`     — the file-adapter contract (host-neutral).
  *   - `gprojFileAdapter`       — the canonical `.gproj` adapter singleton.
  *   - `serializeGproj`/`deserializeGproj`/`inspectGproj` — low-level `.gproj`
  *     entry points for callers that operate on raw `Uint8Array` bytes.
- *   - `mspdiFileAdapter`       — the MSPDI XML importer (import + inspect
- *     only; NO export — PROJECT-016 is unauthorized).
- *   - `importMspdi`/`inspectMspdi` — low-level MSPDI entry points.
+ *   - `mspdiFileAdapter`       — the MSPDI XML adapter (import + inspect +
+ *     export — PROJECT-016 added deterministic `ProjectDocument` → MSPDI XML
+ *     export behind the same adapter boundary).
+ *   - `importMspdi`/`inspectMspdi`/`exportMspdi` — low-level MSPDI entry points.
  *   - envelope + diagnostics constants for tests and consumers.
  *
  * The package depends ONLY on `@genoffice/project-contracts` (types + brand
  * helpers) and `@genoffice/project-engine` (the canonical document validator).
  * It has NO React, Electron, Node, browser, HTTP, or MPP/MSPDI-runtime
- * dependencies (the MSPDI parser is a pure-TypeScript tokenizer shipped here).
+ * dependencies (the MSPDI parser and writer are pure-TypeScript modules
+ * shipped here).
  */
 import type {
   ImportDiagnostic,

@@ -65,7 +65,52 @@ export const MSPDI_READ = 'MSPDI_READ' as const
 /** Info-level "read succeeded" diagnostic emitted at the end of a successful
  * import, mirroring `GPROJ_READ` from the native adapter. */
 
-/** The full set of PROJECT-015 adapter-emitted diagnostic codes. */
+// ---- PROJECT-016 — MSPDI EXPORT diagnostic codes -------------------------
+//
+// Export has its own code family (the importer's codes describe MSPDI→canonical
+// failures; export describes canonical→MSPDI ones). Like the import codes, they
+// are plain-string `ImportDiagnostic.code` values — the smallest compatible
+// diagnostic extension (the `ImportDiagnostic` contract is unchanged).
+
+export const INVALID_MSPDI_EXPORT = 'INVALID_MSPDI_EXPORT' as const
+/** The canonical `ProjectDocument` failed `validateProjectDocument`, so export
+ * is REFUSED (zero bytes returned; the engine's diagnostics are surfaced as
+ * error-level entries alongside this code). Also used when a canonical task /
+ * resource `uid` is not a non-negative integer — MSPDI UIDs are — and the
+ * exporter had to synthesize a deterministic replacement uid. */
+export const INVALID_MSPDI_EXPORT_LAG = 'INVALID_MSPDI_EXPORT_LAG' as const
+/** A canonical `lagMinutes` cannot be represented exactly as
+ * `LinkLag = lagMinutes × 10` (outside the safe-integer range). The dependency
+ * is retained at lag 0 with this error diagnostic — lag semantics are never
+ * silently changed. */
+export const UNREPRESENTABLE_MSPDI_VALUE = 'UNREPRESENTABLE_MSPDI_VALUE' as const
+/** A canonical value has no faithful MSPDI round-trip through the accepted
+ * PROJECT-015 importer: a calendar/assignment/baseline identity that does not
+ * follow the deterministic import mapping (remapped consistently, semantics
+ * preserved but the id string changes), a working period ending at 24:00
+ * (dropped by the importer's whole-minute HH:MM:SS rule), divergent baseline
+ * `capturedAt` values (MSPDI carries a single `<LastSaved>` carrier), an empty
+ * name (the importer substitutes a placeholder), a non-integer or negative
+ * duration, or a string custom-field value the importer will re-parse as a
+ * number/boolean. The value is still emitted honestly (except where noted);
+ * the diagnostic makes the round-trip limitation explicit. */
+export const UNSUPPORTED_MSPDI_EXPORT_FEATURE = 'UNSUPPORTED_MSPDI_EXPORT_FEATURE' as const
+/** Canonical state that is emitted for MSPDI fidelity but is NOT reconstructed
+ * by the accepted PROJECT-015 importer (round-trip limitation, warning): task
+ * `physicalPercentComplete`, multiple notes collapsed into the single MSPDI
+ * `<Notes>` field, an inconsistent `task.baseline` reverse index, view/table/
+ * filter/group definitions with no MSPDI representation, or a task array order
+ * canonicalized to hierarchical DFS order. */
+export const MSPDI_EXPORT_NORMALIZED = 'MSPDI_EXPORT_NORMALIZED' as const
+/** Info-level note that a derived-calendar weekday set was materialized from
+ * the inheritance chain (the accepted importer materializes all seven weekday
+ * keys, so a partial canonical `workingWeek` is normalized to its resolved
+ * form; the resolved semantics are exactly recoverable). */
+export const MSPDI_WRITTEN = 'MSPDI_WRITTEN' as const
+/** Info-level "write succeeded" diagnostic emitted at the end of a successful
+ * export, mirroring `MSPDI_READ` / `GPROJ_READ`. */
+
+/** The full set of PROJECT-015 import adapter-emitted diagnostic codes. */
 export const MSPDI_DIAGNOSTIC_CODES = [
   INVALID_MSPDI,
   UNSUPPORTED_MSPDI_VERSION,
@@ -79,4 +124,14 @@ export const MSPDI_DIAGNOSTIC_CODES = [
   INVALID_MSPDI_CONSTRAINT,
   MISSING_MSPDI_FIELD,
   MSPDI_READ,
+] as const
+
+/** The full set of PROJECT-016 export adapter-emitted diagnostic codes. */
+export const MSPDI_EXPORT_DIAGNOSTIC_CODES = [
+  INVALID_MSPDI_EXPORT,
+  INVALID_MSPDI_EXPORT_LAG,
+  UNREPRESENTABLE_MSPDI_VALUE,
+  UNSUPPORTED_MSPDI_EXPORT_FEATURE,
+  MSPDI_EXPORT_NORMALIZED,
+  MSPDI_WRITTEN,
 ] as const
