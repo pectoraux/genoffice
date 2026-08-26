@@ -62,11 +62,13 @@ export type DurationResult =
 // declared for PROJECT-015 (authoritative table in requirements.md):
 //   working units 1=minute, 3=hour, 5=day, 7=week, 9=month;
 //   elapsed variants (2/4/6/8/10) and percentage (35) are unsupported for lag.
-const LAG_FORMAT_MINUTE = 1
-const LAG_FORMAT_HOUR = 3
-const LAG_FORMAT_DAY = 5
-const LAG_FORMAT_WEEK = 7
-const LAG_FORMAT_MONTH = 9
+// Exported so the importer can resolve lag factors lazily, per the lag
+// format actually present (PROJECT-015 correction round 2).
+export const LAG_FORMAT_MINUTE = 1
+export const LAG_FORMAT_HOUR = 3
+export const LAG_FORMAT_DAY = 5
+export const LAG_FORMAT_WEEK = 7
+export const LAG_FORMAT_MONTH = 9
 const WORKING_LAG_FORMATS = new Set<number>([
   LAG_FORMAT_MINUTE,
   LAG_FORMAT_HOUR,
@@ -176,9 +178,12 @@ export function isoDurationToMinutes(input: string): DurationResult {
  *   - Unknown format codes → `invalid`.
  *   - Missing `LinkLagFormat` is treated as minutes (the storage unit).
  *   - The factor(s) actually used by the declared unit must be positive
- *     integers → otherwise `invalid` (defensive; the importer validates
- *     declared factors and falls back to the MSPDI defaults). Minute and
- *     hour conversions are factor-independent and never inspect them.
+ *     integers → otherwise `invalid` (defensive; the importer reads declared
+ *     factors lazily — validating and diagnosing a declaration only when a
+ *     lag format that uses it is present, falling back to the MSPDI default
+ *     for malformed used declarations — PROJECT-015 correction round 2).
+ *     Minute and hour conversions are factor-independent and never inspect
+ *     them.
  */
 export function lagToMinutes(
   linkLag: number,

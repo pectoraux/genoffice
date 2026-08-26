@@ -51,6 +51,11 @@ export {
   isValidExceptionDate,
   mspdiTimeToMinutes,
   DEFAULT_LAG_FACTORS,
+  LAG_FORMAT_MINUTE,
+  LAG_FORMAT_HOUR,
+  LAG_FORMAT_DAY,
+  LAG_FORMAT_WEEK,
+  LAG_FORMAT_MONTH,
   type LagFactors,
 } from './conversions.js'
 export {

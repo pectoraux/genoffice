@@ -581,28 +581,30 @@ describe('PROJECT-015 — LinkLagFormat conversion semantics (pure)', () => {
   })
 })
 
-describe('PROJECT-015 — LinkLagFormat conversion semantics (import)', () => {
-  function lagFixture(
-    lag: number,
-    lagFormat: number,
-    factors?: {
-      minutesPerDay?: number
-      minutesPerWeek?: number
-      daysPerMonth?: number
-    },
-  ) {
-    const tasks = [
-      taskXml({ uid: 1, name: 'A', outlineNumber: '1' }),
-      taskXml({
-        uid: 2,
-        name: 'B',
-        outlineNumber: '2',
-        predecessorLinks: [{ predUid: 1, type: 0, lag, lagFormat }],
-      }),
-    ].join('\n')
-    return projectXml({ name: 'LagUnits', tasks, ...factors })
-  }
+/** Build a two-task MSPDI project with one FS predecessor link carrying
+ * `lag`/`lagFormat`, plus optional project-level factor declarations. */
+function lagFixture(
+  lag: number,
+  lagFormat: number,
+  factors?: {
+    minutesPerDay?: number
+    minutesPerWeek?: number
+    daysPerMonth?: number
+  },
+) {
+  const tasks = [
+    taskXml({ uid: 1, name: 'A', outlineNumber: '1' }),
+    taskXml({
+      uid: 2,
+      name: 'B',
+      outlineNumber: '2',
+      predecessorLinks: [{ predUid: 1, type: 0, lag, lagFormat }],
+    }),
+  ].join('\n')
+  return projectXml({ name: 'LagUnits', tasks, ...factors })
+}
 
+describe('PROJECT-015 — LinkLagFormat conversion semantics (import)', () => {
   it('imports hour-format lag as ×60 minutes (30 tenths-hour → 180)', () => {
     const r = importMspdi(lagFixture(30, 3))
     expectNoErrors(r.diagnostics)
@@ -728,6 +730,107 @@ describe('PROJECT-015 — whole-minute calendar boundaries', () => {
     // maps to key 1, DayType 3 (Tuesday) to key 2.
     expect(cal.workingWeek[1]).toEqual([]) // Monday period dropped
     expect(cal.workingWeek[2]).toEqual([{ startMinute: 540, endMinute: 1020 }]) // Tuesday intact
+  })
+})
+
+// ---- correction round 2: lazy factor validation -------------------------
+
+describe('PROJECT-015 — lazy factor validation (correction round 2)', () => {
+  it('minute lag + malformed MinutesPerDay → no unrelated factor error', () => {
+    const r = importMspdi(lagFixture(1500, 1, { minutesPerDay: 0 }))
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies[0].lagMinutes).toBe(150)
+  })
+
+  it('hour lag + malformed MinutesPerDay → no unrelated factor error', () => {
+    const r = importMspdi(lagFixture(30, 3, { minutesPerDay: 0 }))
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies[0].lagMinutes).toBe(180)
+  })
+
+  it('minute lag + malformed MinutesPerWeek and DaysPerMonth → no unrelated factor errors', () => {
+    const r = importMspdi(lagFixture(1500, 1, { minutesPerWeek: 0, daysPerMonth: -5 }))
+    expectNoErrors(r.diagnostics)
+    expect(r.diagnostics.some((d) => d.code === INVALID_MSPDI)).toBe(false)
+    expect(r.document.dependencies[0].lagMinutes).toBe(150)
+  })
+
+  it('minute lag + valid declared MinutesPerDay → factor-independent conversion', () => {
+    // A valid day factor must not leak into a minute-unit lag either.
+    const r = importMspdi(lagFixture(1500, 1, { minutesPerDay: 360 }))
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies[0].lagMinutes).toBe(150)
+  })
+
+  it('day lag + malformed MinutesPerDay → INVALID_MSPDI exactly once + default-factor conversion (480)', () => {
+    const r = importMspdi(lagFixture(10, 5, { minutesPerDay: 0 }))
+    const factorErrors = r.diagnostics.filter(
+      (d) => d.code === INVALID_MSPDI && d.message.includes('MinutesPerDay'),
+    )
+    expect(factorErrors).toHaveLength(1)
+    expect(factorErrors[0].severity).toBe('error')
+    // Fallback is the documented default 480 — never a silent approximation.
+    expect(r.document.dependencies[0].lagMinutes).toBe(480)
+  })
+
+  it('week lag + malformed MinutesPerWeek → INVALID_MSPDI + default-factor conversion (2400)', () => {
+    const r = importMspdi(lagFixture(10, 7, { minutesPerWeek: 0 }))
+    expect(
+      r.diagnostics.some((d) => d.code === INVALID_MSPDI && d.message.includes('MinutesPerWeek')),
+    ).toBe(true)
+    expect(r.document.dependencies[0].lagMinutes).toBe(2400)
+  })
+
+  it('month lag + malformed DaysPerMonth → INVALID_MSPDI + default-factor conversion (9600)', () => {
+    const r = importMspdi(lagFixture(10, 9, { daysPerMonth: 0 }))
+    expect(
+      r.diagnostics.some((d) => d.code === INVALID_MSPDI && d.message.includes('DaysPerMonth')),
+    ).toBe(true)
+    expect(r.document.dependencies[0].lagMinutes).toBe(9600)
+  })
+
+  it('month lag + malformed MinutesPerDay → INVALID_MSPDI (month uses both factors) + default conversion (9600)', () => {
+    const r = importMspdi(lagFixture(10, 9, { minutesPerDay: 0 }))
+    expect(
+      r.diagnostics.some((d) => d.code === INVALID_MSPDI && d.message.includes('MinutesPerDay')),
+    ).toBe(true)
+    expect(r.document.dependencies[0].lagMinutes).toBe(9600)
+  })
+
+  it('a malformed used factor is diagnosed exactly once across multiple using dependencies', () => {
+    const tasks = [
+      taskXml({ uid: 1, name: 'A', outlineNumber: '1' }),
+      taskXml({
+        uid: 2,
+        name: 'B',
+        outlineNumber: '2',
+        predecessorLinks: [{ predUid: 1, type: 0, lag: 10, lagFormat: 5 }],
+      }),
+      taskXml({
+        uid: 3,
+        name: 'C',
+        outlineNumber: '3',
+        predecessorLinks: [{ predUid: 1, type: 0, lag: 20, lagFormat: 5 }],
+      }),
+    ].join('\n')
+    const r = importMspdi(projectXml({ name: 'OnceOnly', minutesPerDay: 0, tasks }))
+    const factorErrors = r.diagnostics.filter(
+      (d) => d.code === INVALID_MSPDI && d.message.includes('MinutesPerDay'),
+    )
+    expect(factorErrors).toHaveLength(1)
+    // Both day lags convert with the default 480 (1 day / 2 days).
+    expect(r.document.dependencies.map((d) => d.lagMinutes)).toEqual([480, 960])
+  })
+
+  it('unused malformed factors stay silent while a used valid factor is honored', () => {
+    // Day lag uses a VALID MinutesPerDay (360); the malformed MinutesPerWeek
+    // and DaysPerMonth declarations are unused by any present lag format →
+    // no diagnostics, and the day lag converts with the declared 360.
+    const r = importMspdi(
+      lagFixture(10, 5, { minutesPerDay: 360, minutesPerWeek: 0, daysPerMonth: -1 }),
+    )
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies[0].lagMinutes).toBe(360)
   })
 })
 

@@ -89,6 +89,10 @@ import {
   DEFAULT_LAG_FACTORS,
   isoDurationToMinutes,
   isValidExceptionDate,
+  LAG_FORMAT_DAY,
+  LAG_FORMAT_MINUTE,
+  LAG_FORMAT_MONTH,
+  LAG_FORMAT_WEEK,
   lagToMinutes,
   mspdiTimeToMinutes,
   normalizeMspdiDate,
@@ -703,55 +707,118 @@ function parseTask(
 // ---- dependency parsing --------------------------------------------------
 
 /**
- * Read the project-level lag conversion factors from the `<Project>` root.
+ * Raw state of a project-level lag-factor declaration
+ * (`<MinutesPerDay>` / `<MinutesPerWeek>` / `<DaysPerMonth>`):
+ * absent, malformed, or a positive integer.
+ */
+type DeclaredFactor =
+  { status: 'absent' } | { status: 'malformed'; raw: string } | { status: 'ok'; value: number }
+
+function readDeclaredFactor(root: XmlNode, tag: string): DeclaredFactor {
+  const text = childText(root, tag)
+  if (text === undefined) return { status: 'absent' }
+  const value = Number(text)
+  if (!Number.isInteger(value) || value <= 0) return { status: 'malformed', raw: text }
+  return { status: 'ok', value }
+}
+
+type FactorKey = 'minutesPerDay' | 'minutesPerWeek' | 'daysPerMonth'
+
+const FACTOR_TAGS: Record<FactorKey, string> = {
+  minutesPerDay: 'MinutesPerDay',
+  minutesPerWeek: 'MinutesPerWeek',
+  daysPerMonth: 'DaysPerMonth',
+}
+
+/**
+ * Lazily-resolved project-level lag conversion factors.
  *
  * MSPDI declares the working-time length of a day / week / month via
- * `<MinutesPerDay>`, `<MinutesPerWeek>`, and `<DaysPerMonth>`. These are the
- * authoritative conversion inputs for day/week/month `<LinkLagFormat>` lags
- * (see conversions.ts and requirements.md — PROJECT-015 correction round 1).
- * Absent declarations fall back to the documented MSPDI default settings
- * (480 / 2400 / 20). A declared-but-malformed factor (non-positive or
- * non-integer) emits `INVALID_MSPDI` and also falls back to the default —
- * never a silent approximation of a declared value.
+ * `<MinutesPerDay>`, `<MinutesPerWeek>`, and `<DaysPerMonth>` on the
+ * `<Project>` root. These are the authoritative conversion inputs for
+ * day/week/month `<LinkLagFormat>` lags (see conversions.ts and
+ * requirements.md).
+ *
+ * Correction round 2 — validation is LAZY with respect to the lag formats
+ * actually present. A declaration is validated (and diagnosed) only when a
+ * dependency carrying a lag format that uses it is encountered:
+ *
+ *   day (5)   → MinutesPerDay
+ *   week (7)  → MinutesPerWeek
+ *   month (9) → DaysPerMonth + MinutesPerDay
+ *
+ * Minute (1) and hour (3) lags are factor-independent and never trigger
+ * factor validation, so malformed declarations that no present lag format
+ * uses produce no diagnostic and never poison an otherwise valid import.
+ * When a used declaration is malformed (non-positive or non-integer), the
+ * import emits `INVALID_MSPDI` naming the declaration — at most once per
+ * declaration, regardless of how many dependencies use it — and converts
+ * the affected lag with the documented MSPDI default (480 / 2400 / 20): a
+ * declared value is never silently approximated.
  *
  * The factors are import-time conversion parameters only: the canonical
- * `ProjectDocument` stores the resulting integer `WorkingMinutes`, never the
- * factors themselves.
+ * `ProjectDocument` stores the resulting integer `WorkingMinutes`, never
+ * the factors themselves.
  */
-function parseLagFactors(root: XmlNode, sink: Sink): LagFactors {
-  const factors: LagFactors = { ...DEFAULT_LAG_FACTORS }
-  const declarations: Array<{ key: keyof LagFactors; tag: string }> = [
-    { key: 'minutesPerDay', tag: 'MinutesPerDay' },
-    { key: 'minutesPerWeek', tag: 'MinutesPerWeek' },
-    { key: 'daysPerMonth', tag: 'DaysPerMonth' },
-  ]
-  for (const { key, tag } of declarations) {
-    const text = childText(root, tag)
-    if (text === undefined) continue
-    const value = Number(text)
-    if (!Number.isInteger(value) || value <= 0) {
+function lazyLagFactors(
+  root: XmlNode,
+  sink: Sink,
+): {
+  /** Resolve the effective factors for one dependency's lag format. */
+  forFormat(fmt: number): LagFactors
+} {
+  const declared: Record<FactorKey, DeclaredFactor> = {
+    minutesPerDay: readDeclaredFactor(root, 'MinutesPerDay'),
+    minutesPerWeek: readDeclaredFactor(root, 'MinutesPerWeek'),
+    daysPerMonth: readDeclaredFactor(root, 'DaysPerMonth'),
+  }
+  const diagnosed = new Set<FactorKey>()
+  const resolveFactor = (key: FactorKey): number => {
+    const d = declared[key]
+    if (d.status === 'ok') return d.value
+    if (d.status === 'malformed' && !diagnosed.has(key)) {
+      diagnosed.add(key)
       diag(
         sink,
         INVALID_MSPDI,
         'error',
-        `<${tag}> is not a positive integer (${JSON.stringify(text)}); using the MSPDI default ${DEFAULT_LAG_FACTORS[key]} for lag conversion`,
+        `<${FACTOR_TAGS[key]}> is not a positive integer (${JSON.stringify(d.raw)}); using the MSPDI default ${DEFAULT_LAG_FACTORS[key]} for lag conversion`,
       )
-      continue
     }
-    factors[key] = value
+    return DEFAULT_LAG_FACTORS[key]
   }
-  return factors
+  return {
+    forFormat(fmt: number): LagFactors {
+      if (fmt === LAG_FORMAT_DAY) {
+        return { ...DEFAULT_LAG_FACTORS, minutesPerDay: resolveFactor('minutesPerDay') }
+      }
+      if (fmt === LAG_FORMAT_WEEK) {
+        return { ...DEFAULT_LAG_FACTORS, minutesPerWeek: resolveFactor('minutesPerWeek') }
+      }
+      if (fmt === LAG_FORMAT_MONTH) {
+        return {
+          ...DEFAULT_LAG_FACTORS,
+          minutesPerDay: resolveFactor('minutesPerDay'),
+          daysPerMonth: resolveFactor('daysPerMonth'),
+        }
+      }
+      // Minute / hour / elapsed / percentage lags never use the factors.
+      return DEFAULT_LAG_FACTORS
+    },
+  }
 }
 
 function parseDependencies(
   root: XmlNode,
   taskUidMap: ReadonlyMap<number, TaskId>,
-  lagFactors: LagFactors,
   sink: Sink,
 ): Dependency[] {
   const tasksNode = firstChild(root, 'Tasks')
   if (tasksNode === undefined) return []
   const deps: Dependency[] = []
+  // Lazy factor resolution (correction round 2): declarations are read raw
+  // and validated only for the lag formats actually present.
+  const factors = lazyLagFactors(root, sink)
   for (const taskNode of childrenNamed(tasksNode, 'Task')) {
     const successorUid = optionalInteger(taskNode, 'UID')
     if (successorUid === undefined) continue
@@ -791,7 +858,13 @@ function parseDependencies(
       }
       const linkLag = optionalInteger(link, 'LinkLag') ?? 0
       const linkLagFormat = optionalInteger(link, 'LinkLagFormat')
-      const lagResult = lagToMinutes(linkLag, linkLagFormat, lagFactors)
+      // Resolve only the factors this dependency's lag unit actually uses;
+      // malformed declarations unused by any present format stay silent.
+      const lagResult = lagToMinutes(
+        linkLag,
+        linkLagFormat,
+        factors.forFormat(linkLagFormat ?? LAG_FORMAT_MINUTE),
+      )
       let lagMinutes: number
       if (lagResult.ok) {
         lagMinutes = lagResult.minutes
@@ -1194,12 +1267,10 @@ export function importMspdi(input: Uint8Array, metadata?: ProjectFileMetadata): 
   // never an invalid ProjectDocument.
   const tasks = reconstructHierarchy(tasksRaw, sink)
 
-  // Dependencies, assignments, baselines.
-  // Lag conversion factors are read before the dependency pass: day/week/
-  // month `<LinkLagFormat>` lags convert via the project-level settings
-  // (PROJECT-015 correction round 1).
-  const lagFactors = parseLagFactors(root, sink)
-  const dependencies = parseDependencies(root, taskUidMap, lagFactors, sink)
+  // Dependencies, assignments, baselines. Lag-factor declarations are read
+  // lazily inside the dependency pass and validated only for the lag
+  // formats actually present (PROJECT-015 correction round 2).
+  const dependencies = parseDependencies(root, taskUidMap, sink)
   const assignments = parseAssignments(root, taskUidMap, resourceUidMap, sink)
   // Baselines need a capturedAt fallback (MSPDI carries no per-baseline
   // captured date). Use <LastSaved>, then <CreationDate>, then the project
