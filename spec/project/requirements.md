@@ -693,3 +693,99 @@ Proven by the test suite:
 4. `serialize → deserialize → serialize → identical bytes` (byte-identity invariant, asserted for every golden).
 
 The serializer uses NO `Date.now()`, NO random UUID generation, NO `localeCompare`, NO object-insertion-order for semantic ordering. Stable IDs come from the document.
+
+## PROJECT-015 — MSPDI XML import
+
+MSPDI (Microsoft Project Data Interchange) is an XML format. The importer maps MSPDI XML into the existing canonical `ProjectDocument` and delegates semantic validation to the accepted engine. The adapter does NOT become the canonical model; MSPDI-specific identity is NOT preserved as GenOffice identity; no MSPDI XML is written into React/browser code. Import-only (MSPDI export is PROJECT-016, unauthorized here; MPP is PROJECT-017–019).
+
+### Architecture
+
+```text
+MSPDI XML → MSPDIAdapter → ProjectDocument → validateProjectDocument → schedule
+```
+
+The MSPDI adapter lives in `@genoffice/project-file` beside the accepted `.gproj` adapter (PROJECT-014). It reuses the existing `ProjectFileAdapter` boundary, `ImportDiagnostic` contract, brand-promotion helpers, and `validateProjectDocument` pipeline — it does NOT introduce a second file-adapter abstraction. It exposes `inspect` + `import` only (NO `export` — PROJECT-016 is unauthorized). The adapter depends ONLY on `@genoffice/project-contracts` and `@genoffice/project-engine`; it has NO React, Electron, Node, browser, HTTP, or external-XML-library dependencies (the XML parser is a pure-TypeScript tokenizer shipped in the package — the XML analog of the `.gproj` UTF-8 codec).
+
+### Identity mapping
+
+Canonical identity is branded-string identity; MSPDI UID is the persistent interoperability identifier (architecture-lock §4). The mapping is deterministic, stable within an import, collision-safe across entity families (distinct prefixes), and reproducible across repeated imports of identical XML. NO random IDs, NO `Date.now()`, NO host seed.
+
+| MSPDI source                                                    | Canonical field                | Mapping                                       |
+| --------------------------------------------------------------- | ------------------------------ | --------------------------------------------- |
+| `<Task><UID>`                                                   | `task.uid`                     | verbatim (number)                             |
+| `<Task><UID>`                                                   | `task.id`                      | `asTaskId('t'+uid)`                           |
+| `<Resource><UID>`                                               | `resource.uid` / `resource.id` | verbatim / `asResourceId('r'+uid)`            |
+| `<Assignment><UID>`                                             | `assignment.id`                | `asAssignmentId('a'+uid)`                     |
+| `<Calendar><UID>`                                               | `calendar.id`                  | `asCalendarId('c'+uid)`                       |
+| `<Calendar><BaseCalendarUID>`                                   | `calendar.baseCalendarId`      | `asCalendarId('c'+uid)`                       |
+| `<Task><CalendarUID>` / `<Resource><CalendarUID>`               | `task`/`resource.calendarId`   | `asCalendarId('c'+uid)`                       |
+| Predecessor link (succ, pred, type)                             | `dependency.id`                | `asDependencyId('d-'+succ+'-'+pred+'-'+type)` |
+| Baseline slot index (0=Baseline, 1=Baseline1, …, 10=Baseline10) | `baseline.id`                  | `asBaselineId('b'+index)`                     |
+
+Identity is NOT WBS. `<OutlineNumber>` reconstructs `parentTaskId` only (canonical identity is the branded id, not the outline code). The canonical hierarchy engine remains authoritative for `outlineLevel`/`summary` consistency.
+
+### Task import
+
+Supported MSPDI task fields map into the canonical `Task`: `id`, `uid`, `wbs` (from `<OutlineNumber>`), `outlineLevel`, `name`, `taskType` (MSPDI `<Type>` 0=fixedUnits/1=fixedDuration/2=fixedWork), `summary`, `milestone`, `manualScheduled`/`autoScheduled` (from `<Manual>`), `start`/`finish`, `duration`, `constraintType`/`constraintDate`, `deadline`, `priority`, `calendarId`, `percentComplete`, `work`/`remainingWork`/`actualWork`, `cost`/`actualCost`/`remainingCost`, `parentTaskId` (reconstructed), `baseline[]` (task-level `<Baseline>` slots → top-level baselines), `customFields` (per-task `<ExtendedAttribute>` values), `notes` (`<Notes>` text). Unsupported fields are NOT blindly copied: they either map deterministically to an existing canonical field, are preserved via the explicit `customFields` extension, or produce a diagnostic. Never silently discarded.
+
+### WBS / hierarchy
+
+`<OutlineNumber>` (e.g. `1`, `1.1`, `1.1.2`) deterministically implies `parentTaskId` (the parent outline is the current with the last `.…` suffix removed, looked up in the WBS→TaskId map). After import, `parentTaskId`/`outlineLevel`/`wbs`/`summary` are internally consistent; the canonical hierarchy engine validates them (`INCONSISTENT_OUTLINE_LEVEL`, `INCONSISTENT_SUMMARY_FLAG`, `MISSING_PARENT`, `PARENT_CYCLE`). A dangling parent outline emits `INVALID_MSPDI_REFERENCE` and leaves `parentTaskId` unset. Malformed MSPDI hierarchy never produces an invalid `ProjectDocument`.
+
+### Dependencies
+
+MSPDI `<PredecessorLink>` (stored on the successor) maps to `Dependency`: `predecessorId`/`successorId` via the task map, `type` (`<Type>` 0=FS/1=FF/2=SS/3=SF), `lagMinutes` (see Date/duration semantics). Dangling predecessor/task/resource references are dropped with `INVALID_MSPDI_REFERENCE` (partial recovery — the document stays valid). Cycles/self-links are detected by the canonical dependency validation (`SELF_DEPENDENCY`, `DEPENDENCY_CYCLE`).
+
+### Calendars
+
+MSPDI `<Calendar>` maps to the accepted `Calendar`: `id`, `name`, `baseCalendarId` (inheritance link preserved — NOT flattened), `workingWeek` (`<WeekDay>` `<DayType>` 1=Sunday..7=Saturday → canonical key `DayType-1`; `<WorkingTimes>` → `CalendarPeriod` via `HH:MM:SS` → whole-minute offsets — see Date / duration semantics), `exceptions` (`<Exception>` `<Start>` date → single-date exception; recurring/yearly `<Type>` and multi-day `Start≠Finish` map to a single-date exception with an `UNSUPPORTED_MSPDI_FEATURE` warning — the canonical model has no recurring-exception representation). Resource calendars and task calendars remain distinct. Malformed calendars produce `INVALID_MSPDI_CALENDAR` and never silently become the default calendar.
+
+### Resources / assignments
+
+MSPDI `<Resource>` maps to `Resource`: `id`, `uid`, `name`, `kind` (`<Type>` 1=work/2=material/3=cost), `maxUnits`, `standardRate`/`overtimeRate`/`costPerUse`, `calendarId`, `availability` (`<AvailabilityPeriods>` → `{start, finish?, units}`). MSPDI `<Assignment>` maps to `Assignment`: `id`, `taskId`, `resourceId`, `units`, `work`/`actualWork`/`remainingWork`, `cost`/`actualCost`/`remainingCost`. All references are validated; dangling `TaskUID`/`ResourceUID` drop the assignment with `INVALID_MSPDI_REFERENCE`. Resource leveling is NOT performed during import; the scheduler is not asked to work around resource conflicts at import time.
+
+### Baselines
+
+MSPDI per-task `<Baseline>`/`<Baseline1>`..`<Baseline10>` elements are collected into top-level `Baseline` entities keyed by slot index. Each baseline preserves task-snapshot identity (`{start?, finish?, duration, work, cost}`), `capturedAt` (MSPDI carries no per-baseline captured date — a deterministic fallback is used: `<LastSaved>` → `<CreationDate>` → project `<StartDate>`), and `name` (`Baseline`/`Baseline N`). MSPDI baseline semantics that exceed the current `Baseline` contract emit explicit diagnostics; baseline information is never silently discarded.
+
+### Constraints / deadlines / progress
+
+MSPDI `<ConstraintType>` (0–7) maps to the eight canonical constraint types: 0=ASAP, 1=ALAP, 2=MSO, 3=MFO, 4=SNET, 5=FNET, 6=SNLT, 7=FNLT. A date-bounded constraint without a valid `<ConstraintDate>` emits `INVALID_MSPDI_CONSTRAINT`. A hard MSPDI constraint is NEVER silently approximated as a soft constraint. An out-of-enum `<ConstraintType>` emits `UNSUPPORTED_MSPDI_FEATURE` and is dropped. Deadlines (`<Deadline>`) are mapped separately from constraints. Progress (`<PercentComplete>`) maps to PROJECT-008 progress semantics.
+
+### Date / duration semantics
+
+MSPDI `<Duration>`/`<Work>` are ISO-8601 durations (`PT8H0M0S`); the time-part (H/M/S) is converted to integer `WorkingMinutes` (hours×60 + minutes); any non-zero sub-minute seconds remainder emits `INVALID_MSPDI_DURATION` (no silent rounding — canonical `WorkingMinutes` is integer). Date-part components (`P1D`/`P1W`/`P1M`/`P1Y`) represent elapsed/calendar time with no faithful working-minute conversion at import time and emit `UNSUPPORTED_MSPDI_FEATURE`.
+
+MSPDI `<LinkLag>` is stored in **tenths of the unit declared by `<LinkLagFormat>`**, and every supported working lag unit applies its own explicit conversion to integer `lagMinutes` (PROJECT-015 correction round 1 — this table is authoritative):
+
+| `LinkLagFormat` | unit           | conversion to `lagMinutes`                     |
+|-----------------|----------------|------------------------------------------------|
+| 1               | working minute | `LinkLag / 10` (non-multiple-of-10 → `INVALID_MSPDI_DURATION`) |
+| 3               | working hour   | `LinkLag / 10 × 60` (always whole minutes)     |
+| 5               | working day    | `LinkLag / 10 × MinutesPerDay`                 |
+| 7               | working week   | `LinkLag / 10 × MinutesPerWeek`                |
+| 9               | working month  | `LinkLag / 10 × DaysPerMonth × MinutesPerDay`  |
+
+The day/week/month factors are the project-level conversion settings declared by the MSPDI itself (`<MinutesPerDay>`, `<MinutesPerWeek>`, `<DaysPerMonth>` on the `<Project>` root). When the file declares no factor, the MSPDI default settings apply (480 / 2400 / 20 — the documented 8-hour-day, 40-hour-week, 20-day-month Microsoft Project defaults); using the format default is the MSPDI-defined semantics, not an approximation, so no diagnostic is emitted for an absent declaration. Factor validation is lazy with respect to the lag formats actually present (correction round 2): a declared factor is validated only when a dependency carrying a lag format that uses it is encountered — `MinutesPerDay` for day (5) and month (9) lags, `MinutesPerWeek` for week (7) lags, `DaysPerMonth` + `MinutesPerDay` for month (9) lags. Minute (1) and hour (3) lags are factor-independent and never trigger factor validation, so malformed declarations that no present lag format uses produce no diagnostic and never poison an otherwise valid import. A malformed declared factor that a present lag format uses (non-positive or non-integer) emits `INVALID_MSPDI` naming the declaration — at most once per declaration, regardless of how many dependencies use it — and the affected lag converts with the documented default (a declared value is never silently approximated). Any conversion that does not yield a whole minute emits `INVALID_MSPDI_DURATION` and defaults the lag to 0 (dependency retained — never silently rounded, never silently dropped). The factors are import-time conversion parameters only — the canonical `ProjectDocument` stores the resulting integer `WorkingMinutes`, never the factors themselves.
+
+Elapsed `LinkLagFormat` values (2/4/6/8/10) emit `UNSUPPORTED_MSPDI_FEATURE` (elapsed lag traverses calendar time including non-working time — no faithful working-minute representation at import time) and default the lag to 0 with the dependency retained. Percentage lags (`LinkLagFormat` 35) emit `UNSUPPORTED_MSPDI_FEATURE` (a percentage lag is a fraction of the predecessor's working duration, which is schedule state the adapter does not compute at import time) and default the lag to 0 with the dependency retained. Unknown format codes emit `INVALID_MSPDI_DURATION`.
+
+Calendar working-time boundaries are whole-minute: MSPDI `<FromTime>`/`<ToTime>` (`HH:MM:SS`) must resolve to integer minute offsets; a time carrying non-zero seconds emits `INVALID_MSPDI_CALENDAR` and the `WorkingTime` period is dropped (never silently rounded). Missing `<FromTime>`/`<ToTime>` and empty/inverted periods likewise emit `INVALID_MSPDI_CALENDAR` and are dropped — a malformed period is never silently skipped.
+
+MSPDI date-times are normalized to canonical UTC `ISODateTime` (`YYYY-MM-DDTHH:MM:SS.000Z`): naive dates are interpreted as UTC (never the system timezone), `Z` is preserved, explicit `±HH:MM` offsets are converted to UTC. Malformed dates emit `INVALID_MSPDI_DATE`. No host locale, no system timezone as a semantic input.
+
+### XML parsing
+
+The importer uses a safe pure-TypeScript XML parser (no `DOMParser`, no Node `fs`, no external library — architecture-lock §13). Safety: no `eval`/`Function`/reviver/arbitrary-constructor; `<!DOCTYPE>` is rejected (no DTD subset processing, no external-entity resolution); only the five built-in named entities (`&lt; &gt; &amp; &quot; &apos;`) and numeric (`&#NN;`/`&#xNN;`) entities are resolved, any other named entity is rejected; a decoded-text-size cap guards against billion-laughs/quadratic expansion; a depth cap guards against pathologically nested XML and bounds the recursive-descent stack; a byte-size cap is enforced before decode. Malformed XML throws → `INVALID_MSPDI`.
+
+### Diagnostics
+
+The importer reuses the existing `ImportDiagnostic` model and adds MSPDI-specific codes only where necessary: `INVALID_MSPDI`, `UNSUPPORTED_MSPDI_VERSION` (`<SaveVersion>` not in the supported set — no silent forward-read), `UNSUPPORTED_MSPDI_FEATURE` (warning — lossy but valid mapping), `INVALID_MSPDI_REFERENCE`, `INVALID_MSPDI_DATE`, `INVALID_MSPDI_DURATION`, `INVALID_MSPDI_CALENDAR`, `INVALID_MSPDI_RESOURCE`, `INVALID_MSPDI_CONSTRAINT`, `MISSING_MSPDI_FIELD`, `MSPDI_READ` (info). Every dropped or approximated semantic feature is named in diagnostics. The engine's `validateProjectDocument` diagnostics are surfaced verbatim as error-level entries (severity `error`, no `entityId`) — the adapter does NOT invent a parallel semantic validator.
+
+### Round-trip / canonicalization
+
+Import-only. The acceptance invariant: `MSPDI XML → import → ProjectDocument → validate → schedule`. The resulting `ProjectDocument` is deterministic: repeated imports of byte-identical MSPDI produce byte-identical `ProjectDocument` bytes (verifiable via `serializeGproj`). Semantically-equivalent XML element-order variations produce identical canonical output (every field is extracted by name, never by position). XML field order that IS semantically meaningful (task arrays, assignment arrays, dependency arrays) is preserved verbatim — the importer does NOT sort away meaningful order.
+
+### Determinism
+
+Proven by the test suite: (1) same MSPDI bytes → same `ProjectDocument` bytes; (2) equivalent element-order variation → identical canonical `ProjectDocument`; (3) every valid golden imports with zero error-level diagnostics and passes `validateProjectDocument` + `schedule` deterministically. The importer uses NO `Date.now()`, NO random IDs, NO host locale, NO system timezone.
