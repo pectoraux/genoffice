@@ -112,3 +112,17 @@ The new HOST package `@genoffice/project-mpp-host` (NOT a foundation package —
 ```
 
 The dependency direction is host → foundation ONLY (a static architecture test asserts that `packages/project-file/src/mpp/**` never references the host package and carries no process imports — the CI foundation boundary grep also still covers the whole of `project-file`). The host package uses Node `child_process`/`fs` by design (one-shot MPXJ sidecar launcher); it has NO renderer, Electron, React, or HTTP imports (static guard). Tests import `vitest` + the packages above + the pinned external sidecar artifacts (`.sidecar-deps/`, gitignored, fetched by `scripts/fetch-sidecar-deps.mjs` with SHA-256 verification). The Project CI gate runs setup-java → fetch → typecheck → test for this package (19 steps total). The work-item chain `014 → 015 → 016 → 017 → 018` is complete; `018 → 019` (MPP export) is BLOCKED pending formal rescoping by the Principal Architect — the feasibility report recommends closing it as not-feasible with PROJECT-016's MSPDI export as the sanctioned interchange output.
+
+## Package dependency edges (PROJECT-019)
+
+PROJECT-019 (MPP export strategy / rescope — 019A) is an investigation, exactly like PROJECT-017: it introduces NO new package, NO new package edge, and NO production code. The added artifacts are `spec/project/mpp-export-strategy.md` (the decision-record deliverable) and `packages/project-file/tests/mpp-export-strategy.test.ts` (a discipline suite importing only `vitest` plus `?raw` module sources — the report, `packages/project-file/package.json`, the mpp/mspdi adapter sources, and `spec/project/architecture-lock.md`; no runtime import of any kind, satisfying the same CI boundary grep as every other project-file test).
+
+Static package dependencies remain exactly as accepted since PROJECT-018:
+
+```text
+@genoffice/project-file → @genoffice/project-engine → @genoffice/project-contracts
+@genoffice/project-file → @genoffice/project-contracts (direct, for types + brand helpers)
+@genoffice/project-mpp-host → @genoffice/project-file (+ engine, contracts, scheduling — host-side import pipeline)
+```
+
+The work-item chain `014 → 015 → 016 → 017 → 018 → 019` completes with 019A as a DECISION RECORD: MPP export is deferred (outcome E — `.gproj` + MSPDI are the supported write formats; MPP stays import-only). The `019 → 047` edge survives unchanged in shape: PROJECT-047's golden-file compatibility suite charters import/export regression-blocking over the SUPPORTED formats. A hypothetical future 019B (commercial-SDK export sidecar) would add a NEW host-level package beside `project-mpp-host` — a proposed architecture addition documented in the report §14, NOT implemented, and requiring Principal Architect authorization plus host network-isolation hardening beyond Linux before any code exists.
