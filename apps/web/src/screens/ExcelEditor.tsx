@@ -17,6 +17,13 @@ import type {
 // (collectFilterStates) and the load-time install typecheck with the
 // PUBLIC typed facade — no `as unknown as` casts, no private internals.
 import '@univerjs/sheets-filter/facade'
+// Same pattern for the table facade (EXCEL-021): surfaces addTable /
+// removeTable / addTableTheme on FWorksheet. The runtime side is wired by
+// UniverSheetsTablePreset in create-browser-univer.ts (already shipped);
+// this import only brings the TypeScript signatures into scope. The
+// registered table is VISUAL (filter dropdowns + theme); the canonical
+// persistence is the tableAdditions save family, never this model.
+import '@univerjs/sheets-table/facade'
 import type { ICustomFilter, IFilterColumn } from '@univerjs/sheets-filter'
 import type {
   CellEdit,
@@ -26,6 +33,8 @@ import type {
   FilterColumnState,
   SheetFilterState,
   SheetNote,
+  SheetTableAddition,
+  SheetTableInfo,
   WorkbookSnapshot,
 } from '@genoffice/xlsx-gateway'
 import {
@@ -43,6 +52,7 @@ import {
   type OfficeWorkbookHandle,
 } from '../api/office-client'
 import { parseAddress, parseRange, columnIndex } from '../office/cell-address'
+import { applyTableBandingToMatrix, type TableBandingMatrix } from '../office/table-banding'
 import {
   cellEditFromMutation,
   mergeCellEdit,
@@ -111,6 +121,16 @@ const DV_MUTATION_IDS = new Set([
  * model declaratively (collectNoteStates), never replaying mutations.
  */
 const NOTE_MUTATION_IDS = new Set(['sheet.mutation.update-note', 'sheet.mutation.remove-note'])
+
+/**
+ * Filter PANEL commands (EXCEL-021 — desktop App.tsx FILTER_COMMAND_PATTERN
+ * parity). These are the command IDs the filter toolbar emits BEFORE the
+ * mutations land; a sheet whose filter origin is an Excel TABLE must refuse
+ * them up front — the table part owns its filter, and editing it through the
+ * worksheet filter UI cannot be persisted yet (desktop message verbatim).
+ */
+const FILTER_COMMAND_PATTERN =
+  /^sheet\.command\.(set-filter-criteria|set-filter-range|smart-toggle-filter|clear-filter-criteria|remove-sheet-filter|re-calc-filter)$/
 
 /** Structural mutation IDs (insert/remove row/column). */
 const STRUCTURAL_MUTATION_IDS = new Set([
@@ -394,6 +414,28 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     hasPassword: boolean
   } | null>(null)
   const workbookProtectionJournalRef = useRef<boolean | null>(null)
+  // ── Table state (EXCEL-021, Insert → Table / Delete Table). Desktop
+  //    parity (App.tsx file.tables + edit-journal.ts tableAdds). Two
+  //    structures:
+  //    - tablesFileRef: the FILE's own tables per sheet NAME (SheetTableInfo
+  //      from the gateway reader — metadata + pre-resolved banding colors).
+  //      Seeded on open, merged after save; drives the banding paint, the
+  //      Univer registration, the file-native delete refusal, and the
+  //      table-owned filter origin.
+  //    - tableAddsRef: the session journal (SheetTableAddition — the exact
+  //      wire shape). Deleting a session table SPLICES its entry
+  //      (convert-to-range: the baked cells stay, nothing reaches the
+  //      file), so an unsaved table never persists.
+  //    - tableUniverIdsRef: bookkeeping for the visual Univer registration
+  //      (name → tableId) so Delete Table can removeTable() the right unit.
+  //    - tableFilterOriginRef: sheet NAMES whose filter belongs to a table
+  //      (the worksheet carries no <autoFilter> — the filter lives in the
+  //      table part). Filter commands on such sheets are refused up front
+  //      (BeforeCommandExecute gate, desktop appTableFilterNoEdit parity).
+  const tablesFileRef = useRef<Map<string, readonly SheetTableInfo[]>>(new Map())
+  const tableAddsRef = useRef<SheetTableAddition[]>([])
+  const tableUniverIdsRef = useRef<Map<string, string>>(new Map())
+  const tableFilterOriginRef = useRef<Set<string>>(new Set())
   // Echo for the ribbon's Protect Sheet / Protect Workbook buttons —
   // recomputed whenever the journal, the file state, or the ACTIVE SHEET
   // changes (the runtime's ActiveSheetChanged subscription re-renders the
@@ -473,9 +515,31 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       noteDirtyRef,
       () => setDirty(true),
     )
+    // ── EXCEL-021: table-owned filter gate (desktop App.tsx
+    //    FILTER_COMMAND_PATTERN parity). A sheet whose filter belongs to an
+    //    Excel TABLE (the worksheet has no <autoFilter> — the filter lives
+    //    in the table part) refuses every filter command BEFORE it runs:
+    //    editing it through the worksheet filter UI cannot be saved yet,
+    //    and letting it through would journal an autoFilter the save would
+    //    then write OUTSIDE the table — corrupting the file's semantics.
+    //    The gate mirrors the desktop verbatim, message included.
+    const filterGate = rt.univerAPI.addEvent(rt.univerAPI.Event.BeforeCommandExecute, (event) => {
+      if (!FILTER_COMMAND_PATTERN.test(event.id)) return
+      const params = event.params as { subUnitId?: string } | undefined
+      const subUnitId =
+        params?.subUnitId ?? rt.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId()
+      if (subUnitId === undefined) return
+      const wb = rt.univerAPI.getActiveWorkbook()
+      const sheetName = wb?.getSheetBySheetId(subUnitId)?.getSheetName()
+      if (sheetName === undefined) return
+      if (!tableFilterOriginRef.current.has(sheetName)) return
+      ;(event as { cancel?: boolean }).cancel = true
+      setStatus("This sheet's filter belongs to an Excel table — editing it cannot be saved yet.")
+    })
     const w = window as { __genofficeExcelRuntime?: unknown }
     w.__genofficeExcelRuntime = rt
     return () => {
+      filterGate.dispose()
       sub.dispose()
       delete w.__genofficeExcelRuntime
       rt.univer.dispose()
@@ -658,6 +722,205 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     }
   }, [])
 
+  /**
+   * EXCEL-021: does the rectangle overlap any table area on the sheet?
+   * Used by Insert → Table to fail closed up front — the gateway re-checks
+   * at save time (against the file's own parts), but refusing before the
+   * journal entry exists gives the desktop's clear status message instead
+   * of a save-time error.
+   */
+  const tableOverlaps = useCallback(
+    (sheetName: string, area: SheetTableAddition['area']): string | null => {
+      const apart = (other: {
+        startRow: number
+        endRow: number
+        startColumn: number
+        endColumn: number
+      }) =>
+        area.endRow < other.startRow ||
+        other.endRow < area.startRow ||
+        area.endColumn < other.startColumn ||
+        other.endColumn < area.startColumn
+      for (const table of tableAddsRef.current) {
+        if (table.sheetName !== sheetName) continue
+        if (!apart(table.area)) return table.name
+      }
+      const fileTables = tablesFileRef.current.get(sheetName) ?? []
+      for (const table of fileTables) {
+        if (!apart(table.area)) return table.name ?? ''
+      }
+      return null
+    },
+    [],
+  )
+
+  /**
+   * Insert → Table (EXCEL-021). Browser port of the desktop's
+   * handleFormatAsTable → applyAiTableAdd: validate the active range (a
+   * header row plus at least one data row, at most 1,000 columns), name it
+   * TableN skipping names the session used, sanitize the column names from
+   * the header row (trim, 255 cap, blank → ColumnN, dedupe with a numeric
+   * suffix — corrected values are written back through the REAL facade so
+   * they journal as cell edits), register the visual Univer table with its
+   * DEFAULT theme (the desktop does NOT mute created tables — Univer's own
+   * table styling is the immediate feedback), and journal the canonical
+   * SheetTableAddition. Status strings are the desktop's own English.
+   */
+  const handleInsertTable = useCallback(() => {
+    const rt = runtimeRef.current
+    const wb = rt?.univerAPI.getActiveWorkbook()
+    const ws = wb?.getActiveSheet()
+    if (!handleRef.current || !wb || !ws) {
+      setStatus('Open an XLSX file first — tables are written into the file.')
+      return
+    }
+    const range = ws.getActiveRange()
+    if (!range) {
+      setStatus('Select the data range first — headers in its first row.')
+      return
+    }
+    const sheetName = ws.getSheetName()
+    const startRow = range.getRow()
+    const startColumn = range.getColumn()
+    const endRow = startRow + range.getHeight() - 1
+    const endColumn = startColumn + range.getWidth() - 1
+    if (endRow <= startRow) {
+      setStatus('A table needs a header row plus at least one data row.')
+      return
+    }
+    const width = endColumn - startColumn + 1
+    if (width > 1_000) {
+      setStatus('A table can span at most 1,000 columns.')
+      return
+    }
+    // Default session names: Table1, Table2, … skipping names the session
+    // already used (desktop nextSessionTableName). Collisions with the
+    // file's own tables are refused up front here (the gateway re-checks
+    // at save time) — clear message instead of a failed save.
+    const taken = new Set(tableAddsRef.current.map((table) => table.name.toLowerCase()))
+    for (const fileTables of tablesFileRef.current.values()) {
+      for (const table of fileTables) {
+        if (table.name !== undefined) taken.add(table.name.toLowerCase())
+      }
+    }
+    let index = tableAddsRef.current.length + 1
+    while (taken.has(`table${index}`)) index += 1
+    const name = `Table${index}`
+    // Overlap check: session tables AND the file's own tables on this
+    // sheet (the gateway re-checks at save time against the file parts).
+    const overlaps = tableOverlaps(sheetName, { startRow, startColumn, endRow, endColumn })
+    if (overlaps !== null) {
+      setStatus(`The range overlaps table "${overlaps}" created this session.`)
+      return
+    }
+    // Sanitize the column names from the header row (desktop parity):
+    // trim, 255 cap, blank → ColumnN, dedupe with a numeric suffix; the
+    // corrected values are written back through the REAL facade so they
+    // journal as canonical cell edits and save with the table.
+    const headerValues = range.getValues()[0] ?? []
+    const columnNames: string[] = []
+    const used = new Set<string>()
+    for (let offset = 0; offset < width; offset += 1) {
+      const raw = String(headerValues[offset] ?? '')
+        .trim()
+        .slice(0, 255)
+      const base = raw.length === 0 ? `Column${offset + 1}` : raw
+      let candidate = base
+      for (let suffix = 2; used.has(candidate.toLowerCase()); suffix += 1) {
+        candidate = `${base}${suffix}`
+      }
+      used.add(candidate.toLowerCase())
+      columnNames.push(candidate)
+      if (candidate !== raw) {
+        ws.getRange(startRow, startColumn + offset).setValue(candidate)
+      }
+    }
+    // Visual registration — best-effort (the journal entry below is what
+    // the save writes, and the gateway re-checks conflicts). The DEFAULT
+    // theme stays: created tables take Univer's own styling (the desktop
+    // deliberately does not mute them — instant visual feedback).
+    const tableId = `ai-table-${tableAddsRef.current.length + 1}-${Date.now().toString(36)}`
+    try {
+      void ws.addTable(name, { startRow, startColumn, endRow, endColumn }, tableId)
+      tableUniverIdsRef.current.set(`${sheetName}::${name}`, tableId)
+    } catch {
+      // Rendering is best-effort; the journal entry is the source of truth.
+    }
+    tableAddsRef.current.push({
+      sheetName,
+      area: { startRow, startColumn, endRow, endColumn },
+      name,
+      columnNames,
+      style: 'TableStyleMedium2',
+      bandedRows: true,
+    })
+    setDirty(true)
+    setStatus('Table created — save with ⌘S.')
+  }, [tableOverlaps])
+
+  /**
+   * Insert → Delete Table (EXCEL-021 — the desktop has no table-delete
+   * ribbon button; the web adds it for the required delete verification).
+   * Convert-to-range semantics, desktop removeTableAdd parity: ONLY a
+   * table created THIS SESSION can be deleted — the journal entry is
+   * spliced (nothing reaches the file; the baked cells stay) and the
+   * visual Univer registration is removed. A file-native table under the
+   * active cell is REFUSED with the desktop's exact message; so is an
+   * empty selection.
+   */
+  const handleDeleteTable = useCallback(() => {
+    const rt = runtimeRef.current
+    const wb = rt?.univerAPI.getActiveWorkbook()
+    const ws = wb?.getActiveSheet()
+    if (!handleRef.current || !wb || !ws) {
+      setStatus('Open an XLSX file first — tables are written into the file.')
+      return
+    }
+    const sheetName = ws.getSheetName()
+    const cell = ws.getActiveRange()
+    const row = cell?.getRow() ?? -1
+    const column = cell?.getColumn() ?? -1
+    const contains = (area: {
+      startRow: number
+      endRow: number
+      startColumn: number
+      endColumn: number
+    }) =>
+      row >= area.startRow &&
+      row <= area.endRow &&
+      column >= area.startColumn &&
+      column <= area.endColumn
+    // A session table under the active cell → convert-to-range.
+    const sessionIndex = tableAddsRef.current.findIndex(
+      (table) => table.sheetName === sheetName && contains(table.area),
+    )
+    if (sessionIndex >= 0) {
+      const entry = tableAddsRef.current[sessionIndex]!
+      tableAddsRef.current.splice(sessionIndex, 1)
+      const tableId = tableUniverIdsRef.current.get(`${sheetName}::${entry.name}`)
+      if (tableId !== undefined) {
+        tableUniverIdsRef.current.delete(`${sheetName}::${entry.name}`)
+        try {
+          void ws.removeTable(tableId)
+        } catch {
+          // The registration is visual; the journal splice already won.
+        }
+      }
+      setDirty(true)
+      setStatus(`Table "${entry.name}" removed — the cells stay as they are.`)
+      return
+    }
+    // A file-native table under the active cell (or no table at all) → the
+    // desktop's refusal, verbatim (removeTableAdd returns false).
+    const fileTables = tablesFileRef.current.get(sheetName) ?? []
+    const fileHit = fileTables.find((table) => contains(table.area))
+    const refusedName = fileHit?.name ?? ''
+    setStatus(
+      `Table "${refusedName}" does not exist or was not created this session — ` +
+        'tables already in the file cannot be deleted yet.',
+    )
+  }, [])
+
   const loadSnapshot = useCallback(
     (snapshot: WorkbookSnapshot) => {
       const rt = runtimeRef.current
@@ -690,6 +953,20 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         }
       }
       bumpProtectionEcho()
+      // EXCEL-021 table state: same leak guard. The file refs re-seed from
+      // THIS snapshot (per-sheet tables with pre-resolved banding colors),
+      // the session journal starts empty (a freshly opened workbook saves
+      // NO tableAdditions — a no-op save preserves the table parts
+      // byte-for-byte), and the visual-registration bookkeeping resets.
+      tablesFileRef.current.clear()
+      tableAddsRef.current = []
+      tableUniverIdsRef.current.clear()
+      tableFilterOriginRef.current.clear()
+      for (const sheet of snapshot.sheets) {
+        if (sheet.tables && sheet.tables.length > 0) {
+          tablesFileRef.current.set(sheet.name, sheet.tables)
+        }
+      }
       const sheetsConfig: Record<string, IWorksheetData> = {}
       for (const sheet of snapshot.sheets) {
         const fr = sheet.freeze
@@ -716,7 +993,19 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           scrollLeft: 0,
           defaultColumnWidth: 100,
           defaultRowHeight: 20,
-          cellData: buildCellDataMatrix(sheet.cells, sheet.styles),
+          // EXCEL-021: table banding is painted INTO the cell matrix before
+          // the workbook is created (desktop applyTableBanding parity — the
+          // gateway already resolved every band color from the file's theme
+          // accents / custom tableStyle dxfs, so this stays a pure value
+          // transform; explicit cell fills always WIN over banding).
+          cellData: (() => {
+            const matrix = buildCellDataMatrix(sheet.cells, sheet.styles) as TableBandingMatrix
+            const tables = tablesFileRef.current.get(sheet.name)
+            if (tables && tables.length > 0) {
+              applyTableBandingToMatrix(matrix, tables)
+            }
+            return matrix as IObjectMatrixPrimitiveType<ICellData>
+          })(),
           mergeData: buildMergeData(sheet.merges),
           rowData: buildRowData(sheet.rowHeights),
           columnData: buildColumnData(sheet.colWidths),
@@ -884,6 +1173,81 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
               // Installing the file's notes must never fail the open.
             }
           }
+          // ── EXCEL-021: register the file's tables into the REAL Univer
+          //    table model (desktop App.tsx parity) so the grid renders
+          //    filter dropdowns over the table range. The registration is
+          //    VISUAL-ONLY (the journal stays empty for file tables — the
+          //    banding lives in the painted cell fills), so it runs under
+          //    journal suppression and every failure is swallowed. Univer's
+          //    table header is not optional yet: registering a headerless
+          //    table injects synthesized "Column N" labels over the first
+          //    data row, so those skip registration (banding still paints).
+          //    Univer also paints its own lavender default theme over the
+          //    cells — mute it to a plain theme so only the banding shows.
+          const fileTables = tablesFileRef.current.get(sheet.name) ?? []
+          if (fileTables.length > 0) {
+            const wb = rt.univerAPI.getActiveWorkbook()
+            const ws = wb?.getSheetByName(sheet.name)
+            if (ws) {
+              for (let index = 0; index < fileTables.length; index += 1) {
+                const table = fileTables[index]!
+                if (table.headerRowCount === 0) continue
+                const tableId = `file-table-${sheet.id}-${index}`
+                const tableName = `Table${index + 1}_${sheet.id.slice(0, 6)}`
+                try {
+                  const added = ws.addTable(tableName, { ...table.area }, tableId) as unknown
+                  tableUniverIdsRef.current.set(
+                    `${sheet.name}::${table.name ?? tableName}`,
+                    tableId,
+                  )
+                  // Univer paints its own default table theme over the
+                  // cells; the file's real banding is already in the cell
+                  // fills, so mute the theme to plain. Best-effort.
+                  void (added as Promise<unknown>)?.then?.(() => {
+                    try {
+                      ;(
+                        ws as unknown as {
+                          addTableTheme(id: string, theme: { name: string }): unknown
+                        }
+                      ).addTableTheme(tableId, { name: `plain-${tableId}` })
+                    } catch {
+                      // Theme muting is cosmetic; the table itself is
+                      // registered.
+                    }
+                  })
+                } catch {
+                  // Best-effort: skip if Univer rejects (e.g. overlapping
+                  // ranges) — the data itself is still usable.
+                }
+              }
+            }
+            // ── EXCEL-021: table-owned filter origin (desktop
+            //    applySheetFilter parity). Excel allows one filter per
+            //    sheet: the worksheet's own <autoFilter> (installed above
+            //    from filterState) wins; otherwise the FIRST table's range
+            //    IS the sheet's filter. Install it so the dropdowns render,
+            //    record the origin (for later unhide semantics), and mark
+            //    the sheet's filter origin as table-owned — the
+            //    BeforeCommandExecute gate then refuses filter edits with
+            //    the desktop's exact message.
+            if (!sheet.filterState?.filter && fileTables[0]) {
+              const area = fileTables[0].area
+              try {
+                const wb = rt.univerAPI.getActiveWorkbook()
+                const ws = wb?.getSheetByName(sheet.name)
+                ws?.getRange(
+                  area.startRow,
+                  area.startColumn,
+                  area.endRow - area.startRow + 1,
+                  area.endColumn - area.startColumn + 1,
+                ).createFilter()
+                filterOriginsRef.current.set(sheet.name, { ...area })
+                tableFilterOriginRef.current.add(sheet.name)
+              } catch {
+                // Installing the table's filter must never fail the open.
+              }
+            }
+          }
         }
       } finally {
         journalSuppressionRef.current = false
@@ -971,6 +1335,20 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           workbookProtectionJournalRef.current !== null
             ? { lockStructure: workbookProtectionJournalRef.current }
             : null
+        // EXCEL-021: the session's table creations (Insert → Table). Desktop
+        //   toSaveTableAdds parity — the journal is the wire payload. A
+        //   workbook without table creations emits NO family, so a no-op
+        //   save preserves the file's table parts byte-for-byte.
+        const tableAdditions = [...tableAddsRef.current]
+        // SPLIT-SAVE (desktop save-actions heldTables parity): the gateway
+        // fails closed when a new table rides with row/column changes on
+        // its sheet ("A new table cannot be saved together with row/column
+        // changes on its sheet — save the table first."). Instead of
+        // bouncing the user, hold the tables back: phase 1 saves the
+        // structure (and every other family) without them, phase 2 saves
+        // the held tables ALONE against the phase-1 bytes.
+        const heldTables = structuralOps.length > 0 ? tableAdditions : []
+        const splitSave = heldTables.length > 0
         let nextFileName = handle.fileName
         if (saveAs) {
           const newName = window.prompt('Save as:', nextFileName)
@@ -980,7 +1358,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           }
           nextFileName = newName.endsWith('.xlsx') ? newName : `${newName}.xlsx`
         }
-        const savedBytes = await saveWorkbook({
+        let savedBytes = await saveWorkbook({
           fileName: nextFileName,
           fileBytes: handle.sourceBytes,
           savePlan: {
@@ -992,8 +1370,19 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             ...(noteStates.length > 0 ? { noteStates } : {}),
             ...(sheetProtections.length > 0 ? { sheetProtections } : {}),
             ...(workbookProtectionState !== null ? { workbookProtectionState } : {}),
+            ...(!splitSave && tableAdditions.length > 0 ? { tableAdditions } : {}),
           },
         })
+        if (splitSave) {
+          // Phase 2: the held tables alone, against the phase-1 bytes —
+          // the same two-phase save the desktop runs when structural ops
+          // and new tables collide.
+          savedBytes = await saveWorkbook({
+            fileName: nextFileName,
+            fileBytes: savedBytes,
+            savePlan: { edits: [], tableAdditions: heldTables },
+          })
+        }
         handleRef.current = {
           fileName: nextFileName,
           sourceBytes: savedBytes,
@@ -1028,6 +1417,30 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         }
         workbookProtectionJournalRef.current = null
         bumpProtectionEcho()
+        // EXCEL-021: the saved tables are now IN the source bytes — they are
+        // file-native. Merge the journal into the file refs (delete-refusal
+        // and overlap checks must see them; the banding/registration for a
+        // created table was already painted at create time) and clear the
+        // journal, so a subsequent no-op save emits no tableAdditions and
+        // preserves the table XML byte-for-byte.
+        if (tableAdditions.length > 0) {
+          for (const addition of tableAdditions) {
+            const existing = tablesFileRef.current.get(addition.sheetName) ?? []
+            tablesFileRef.current.set(addition.sheetName, [
+              ...existing,
+              {
+                area: { ...addition.area },
+                headerRowCount: 1,
+                showRowStripes: addition.bandedRows,
+                showColumnStripes: false,
+                ...(addition.name !== '' ? { name: addition.name } : {}),
+                columns: [...addition.columnNames],
+                ...(addition.style !== undefined ? { styleName: addition.style } : {}),
+              },
+            ])
+          }
+          tableAddsRef.current = []
+        }
         const blob = new Blob([savedBytes.buffer as ArrayBuffer], {
           type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         })
@@ -1122,6 +1535,10 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           onToggleSheetProtection: toggleSheetProtection,
           onToggleWorkbookProtection: toggleWorkbookProtection,
           onSetCellsLocked: setCellsLocked,
+        }}
+        tables={{
+          onInsertTable: handleInsertTable,
+          onDeleteTable: handleDeleteTable,
         }}
       />
 

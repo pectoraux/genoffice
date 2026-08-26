@@ -24,6 +24,7 @@ import type {
   DvWireRule,
   SheetFilterState,
   SheetNote,
+  SheetTableAddition,
   WorkbookSnapshot,
 } from '@genoffice/xlsx-gateway'
 
@@ -159,6 +160,15 @@ export interface BrowserWorkbookSavePlan {
    * `<workbookProtection>` alone.
    */
   readonly workbookProtectionState?: { readonly lockStructure: boolean } | null
+  /**
+   * Session-created tables (Insert → Table, EXCEL-021). Each entry carries
+   * the journaled creation for one table — the engine writes a brand-new
+   * xl/tables/tableN.xml part, the worksheet's `<tableParts>` element, the
+   * relationship, and the [Content_Types] override. Mirrors the desktop's
+   * tableAdditions journal semantics (deleting a session table drops its
+   * entry, so it is never persisted — convert-to-range).
+   */
+  readonly tableAdditions?: readonly SheetTableAddition[]
   readonly [key: string]: unknown
 }
 

@@ -624,3 +624,145 @@ describe('architecture: EXCEL-020 Protection uses the canonical wire families', 
     expect(passwordFields).toEqual([])
   })
 })
+
+// ── EXCEL-021: Tables canonical wire-family guards ────────────────────────
+//
+// Excel tables (ListObjects) are implemented through the CANONICAL save
+// families — no new engine path, no browser-side OOXML, no parallel
+// table model:
+//   - READ: the gateway's xlsx-table-read resolves each worksheet's
+//     <tableParts> through its rels into WorksheetState.tables (metadata
+//     + PRE-RESOLVED banding colors — theme accents, Excel's HSL tint
+//     transform, custom tableStyle dxfs). The browser paints the banding
+//     into the cell matrix through the pure table-banding.ts module and
+//     registers the VISUAL Univer table with a muted plain theme; a
+//     headerless table skips registration (Univer synthesizes headers).
+//   - WRITE: Insert → Table journals SheetTableAddition entries and
+//     emits `savePlan.tableAdditions` (routeOffice validates with the
+//     desktop preload's exact shape: sheetName, 0-based ordered area,
+//     name 1-255, columnNames 1-1000 × ≤255, built-in style name,
+//     bandedRows; ≤50 entries) → applyCellEditsToXlsx's trailing
+//     parameter → applyTableAdditions writes the table part +
+//     <tableParts> + rel + [Content_Types] override, failing closed on
+//     name collisions, overlaps, and bad column names.
+//   - DELETE: convert-to-range for session tables (journal splice —
+//     nothing reaches the file; baked cells stay). File-native tables
+//     refuse with the desktop's exact message.
+//   - FILTER: a sheet whose filter belongs to a table (no worksheet
+//     <autoFilter> — the filter lives in the table part) refuses filter
+//     commands through a BeforeCommandExecute gate (desktop
+//     FILTER_COMMAND_PATTERN parity).
+//   - SPLIT-SAVE: new tables + row/column changes on the same save hold
+//     the tables back (desktop heldTables parity): phase 1 saves the
+//     structure, phase 2 saves the tables alone against the phase-1
+//     bytes.
+//
+// The guards below enforce that no future shortcut re-introduces:
+//   - browser-side OOXML/JSZip construction for table parts,
+//   - a table write that bypasses the save plan,
+//   - the disabled Table stub (the feature must stay wired),
+//   - a filter-origin gate that lets table-owned filters be edited.
+
+describe('architecture: EXCEL-021 Tables uses the canonical wire families', () => {
+  const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+  const ribbonPath = join(WEB_ROOT, 'src', 'screens', 'excel', 'Ribbon.tsx')
+  const clientPath = join(WEB_ROOT, 'src', 'api', 'office-client.ts')
+  const bandingPath = join(WEB_ROOT, 'src', 'office', 'table-banding.ts')
+
+  it('ExcelEditor emits the tableAdditions save-plan family', () => {
+    expect(existsSync(editorPath), `${editorPath} should exist`).toBe(true)
+    const content = readFileSync(editorPath, 'utf8')
+    expect(content).toContain('tableAddsRef')
+    expect(
+      /tableAdditions\.length > 0 \? \{ tableAdditions \} : \{\}/.test(content),
+      'handleSave must conditionally emit the tableAdditions family',
+    ).toBe(true)
+  })
+
+  it('ExcelEditor implements the desktop split-save (heldTables) semantics', () => {
+    const content = readFileSync(editorPath, 'utf8')
+    expect(
+      content.includes('heldTables'),
+      'row/column changes + new tables must hold the tables into a phase-2 save',
+    ).toBe(true)
+    expect(content.includes('tableAdditions: heldTables')).toBe(true)
+  })
+
+  it('Ribbon Insert → Tables is wired (no disabled stub)', () => {
+    expect(existsSync(ribbonPath), `${ribbonPath} should exist`).toBe(true)
+    const content = readFileSync(ribbonPath, 'utf8')
+    // The old stub documented the missing wire family — it must be gone.
+    expect(
+      content.includes('does not yet expose the tableAdditions family'),
+      'the disabled Table stub must be removed',
+    ).toBe(false)
+    expect(content).toContain(`label="Table"`)
+    expect(content).toContain(`label="Delete Table"`)
+    // The buttons must call back into the shell-owned journal handlers.
+    expect(content).toContain('tables?.onInsertTable()')
+    expect(content).toContain('tables?.onDeleteTable()')
+  })
+
+  it('table-banding.ts is a pure value transformation (no imports)', () => {
+    expect(existsSync(bandingPath), `${bandingPath} should exist`).toBe(true)
+    const content = readFileSync(bandingPath, 'utf8')
+    const imports = nonCommentLines(content).filter((line) => /^\s*import\s/.test(line))
+    expect(
+      imports,
+      'table banding must stay import-free — colors arrive pre-resolved from the gateway',
+    ).toEqual([])
+  })
+
+  it('ExcelEditor implements the table-owned filter-origin gate', () => {
+    const content = readFileSync(editorPath, 'utf8')
+    expect(
+      content.includes('FILTER_COMMAND_PATTERN'),
+      'the desktop FILTER_COMMAND_PATTERN gate must exist',
+    ).toBe(true)
+    expect(content.includes('BeforeCommandExecute')).toBe(true)
+    expect(content.includes('filter belongs to an Excel table')).toBe(true)
+  })
+
+  it('ExcelEditor implements desktop delete semantics (session-only)', () => {
+    const content = readFileSync(editorPath, 'utf8')
+    // Convert-to-range: the journal entry is spliced (never persisted).
+    expect(content.includes('tableAddsRef.current.splice')).toBe(true)
+    // File-native tables refuse with the desktop's exact message.
+    expect(content.includes('tables already in the file cannot be deleted yet')).toBe(true)
+  })
+
+  it('ExcelEditor seeds file tables from WorksheetState.tables (read path)', () => {
+    const content = readFileSync(editorPath, 'utf8')
+    expect(content).toContain('tablesFileRef')
+    expect(content).toContain('applyTableBandingToMatrix')
+    expect(content).toContain('addTableTheme')
+    // Headerless tables skip Univer registration (desktop parity).
+    expect(content.includes('table.headerRowCount === 0')).toBe(true)
+  })
+
+  it('apps/web/src has NO raw OOXML, JSZip, or direct-gateway table writes', () => {
+    // The browser must never construct table XML, zip parts, or call the
+    // gateway's applyTableAdditions directly — tables travel ONLY through
+    // the typed save-plan family.
+    const webFiles = readFiles(join(WEB_ROOT, 'src'))
+    const forbidden = [
+      /applyTableAdditions/,
+      /<tableParts\b/,
+      /<tableStyleInfo\b/,
+      /<tableColumn\b/,
+      /from\s+['"]jszip['"]/,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('office-client carries the typed tableAdditions family', () => {
+    expect(existsSync(clientPath), `${clientPath} should exist`).toBe(true)
+    const content = readFileSync(clientPath, 'utf8')
+    expect(content).toContain('tableAdditions?:')
+    expect(content).toContain('SheetTableAddition')
+  })
+})

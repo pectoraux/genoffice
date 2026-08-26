@@ -8,6 +8,7 @@ import type { SheetVisual } from './chart-visual'
 import type { SheetFilterState } from '../gateway/xlsx-filter'
 import type { DvWireRule } from '../gateway/xlsx-dv'
 import type { SheetNote } from '../gateway/xlsx-notes'
+import type { SheetTableInfo } from '../gateway/xlsx-table-read'
 
 export type CellScalar = string | number | boolean | null
 
@@ -94,6 +95,21 @@ export interface WorksheetState {
    * and reads it back via this field on reopen.
    */
   readonly notes?: readonly SheetNote[] | undefined
+  /**
+   * Excel tables (ListObjects) parsed from the worksheet's <tableParts>
+   * (resolved through the worksheet rels). Absent means the sheet carries
+   * no representable tables — including when a part holds constructs the
+   * model cannot represent (no readable ref), which are skipped per table,
+   * or when the table wiring is unreadable, which fails closed PER SHEET:
+   * the browser never renders such tables and a no-op save preserves the
+   * file's parts byte-for-byte. The web Sheets shell (Insert → Table)
+   * journals table creations through the canonical `tableAdditions` save
+   * family and reads the state back via this field on reopen, so tables
+   * survive round-trip; banding colors are pre-resolved (theme accents +
+   * HSL tints + custom tableStyle dxfs) so the browser paints without
+   * OOXML knowledge.
+   */
+  readonly tables?: readonly SheetTableInfo[] | undefined
   /**
    * Sheet protection state parsed from the worksheet's <sheetProtection>
    * element. Absent means the worksheet carries NO element (not
