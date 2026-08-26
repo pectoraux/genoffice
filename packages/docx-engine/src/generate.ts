@@ -39,6 +39,19 @@ export interface ImagePatch {
   /** mirror flips; false removes the attribute; undefined keeps */
   flipH?: boolean
   flipV?: boolean
+  /**
+   * Source crop (a:srcRect) as fractions of the source picture per side.
+   * null or an all-zero rect removes the element; undefined keeps as-is.
+   * Rewrites the <a:srcRect> inside the pic's blipFill (after a:blip).
+   */
+  crop?: { l: number; t: number; r: number; b: number } | null
+  /**
+   * Accessibility alt text (wp:docPr descr). null or '' removes the descr
+   * attribute; a non-empty string sets it (XML-escaped). undefined keeps
+   * the existing descr as-is. The wp:docPr name attribute is untouched
+   * (it is the object name, not the alt text).
+   */
+  alt?: string | null
 }
 
 /**
@@ -133,6 +146,40 @@ export function patchImageParagraphXml(xml: string, patch: ImagePatch): string {
       /(<wp:positionV[^>]*>[\s\S]*?)<wp:posOffset>-?\d+<\/wp:posOffset>([\s\S]*?<\/wp:positionV>)/,
       `$1<wp:posOffset>${Math.round(patch.posOffsetY)}</wp:posOffset>$2`,
     )
+  }
+  // Source crop (a:srcRect): rewrite inside the pic's blipFill, right after
+  // a:blip. Fractions are stored in 1000ths of a percent (l="10000" = 10%),
+  // matching rectFrac's parse-side division by 100000.
+  if (patch.crop !== undefined) {
+    const rect = patch.crop
+    const hasCrop = !!rect && !!(rect.l || rect.t || rect.r || rect.b)
+    const tag = hasCrop
+      ? `<a:srcRect l="${Math.round((rect!.l || 0) * 100000)}" t="${Math.round(
+          (rect!.t || 0) * 100000,
+        )}" r="${Math.round((rect!.r || 0) * 100000)}" b="${Math.round((rect!.b || 0) * 100000)}"/>`
+      : ''
+    if (/<a:srcRect\b[^>]*\/>/.test(out)) {
+      out = hasCrop
+        ? out.replace(/<a:srcRect\b[^>]*\/>/, tag)
+        : out.replace(/<a:srcRect\b[^>]*\/>/, '')
+    } else if (hasCrop) {
+      out = out.replace(/(<pic:blipFill>[\s\S]*?<a:blip[^>]*\/>)/, `$1${tag}`)
+    }
+  }
+  // Accessibility alt text: rewrite the wp:docPr descr attribute. The
+  // wp:docPr name (object name) is preserved; only descr (the canonical alt
+  // text) is touched. null/'' removes descr; a non-empty string sets it.
+  if (patch.alt !== undefined) {
+    const newAlt = patch.alt !== null && patch.alt.length > 0 ? patch.alt : null
+    out = out.replace(/<wp:docPr\b([^>]*?)\s*\/?>/, (whole, attrs: string) => {
+      // strip existing descr (and any stray trailing whitespace before />)
+      let a = attrs.replace(/\s+descr="[^"]*"/, '')
+      if (newAlt !== null) {
+        a += ` descr="${escapeXmlAttr(newAlt)}"`
+      }
+      // normalize to self-closing form (wp:docPr is always self-closing)
+      return `<wp:docPr${a} />`
+    })
   }
   return out
 }

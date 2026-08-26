@@ -20,12 +20,15 @@
  */
 import { describe, test, expect } from 'vitest'
 import { join } from 'node:path'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { scanForForbiddenImports, listSourceFiles } from './dep-scanner.js'
 
 const SRC = join(__dirname, '..', 'src')
 
-function scanForTokens(rootDir: string, forbidden: string[]): Array<{ file: string; line: number; text: string }> {
+function scanForTokens(
+  rootDir: string,
+  forbidden: string[],
+): Array<{ file: string; line: number; text: string }> {
   const hits: Array<{ file: string; line: number; text: string }> = []
   for (const file of listSourceFiles(rootDir)) {
     const lines = readFileSync(file, 'utf8').split('\n')
@@ -63,7 +66,11 @@ describe('@genoffice/xlsx-gateway architecture boundary (Increment 3I — AST-ba
   })
 
   test('ZERO imports of apps/sheets (no upward dependency on the application)', () => {
-    const hits = scanForForbiddenImports(SRC, [/apps\/sheets/, /\.\.\/\.\.\/apps\/sheets/, /\.\.\/\.\.\/\.\.\/apps\/sheets/])
+    const hits = scanForForbiddenImports(SRC, [
+      /apps\/sheets/,
+      /\.\.\/\.\.\/apps\/sheets/,
+      /\.\.\/\.\.\/\.\.\/apps\/sheets/,
+    ])
     if (hits.length > 0) {
       console.error('Found apps/sheets imports in xlsx-gateway source:')
       for (const h of hits) {
@@ -95,7 +102,9 @@ describe('@genoffice/xlsx-gateway architecture boundary (Increment 3I — AST-ba
       'wcId',
       'ipcMain',
       'ipcRenderer',
-    ]).filter((h) => !h.text.startsWith('*') && !h.text.startsWith('//') && !h.text.startsWith('/*'))
+    ]).filter(
+      (h) => !h.text.startsWith('*') && !h.text.startsWith('//') && !h.text.startsWith('/*'),
+    )
     expect(hits).toEqual([])
   })
 
@@ -105,7 +114,9 @@ describe('@genoffice/xlsx-gateway architecture boundary (Increment 3I — AST-ba
       'saveWorkbookViaSidecar',
       'readArchiveEntryText',
       'sidecar',
-    ]).filter((h) => !h.text.startsWith('*') && !h.text.startsWith('//') && !h.text.startsWith('/*'))
+    ]).filter(
+      (h) => !h.text.startsWith('*') && !h.text.startsWith('//') && !h.text.startsWith('/*'),
+    )
     expect(hits).toEqual([])
   })
 

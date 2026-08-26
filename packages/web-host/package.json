@@ -18,6 +18,8 @@
   "dependencies": {
     "@contractor/core": "*",
     "@electric-sql/pglite": "^0.2.0",
+    "@genoffice/docx-engine": "*",
+    "@genoffice/xlsx-gateway": "*",
     "pg": "^8.13.1"
   },
   "devDependencies": {

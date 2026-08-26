@@ -5,6 +5,13 @@
 
 export class DvEditError extends Error {}
 
+/// Reading `<dataValidations>` back failed closed: the section carries
+/// constructs the canonical model cannot represent (x14 extensions, unknown
+/// types/operators/error styles, malformed sqref). The sheet's DV state is
+/// NOT surfaced — the browser never renders an unfaithful rule, and a no-op
+/// save preserves the file's XML byte-for-byte.
+export class DvReadError extends Error {}
+
 export interface DvCellArea {
   readonly startRow: number
   readonly endRow: number
@@ -36,6 +43,18 @@ const DV_ERROR_STYLE_NAMES: Record<number, string | undefined> = {
   1: undefined,
   2: 'warning',
 }
+/// Read-side inverse: OOXML errorStyle name → Univer number. `stop` (the
+/// OOXML default, emitted attribute-less) is absent — Univer's STOP is also
+/// the enum default, so an absent attribute maps to an absent field.
+const DV_ERROR_STYLE_NUMBERS: Record<string, number | undefined> = {
+  information: 0,
+  warning: 2,
+}
+
+/// Guard rails mirroring the desktop's shared wire schema
+/// (workbookDvStateSchema): bounded rule/range counts.
+const DV_MAX_RULES = 500
+const DV_MAX_RANGES_PER_RULE = 100
 
 export function applyDvRules(worksheetXml: string, rules: readonly DvWireRule[]): string {
   if (/<x14:dataValidation\b/.test(worksheetXml)) {
@@ -62,6 +81,193 @@ export function applyDvRules(worksheetXml: string, rules: readonly DvWireRule[])
   const end = xml.lastIndexOf('</worksheet>')
   if (end === -1) throw new DvEditError('Worksheet has no closing element.')
   return xml.slice(0, end) + section + xml.slice(end)
+}
+
+/**
+ * Parse a worksheet's `<dataValidations>` section into the canonical
+ * DvWireRule[] read model — the exact inverse of serializeRule():
+ *
+ *   type            → rule.type ('none' → 'any', the messages-only form)
+ *   operator        → rule.operator (absent = OOXML default 'between' for the
+ *                     operator-carrying types; serializeRule re-omits it)
+ *   allowBlank="1"  → rule.allowBlank = true
+ *   showDropDown="1"→ rule.showDropDown = false (OOXML INVERTS the name: the
+ *                     attribute SUPPRESSES the dropdown; only meaningful for
+ *                     list rules, but preserved verbatim for all types so the
+ *                     write side re-emits the identical attribute)
+ *   showInputMessage / showErrorMessage → true
+ *   errorStyle      → Univer number (information=0, warning=2; absent = stop
+ *                     = 1 = enum default, field omitted)
+ *   errorTitle/error/promptTitle/prompt → string fields
+ *   sqref           → ranges[] (space-separated A1 refs)
+ *   formula1/formula2 → rule.formula1/formula2 with the install-side
+ *                     transforms: list literals keep the quoted form ONLY as
+ *                     a marker (the browser install converts `"a,b"` → `a,b`
+ *                     and `ref` → `=ref` exactly like the desktop's
+ *                     toUniverDvRule); custom keeps the raw body. Formulas
+ *                     are NOT untransformed here — the rule stays in the
+ *                     wire shape both sides already understand.
+ *
+ * Fail-closed: x14 extensions, types/operators/error styles outside the
+ * canonical whitelists, unreadable sqref, empty ranges, or rule counts past
+ * the guard rails throw DvReadError — the caller surfaces NO dvRules for the
+ * sheet, so the browser never renders a validation it cannot save faithfully
+ * and a no-op save leaves the XML untouched.
+ */
+export function parseDataValidations(worksheetXml: string): readonly DvWireRule[] {
+  const section =
+    /<dataValidations\b[^>]*>[\s\S]*?<\/dataValidations>|<dataValidations\b[^>]*\/>/.exec(
+      worksheetXml,
+    )
+  if (!section) return []
+  if (/<x14:dataValidation\b/.test(worksheetXml)) {
+    throw new DvReadError(
+      'This sheet has extended (x14) data validation — it cannot be represented yet.',
+    )
+  }
+  const inner = section[0].includes('</dataValidations>')
+    ? section[0].slice(section[0].indexOf('>') + 1, section[0].length - '</dataValidations>'.length)
+    : ''
+  const rules: DvWireRule[] = []
+  for (const match of inner.matchAll(
+    /<dataValidation\b([^>]*)\/>|<dataValidation\b([^>]*)>([\s\S]*?)<\/dataValidation>/g,
+  )) {
+    const attributes = (match[1] ?? match[2] ?? '').trim()
+    const body = match[3] ?? ''
+    rules.push(parseRule(attributes, body))
+    if (rules.length > DV_MAX_RULES) {
+      throw new DvReadError(`Worksheet carries more than ${DV_MAX_RULES} validation rules.`)
+    }
+  }
+  return rules
+}
+
+function parseRule(attributes: string, body: string): DvWireRule {
+  const attr = (name: string): string | undefined =>
+    new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attributes)?.[1]
+
+  // sqref → ranges. Empty or malformed refs fail closed — a rule whose
+  // target cannot be located must not silently apply elsewhere.
+  const sqref = attr('sqref')
+  if (sqref === undefined || sqref.trim() === '') {
+    throw new DvReadError('dataValidation has no sqref attribute.')
+  }
+  const ranges: DvCellArea[] = []
+  for (const ref of sqref.split(/\s+/)) {
+    if (ref === '') continue
+    const area = parseSqrefPart(ref)
+    if (area === null) {
+      throw new DvReadError(`dataValidation sqref "${ref}" is not a readable range.`)
+    }
+    ranges.push(area)
+  }
+  if (ranges.length === 0 || ranges.length > DV_MAX_RANGES_PER_RULE) {
+    throw new DvReadError(`dataValidation sqref must carry 1..${DV_MAX_RANGES_PER_RULE} ranges.`)
+  }
+
+  // type → whitelist; 'none' maps to Univer 'any' (messages-only).
+  const rawType = attr('type')
+  let type: string | undefined
+  if (rawType === undefined || rawType === 'none') {
+    type = 'any'
+  } else {
+    if (!DV_TYPES.has(rawType)) {
+      throw new DvReadError(`Unsupported data-validation type "${rawType}".`)
+    }
+    type = rawType
+  }
+
+  // operator → whitelist. Absent means the OOXML default 'between' for the
+  // operator-carrying types; serializeRule omits 'between' on write, so an
+  // explicit between and an absent attribute are the same state.
+  const rawOperator = attr('operator')
+  let operator: string | undefined
+  if (rawOperator !== undefined) {
+    if (!DV_OPERATORS.has(rawOperator)) {
+      throw new DvReadError(`Unsupported data-validation operator "${rawOperator}".`)
+    }
+    operator = rawOperator
+  } else if (type !== 'any' && type !== 'list' && type !== 'custom') {
+    operator = 'between'
+  }
+
+  const errorStyleName = attr('errorStyle')
+  let errorStyle: number | undefined
+  if (errorStyleName !== undefined) {
+    const mapped = DV_ERROR_STYLE_NUMBERS[errorStyleName]
+    if (mapped === undefined) {
+      throw new DvReadError(`Unsupported data-validation error style "${errorStyleName}".`)
+    }
+    errorStyle = mapped
+  }
+
+  // Formulas: preserved verbatim in the wire shape (the browser install
+  // applies the list/custom transforms; the save side inverts them).
+  const rule: Record<string, unknown> = { type }
+  const formula1 = extractFormula(body, 'formula1')
+  const formula2 = extractFormula(body, 'formula2')
+  if (attr('allowBlank') === '1') rule.allowBlank = true
+  // OOXML showDropDown="1" SUPPRESSES the dropdown (inverted attribute name).
+  const rawShowDropDown = attr('showDropDown')
+  if (rawShowDropDown !== undefined) rule.showDropDown = rawShowDropDown !== '1'
+  if (attr('showInputMessage') === '1') rule.showInputMessage = true
+  if (attr('showErrorMessage') === '1') rule.showErrorMessage = true
+  if (operator !== undefined) rule.operator = operator
+  if (formula1 !== undefined) rule.formula1 = formula1
+  if (formula2 !== undefined) rule.formula2 = formula2
+  if (errorStyle !== undefined) rule.errorStyle = errorStyle
+  for (const key of ['errorTitle', 'error', 'promptTitle', 'prompt'] as const) {
+    const value = attr(key)
+    if (value !== undefined && value !== '') rule[key] = decodeXmlText(value)
+  }
+  return { ranges, rule }
+}
+
+/// One space-separated sqref token: "A1" or "A1:B4".
+function parseSqrefPart(ref: string): DvCellArea | null {
+  const [startRef, endRef] = ref.split(':')
+  const start = parseA1(startRef ?? '')
+  if (!start) return null
+  const end = endRef === undefined ? start : parseA1(endRef)
+  if (!end) return null
+  const area = {
+    startRow: Math.min(start.row, end.row),
+    endRow: Math.max(start.row, end.row),
+    startColumn: Math.min(start.column, end.column),
+    endColumn: Math.max(start.column, end.column),
+  }
+  if (
+    area.startRow < 0 ||
+    area.startColumn < 0 ||
+    area.endRow > 1_048_575 ||
+    area.endColumn > 16_383
+  ) {
+    return null
+  }
+  return area
+}
+
+function parseA1(address: string): { row: number; column: number } | null {
+  const match = /^\$?([A-Z]{1,3})\$?([0-9]+)$/.exec(address)
+  if (!match) return null
+  return { column: lettersToColumn(match[1]!), row: Number(match[2]!) - 1 }
+}
+
+function extractFormula(body: string, tag: 'formula1' | 'formula2'): string | undefined {
+  const match = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(body)
+  if (!match) return undefined
+  const text = decodeXmlText(match[1] ?? '')
+  return text === '' ? undefined : text
+}
+
+function decodeXmlText(input: string): string {
+  return input
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&#10;', '\n')
+    .replaceAll('&amp;', '&')
 }
 
 function serializeRule(wireRule: DvWireRule): string {
@@ -164,7 +370,22 @@ function formulaText(type: string | undefined, raw: unknown): string | undefined
   const text = String(raw)
   if (text === '') return undefined
   if (type === 'list') {
-    return text.startsWith('=') ? text.slice(1) : `"${text}"`
+    if (text.startsWith('=')) return text.slice(1)
+    // Univer's panel builder serializes list values as a JSON array
+    // ('["A","B"]'); the file format carries a quoted CSV literal
+    // ('"A,B"'). Normalize the JSON form to CSV so Excel reads either
+    // source identically.
+    if (text.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(text)
+        if (Array.isArray(parsed) && parsed.every((v) => typeof v === 'string')) {
+          return `"${parsed.join(',')}"`
+        }
+      } catch {
+        // Fall through to the quoted-literal form.
+      }
+    }
+    return `"${text}"`
   }
   if (type === 'custom') {
     return text.startsWith('=') ? text.slice(1) : text
@@ -218,6 +439,14 @@ function columnToLetters(column: number): string {
     remaining = Math.floor(remaining / 26)
   }
   return letters
+}
+
+function lettersToColumn(letters: string): number {
+  let column = 0
+  for (const character of letters) {
+    column = column * 26 + character.charCodeAt(0) - 64
+  }
+  return column - 1
 }
 
 function escapeXmlText(input: string): string {

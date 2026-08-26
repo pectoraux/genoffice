@@ -6,6 +6,13 @@
 
 export class NoteEditError extends Error {}
 
+/// Reading a sheet's comments part failed closed: the part carries constructs
+/// the canonical note model cannot represent (unreadable refs, missing text,
+/// oversized note sets). The sheet's notes are NOT surfaced — the browser
+/// never renders a note it cannot save faithfully, and a no-op save preserves
+/// the file's parts byte-for-byte.
+export class NoteReadError extends Error {}
+
 export interface SheetNote {
   readonly row: number
   readonly column: number
@@ -93,51 +100,55 @@ function buildCommentsXml(notes: readonly SheetNote[]): string {
     authors.push(author)
     return authors.length - 1
   }
-  const comments = notes.map((note) => {
-    const ref = `${columnName(note.column)}${note.row + 1}`
-    return `<comment ref="${ref}" authorId="${authorId(note.author)}">`
-      + `<text><t xml:space="preserve">${escapeXml(note.text)}</t></text></comment>`
-  }).join('')
-  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-    + '<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-    + `<authors>${authors.map((author) => `<author>${escapeXml(author)}</author>`).join('')}</authors>`
-    + `<commentList>${comments}</commentList></comments>`
+  const comments = notes
+    .map((note) => {
+      const ref = `${columnName(note.column)}${note.row + 1}`
+      return (
+        `<comment ref="${ref}" authorId="${authorId(note.author)}">` +
+        `<text><t xml:space="preserve">${escapeXml(note.text)}</t></text></comment>`
+      )
+    })
+    .join('')
+  return (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
+    '<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    `<authors>${authors.map((author) => `<author>${escapeXml(author)}</author>`).join('')}</authors>` +
+    `<commentList>${comments}</commentList></comments>`
+  )
 }
 
 const VML_HEADER =
-  '<xml xmlns:v="urn:schemas-microsoft-com:vml"'
-  + ' xmlns:o="urn:schemas-microsoft-com:office:office"'
-  + ' xmlns:x="urn:schemas-microsoft-com:office:excel">'
-  + '<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout>'
-  + '<v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202"'
-  + ' path="m,l,21600r21600,l21600,xe">'
-  + '<v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/>'
-  + '</v:shapetype>'
+  '<xml xmlns:v="urn:schemas-microsoft-com:vml"' +
+  ' xmlns:o="urn:schemas-microsoft-com:office:office"' +
+  ' xmlns:x="urn:schemas-microsoft-com:office:excel">' +
+  '<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout>' +
+  '<v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202"' +
+  ' path="m,l,21600r21600,l21600,xe">' +
+  '<v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/>' +
+  '</v:shapetype>'
 
 function noteShape(note: SheetNote, index: number): string {
   // Anchor: from one column right of the cell, spanning ~3 columns / 4 rows.
-  const anchor = [
-    note.column + 1, 15, note.row, 2,
-    note.column + 4, 15, note.row + 4, 2,
-  ].join(',')
-  return `<v:shape id="_x0000_s${1025 + index}" type="#_x0000_t202"`
-    + ' style="position:absolute;margin-left:80pt;margin-top:2pt;width:108pt;height:60pt;'
-    + `z-index:${index + 1};visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto">`
-    + '<v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/>'
-    + '<v:path o:connecttype="none"/>'
-    + '<v:textbox style="mso-direction-alt:auto"><div style="text-align:left"></div></v:textbox>'
-    + '<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/>'
-    + `<x:Anchor>${anchor}</x:Anchor>`
-    + '<x:AutoFill>False</x:AutoFill>'
-    + `<x:Row>${note.row}</x:Row><x:Column>${note.column}</x:Column></x:ClientData>`
-    + '</v:shape>'
+  const anchor = [note.column + 1, 15, note.row, 2, note.column + 4, 15, note.row + 4, 2].join(',')
+  return (
+    `<v:shape id="_x0000_s${1025 + index}" type="#_x0000_t202"` +
+    ' style="position:absolute;margin-left:80pt;margin-top:2pt;width:108pt;height:60pt;' +
+    `z-index:${index + 1};visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto">` +
+    '<v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/>' +
+    '<v:path o:connecttype="none"/>' +
+    '<v:textbox style="mso-direction-alt:auto"><div style="text-align:left"></div></v:textbox>' +
+    '<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/>' +
+    `<x:Anchor>${anchor}</x:Anchor>` +
+    '<x:AutoFill>False</x:AutoFill>' +
+    `<x:Row>${note.row}</x:Row><x:Column>${note.column}</x:Column></x:ClientData>` +
+    '</v:shape>'
+  )
 }
 
 /// Drops every Note-typed shape, keeping other legacy objects verbatim.
 function stripNoteShapes(vmlXml: string): string {
-  return vmlXml.replace(
-    /<v:shape\b[\s\S]*?<\/v:shape>/g,
-    (shape) => (shape.includes('ObjectType="Note"') ? '' : shape),
+  return vmlXml.replace(/<v:shape\b[\s\S]*?<\/v:shape>/g, (shape) =>
+    shape.includes('ObjectType="Note"') ? '' : shape,
   )
 }
 
@@ -153,8 +164,8 @@ function ensureVmlDefault(contentTypes: string): string {
   if (/<Default\b[^>]*Extension="vml"/.test(contentTypes)) return contentTypes
   return contentTypes.replace(
     '</Types>',
-    '<Default Extension="vml"'
-    + ' ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/></Types>',
+    '<Default Extension="vml"' +
+      ' ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/></Types>',
   )
 }
 
@@ -170,9 +181,9 @@ function removeRel(relsXml: string, type: string): string {
 }
 
 const EMPTY_RELS =
-  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-  + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-  + '</Relationships>'
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
+  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+  '</Relationships>'
 
 /// CT_Worksheet order: legacyDrawing follows drawing and precedes these.
 const AFTER_LEGACY_DRAWING =
@@ -201,13 +212,11 @@ export async function applySheetNotes(
   const hasRels = await pkg.has(relsPath)
   let relsXml = hasRels ? await pkg.readText(relsPath) : EMPTY_RELS
   const existingCommentsTarget = relTarget(relsXml, COMMENTS_REL_TYPE)
-  const existingCommentsPath = existingCommentsTarget === null
-    ? null
-    : resolveRelTarget(worksheetPath, existingCommentsTarget)
+  const existingCommentsPath =
+    existingCommentsTarget === null ? null : resolveRelTarget(worksheetPath, existingCommentsTarget)
   const existingVmlTarget = relTarget(relsXml, VML_REL_TYPE)
-  const existingVmlPath = existingVmlTarget === null
-    ? null
-    : resolveRelTarget(worksheetPath, existingVmlTarget)
+  const existingVmlPath =
+    existingVmlTarget === null ? null : resolveRelTarget(worksheetPath, existingVmlTarget)
   let relsChanged = false
 
   if (notes.length === 0) {
@@ -217,14 +226,16 @@ export async function applySheetNotes(
     relsXml = removeRel(relsXml, COMMENTS_REL_TYPE)
     const contentTypes = await pkg.readText(CONTENT_TYPES_PATH)
     const stripped = contentTypes.replace(
-      new RegExp(`<Override\\b[^>]*PartName="/${existingCommentsPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*/>`),
+      new RegExp(
+        `<Override\\b[^>]*PartName="/${existingCommentsPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*/>`,
+      ),
       '',
     )
     if (stripped !== contentTypes) {
       pkg.write(CONTENT_TYPES_PATH, stripped)
       touchedEntries.add(CONTENT_TYPES_PATH)
     }
-    if (existingVmlPath !== null && await pkg.has(existingVmlPath)) {
+    if (existingVmlPath !== null && (await pkg.has(existingVmlPath))) {
       const remaining = stripNoteShapes(await pkg.readText(existingVmlPath))
       if (/<v:shape\b/.test(remaining)) {
         pkg.write(existingVmlPath, remaining)
@@ -261,7 +272,7 @@ export async function applySheetNotes(
 
   // VML part: keep foreign shapes, replace the note shapes.
   const shapes = notes.map((note, index) => noteShape(note, index)).join('')
-  if (existingVmlPath !== null && await pkg.has(existingVmlPath)) {
+  if (existingVmlPath !== null && (await pkg.has(existingVmlPath))) {
     const vml = stripNoteShapes(await pkg.readText(existingVmlPath))
     const end = vml.lastIndexOf('</xml>')
     if (end === -1) throw new NoteEditError(`${existingVmlPath} is not a VML drawing.`)
@@ -294,4 +305,73 @@ export async function applySheetNotes(
     else pkg.add(relsPath, relsXml)
     touchedEntries.add(relsPath)
   }
+}
+
+/// Guard rails mirroring the desktop's workbookNoteStateSchema.
+const NOTE_MAX_PER_SHEET = 1_000
+
+/**
+ * Parse one worksheet's legacy notes from its comments part. The read is the
+ * exact inverse of buildCommentsXml(): <authors> dedupes author strings to
+ * authorId indexes; each <comment ref="A1" authorId="n"> carries a single
+ * plain-text <t>. The VML drawing (note shapes) is Excel presentation chrome
+ * regenerated by the writer — only the comments part is the source of truth.
+ *
+ * Fail-closed (NoteReadError): an unreadable ref, a comment without readable
+ * text, or more than NOTE_MAX_PER_SHEET comments throws — the caller surfaces
+ * NO notes for the sheet, so the browser never renders a partial note set and
+ * a no-op save preserves the file's XML byte-for-byte.
+ */
+export function parseCommentsPart(commentsXml: string): readonly SheetNote[] {
+  const authors: string[] = []
+  for (const match of commentsXml.matchAll(/<author>([\s\S]*?)<\/author>/g)) {
+    authors.push(decodeXmlText(match[1] ?? ''))
+  }
+  const notes: SheetNote[] = []
+  for (const match of commentsXml.matchAll(/<comment\b([^>]*)>([\s\S]*?)<\/comment>/g)) {
+    const attributes = match[1] ?? ''
+    const body = match[2] ?? ''
+    const ref = /(?:^|\s)ref="([^"]*)"/.exec(attributes)?.[1]
+    if (ref === undefined || ref.trim() === '') {
+      throw new NoteReadError('comment has no ref attribute.')
+    }
+    const cell = /^([A-Z]{1,3})([0-9]+)$/.exec(ref.trim())
+    if (!cell) {
+      throw new NoteReadError(`comment ref "${ref}" is not a readable cell address.`)
+    }
+    const row = Number(cell[2]) - 1
+    const column = lettersToColumnIndex(cell[1]!)
+    if (row < 0 || row > 1_048_575 || column < 0 || column > 16_383) {
+      throw new NoteReadError(`comment ref "${ref}" is outside the sheet.`)
+    }
+    const authorIdText = /(?:^|\s)authorId="([0-9]+)"/.exec(attributes)?.[1]
+    const author = authorIdText === undefined ? '' : (authors[Number(authorIdText)] ?? '')
+    const text = decodeXmlText(/<t\b[^>]*>([\s\S]*?)<\/t>/.exec(body)?.[1] ?? '')
+    if (text === '') {
+      throw new NoteReadError(`comment at ${ref} carries no readable text.`)
+    }
+    notes.push({ row, column, author, text })
+    if (notes.length > NOTE_MAX_PER_SHEET) {
+      throw new NoteReadError(`Sheet carries more than ${NOTE_MAX_PER_SHEET} notes.`)
+    }
+  }
+  return notes
+}
+
+function decodeXmlText(input: string): string {
+  return input
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&#10;', '\n')
+    .replaceAll('&amp;', '&')
+}
+
+function lettersToColumnIndex(letters: string): number {
+  let column = 0
+  for (const character of letters) {
+    column = column * 26 + character.charCodeAt(0) - 64
+  }
+  return column - 1
 }

@@ -4778,11 +4778,14 @@ type ImageMeta = Pick<
   | 'imageOffsetYEmu'
   | 'imagePosH'
   | 'imagePosV'
+  | 'imagePosHRel'
+  | 'imagePosVRel'
   | 'imageRotDeg'
   | 'imageFlipH'
   | 'imageFlipV'
   | 'imageCrop'
   | 'imageFillRect'
+  | 'imageAlt'
 >
 
 /** a:srcRect / a:fillRect attribute (1000ths of a percent; some writers emit decimals) → fraction */
@@ -4861,6 +4864,25 @@ function imageMeta(xml: string): ImageMeta {
     // margin-relative wp:align pair = Word position-gallery preset
     const posHFrom = /<wp:positionH[^>]*relativeFrom="([^"]+)"/.exec(xml)?.[1]
     const posVFrom = /<wp:positionV[^>]*relativeFrom="([^"]+)"/.exec(xml)?.[1]
+    // echo the anchor's positioning bases so wire consumers can preserve
+    // floating-position metadata without re-reading the XML
+    if (
+      posHFrom === 'margin' ||
+      posHFrom === 'page' ||
+      posHFrom === 'column' ||
+      posHFrom === 'paragraph' ||
+      posHFrom === 'character'
+    ) {
+      meta.imagePosHRel = posHFrom
+    }
+    if (
+      posVFrom === 'margin' ||
+      posVFrom === 'page' ||
+      posVFrom === 'paragraph' ||
+      posVFrom === 'line'
+    ) {
+      meta.imagePosVRel = posVFrom
+    }
     const alignH = /<wp:align>(left|center|right)<\/wp:align>/.exec(posHBody)?.[1]
     const alignV = /<wp:align>(top|center|bottom)<\/wp:align>/.exec(posVBody)?.[1]
     if (posHFrom === 'margin' && posVFrom === 'margin' && alignH && alignV) {
@@ -4870,6 +4892,21 @@ function imageMeta(xml: string): ImageMeta {
       // mixed positioning (H aligned, V by offset): keep the horizontal preset
       // so no-wrap images at least center like Word/LO
       meta.imagePosH = alignH as ImageMeta['imagePosH']
+    }
+  }
+  // Accessibility alt text: wp:docPr descr is the canonical alt text that
+  // screen readers announce. Surfaced for healthy images so the browser
+  // renders <img alt> and edits through the canonical patchImageParagraphXml
+  // path; broken images already surface this as previewText on their
+  // passthrough block. The wp:docPr name (object name, shown in Word's
+  // selection pane) is NOT alt text — it is a separate concern and is not
+  // surfaced here, so clearing descr makes imageAlt undefined (not a
+  // name fallback that would mask the user's intent).
+  const docPrEl = /<wp:docPr\b[^>]*\/?>/.exec(xml)?.[0] ?? ''
+  if (docPrEl) {
+    const descr = /\bdescr="([^"]*)"/.exec(docPrEl)?.[1]
+    if (descr !== undefined && descr.length > 0) {
+      meta.imageAlt = decodeEntities(descr)
     }
   }
   return meta

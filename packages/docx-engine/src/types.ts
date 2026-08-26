@@ -829,6 +829,9 @@ export interface Block {
   /** margin-relative wp:align of a floating image (Word position-gallery presets) */
   imagePosH?: 'left' | 'center' | 'right'
   imagePosV?: 'top' | 'center' | 'bottom'
+  /** wp:positionH/V relativeFrom base of a floating image (echo/display only) */
+  imagePosHRel?: 'margin' | 'page' | 'column' | 'paragraph' | 'character'
+  imagePosVRel?: 'margin' | 'page' | 'paragraph' | 'line'
   /** picture rotation in degrees clockwise 0-359 (pic a:xfrm rot / 60000) */
   imageRotDeg?: number
   /** picture mirror flips (pic a:xfrm flipH/flipV) */
@@ -848,6 +851,13 @@ export interface Block {
   ruleWidthPx?: number
   /** picture whose rel/media is broken (or metafile-only): render an empty frame + alt text */
   brokenImage?: boolean
+  /**
+   * Accessibility alt text (wp:docPr descr, falling back to wp:docPr name) for
+   * a healthy image (type === 'image'). Surfaced so the browser editor can
+   * render an <img alt> attribute and edit it through the canonical
+   * patchImageParagraphXml path. Absent when the drawing has no descr/name.
+   */
+  imageAlt?: string
   /**
    * Invisible range marker leaked to body top level (w:bookmarkEnd, w:proofErr…):
    * renders as nothing but keeps its body position. Not `hidden` — hidden blocks
