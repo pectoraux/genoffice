@@ -517,3 +517,179 @@ Leveling never mutates baseline snapshots, baseline IDs, captured dates, or hist
 ### PROJECT-045 boundary
 
 PROJECT-013 is the first resource-leveling implementation. It is NOT the final advanced leveling system. PROJECT-045 (advanced resource leveling) may add: task splitting, resource-pool-aware leveling, advanced priority/ordering rules, effort-driven task reshaping, and other advanced constraints. The PROJECT-013 frozen `LevelingOptions` and `LevelingResult` shapes are extensible (additional optional fields can be added without breaking the contract), but the canonical `levelResources(document, options) → LevelingResult` operation and the `LevelResources → proposedCommands → applyProjectCommand → schedule` architecture are frozen.
+
+## PROJECT-014 — Native `.gproj` format
+
+The canonical GenOffice Project persistence format is `.gproj`. It is a deterministic, versioned, self-describing JSON envelope wrapping a canonical `ProjectDocument` payload. It is NOT an MPP wrapper and NOT MSPDI XML (those are PROJECT-015..019). The internal model remains `ProjectDocument`; the file adapter is responsible for deterministic serialization/deserialization only.
+
+### Architecture
+
+```text
+ProjectDocument → ProjectFileAdapter → .gproj
+.gproj → ProjectFileAdapter → ProjectDocument
+```
+
+The `ProjectFileAdapter` contract (`inspect` / `import` / `export` over `Uint8Array`) is defined in `@genoffice/project-file` and implemented by the canonical `gprojFileAdapter` singleton. The adapter depends ONLY on `@genoffice/project-contracts` (types + brand helpers) and `@genoffice/project-engine` (the canonical `validateProjectDocument`). It has NO React, Electron, Node, browser, HTTP, or MPP/MSPDI dependencies (architecture-lock §13). Serialization logic never lives in React, the Electron renderer, browser code, Gantt components, the Project ribbon, or dialogs.
+
+### Envelope
+
+Every `.gproj` file is a JSON object with this canonical shape (keys emitted in alphabetical order by the canonical serializer):
+
+```json
+{
+  "document":      { ... ProjectDocument ... },
+  "format":        "gproj",
+  "formatVersion": 1,
+  "metadata":      { "format": "gproj", "version": "1" }
+}
+```
+
+- `format` is the magic identifier. Anything other than `"gproj"` is rejected as `INVALID_GPROJ`.
+- `formatVersion` is the FILE-format version (an integer). The current version is `1`. Bumped when the envelope or schema evolves.
+- `metadata` is a `ProjectFileMetadata` block (`{ format, version, sourceName? }`). `metadata.format` echoes `format`; `metadata.version` echoes `formatVersion` as a string. `sourceName` is host-supplied (the filename on disk) and is NOT stored in the file bytes — it is passed in via the `metadata` parameter to `inspect`/`import`.
+- `document` is the canonical `ProjectDocument` payload. It is the SOLE authoritative persisted state.
+
+`ProjectDocument.schemaVersion` (the payload's own schema marker, currently `1`) is distinct from `formatVersion` (the envelope's version). The payload schema version is owned by `@genoffice/project-contracts`; the envelope format version is owned by `@genoffice/project-file`.
+
+### Versioning
+
+The adapter implements explicit format versioning:
+
+- **Current format version**: `1`.
+- **Supported read versions**: `[1]`.
+- **Unsupported-version behavior**: a `formatVersion` not in the supported set is rejected with an `UNSUPPORTED_GPROJ_VERSION` error diagnostic. The parser does NOT silently read a future format using the current code. The returned document is the canonical empty document (not a corrupted partial).
+- **Future-version behavior**: when a future format version is introduced, the supported-read set is extended and the parser gains a migration path; until then, future versions fail deterministically.
+
+### Serialization
+
+Serialization is canonical. Equivalent `ProjectDocument` values produce byte-identical `.gproj` files. The serializer:
+
+- Preserves array order verbatim (task arrays, dependency arrays, notes, availability windows, calendar exceptions — order IS semantically meaningful and is part of the canonical document form). It does NOT sort away meaningful task order.
+- Sorts object keys by Unicode code point (NOT `localeCompare`, which is forbidden) so two semantically-equivalent objects with differently-ordered keys serialize to identical bytes. Key order in a `Record<...>` map is NOT semantic; array order IS semantic.
+- Uses a fixed 2-space indent and a single trailing newline so bytes are stable across runtimes.
+- Encodes the JSON text as UTF-8 via a pure-TypeScript encoder (host-neutral — no `Buffer`, no `TextEncoder` runtime dependency).
+- Emits NO wall-clock timestamps, NO random UUIDs, NO `Date.now()`, NO `Math.random`. Stable IDs come from the document.
+
+Canonical ordering is defined for: tasks, resources, assignments, dependencies, calendars, baselines, custom fields, views, tables, filters, groups (all preserve array order — the order is part of the canonical document form). Identity remains `TaskId`, `ResourceId`, `AssignmentId`, `DependencyId`, `CalendarId`, `BaselineId`, `CustomFieldId`, `ProjectViewId`, `ProjectTableId`, `ProjectFilterId`, `ProjectGroupId` (all branded strings, never array position).
+
+### Deserialization
+
+Deserialization pipeline:
+
+1. **Parse safely** — UTF-8 decode + `JSON.parse` (no `eval`, no `Function`, no reviver, no prototype deserialization, no arbitrary constructors). Malformed JSON → `INVALID_GPROJ`.
+2. **Validate envelope** — `format === "gproj"` (else `INVALID_GPROJ`); `formatVersion` ∈ supported set (else `UNSUPPORTED_GPROJ_VERSION`); `document` present and an object (else `SCHEMA_INVALID`); `schemaVersion === 1` (else `SCHEMA_INVALID`).
+3. **Validate schema** — every required field present + correctly typed; branded identity fields are non-empty strings; enum fields are in their union; `Record<...>` map keys are filtered against prototype-pollution hazards (`__proto__`, `constructor`, `prototype`). Missing required field → `MISSING_REQUIRED_FIELD`; wrong type → the entity-specific code (`INVALID_IDENTITY` / `INVALID_TASK` / `INVALID_RESOURCE` / `INVALID_ASSIGNMENT` / `INVALID_CALENDAR` / `INVALID_BASELINE`).
+4. **Construct canonical** — promote raw strings/numbers to branded values through the single canonical promotion point (`asTaskId` / `asISODateTime` / `asWorkingMinutes` / … from `@genoffice/project-contracts`). Malformed entities are DROPPED (partial recovery, explicitly represented by an error diagnostic); the document is otherwise constructed from the valid entities.
+5. **Validate document** — delegate to the engine's canonical `validateProjectDocument` (no duplicated diagnostic system). The engine's codes (`DUPLICATE_TASK_ID`, `MISSING_TASK_REFERENCE`, `CALENDAR_PERIOD_MALFORMED`, `CALENDAR_CYCLE`, `MISSING_BASE_CALENDAR`, …) are surfaced as error-level `ImportDiagnostic` entries (they are already valid `ImportDiagnostic.code` strings).
+6. **Return diagnostics** — every dropped entity or invalid reference is surfaced as an error-level diagnostic; nothing is silently discarded. A `GPROJ_READ` info diagnostic notes the format version that was read.
+7. **Malformed → fail** — file-level errors (bad JSON, wrong magic, unsupported version) return an empty document + a single error diagnostic. Entity-level errors drop the entity + emit an error diagnostic (partial recovery, explicitly represented).
+
+A malformed `.gproj` file fails deterministically. The adapter never produces a partially valid `ProjectDocument` and claims success — the diagnostic contract explicitly represents partial recovery (dropped entities are enumerated).
+
+### Round-trip invariant
+
+The mandatory acceptance gate:
+
+```text
+document → serialize → deserialize → serialize  ≡  first serialization (byte-identical)
+```
+
+and the semantic invariant:
+
+```text
+document → serialize → deserialize → canonicalize  ≡  document (semantic-identical)
+```
+
+Both are asserted by the PROJECT-014 test suite for every golden fixture.
+
+### Derived state (NOT persisted)
+
+The native format does NOT persist authoritative derived state. The following remain DERIVED from the canonical document (re-computed by the scheduling engine):
+
+- `earlyStart`, `earlyFinish`, `lateStart`, `lateFinish`, `totalSlack`, `freeSlack`, `critical`
+- `scheduledStart`, `scheduledFinish`
+- `deadlineVariance`, `deadlineMissed`
+- `status` (derived progress status)
+- `actualDuration`, `remainingDuration`
+- `resolvedCalendarId` (task + assignment)
+- `work`, `actualWork`, `remainingWork`, `cost`, `actualCost`, `remainingCost` (derived task + assignment values)
+- `taskSchedules`, `assignmentSchedules`, `projectStart`, `projectFinish` (the `DerivedSchedule`)
+- `BaselineVariance`, `BaselineComparison` (derived baseline comparison)
+- `LevelingResult`, `LevelingAction`, `LevelingOverallocation` (resource-leveling output)
+
+The `.gproj` file stores ONLY the canonical input/state (`ProjectDocument`), not duplicated derived output. Canonical scheduling state remains derivable from `ProjectDocument`.
+
+### Command / journal state (NOT persisted)
+
+The command journal history (undo/redo) is NOT part of the canonical `.gproj` format. The `JournalEntry` / `ProjectCommandResult` model is a host-specific UI/runtime concern. The native format persists the canonical `ProjectDocument`, not host-specific UI history. This is a documented limitation: undo/redo across a save/reopen requires a host snapshot; the native format does not carry one. A future increment may introduce a persisted journal if the architecture-lock is amended; until then, the `.gproj` format stores the canonical document only.
+
+### Baselines
+
+Baseline snapshots are persisted EXACTLY:
+
+- baseline IDs preserved
+- snapshot task IDs (the `Record<TaskId, …>` keys) preserved
+- captured dates (`capturedAt`) preserved
+- baseline work/cost/duration preserved
+- multiple baselines preserved
+- ordering deterministic (array order preserved)
+
+The adapter does NOT recompute historical baseline data during load. Baseline snapshots are immutable input; the derived `BaselineVariance` / `BaselineComparison` are re-computed by the scheduling engine.
+
+### Calendars
+
+Calendars are persisted with: calendar IDs, inheritance (`baseCalendarId`), working periods (`workingWeek` keyed by day 0-6), exceptions (date + periods), and references. Calendar semantics round-trip exactly. The adapter does NOT normalize away meaningful distinctions. Malformed calendar periods (non-integer bounds, out-of-range `00:00-24:00`, empty intervals, overlapping periods) and malformed working-week day keys (not 0-6) produce `INVALID_CALENDAR` diagnostics.
+
+### Resources / assignments
+
+Persisted: resource identity/type, `maxUnits`, rates (`standardRate`, `overtimeRate`, `costPerUse`), calendars, availability windows; assignment identity, task/resource references, units, work/cost. The adapter does NOT serialize renderer-specific resource state. The adapter does NOT serialize leveling actions as authoritative state (those are derived).
+
+### Custom fields / views
+
+Persisted: canonical `CustomField` definitions (id, name, type) and per-task `customFields` values; host-independent `ProjectView` / `ProjectTable` / `ProjectFilter` / `ProjectGroup` definitions. The adapter does NOT persist renderer implementation details. The following MUST NOT leak into `.gproj`: React component state, DOM geometry, Electron `BrowserWindow` state, scroll position, canvas coordinates (unless canonicalized by the model), native menu state.
+
+### File metadata
+
+The adapter uses the existing `ProjectFileMetadata` contract. Exact semantics:
+
+- `filename` / `sourceName`: host context (the filename on disk). NOT stored in the file bytes. The host passes it in via the `metadata` parameter to `inspect`/`import`; the adapter reports it back in the returned `ProjectFileMetadata`.
+- `format`: `"gproj"` (the magic identifier, also the `ProjectSavePlan['format']` discriminant).
+- `version`: the file's `formatVersion` as a string (e.g. `"1"`).
+- `modified` information: NOT stored in the file (wall-clock timestamps are forbidden in deterministic serialization). For deterministic tests, explicit metadata/time values are supplied.
+
+### Save plan
+
+The adapter is runtime-independent. The `ProjectSavePlan` contract (`{ format, path?, document }`) is the host-side save-request abstraction; the file adapter implements native serialization behind it without creating host-specific paths.
+
+### Error / diagnostics model
+
+The adapter uses the existing `ImportDiagnostic` contract (`{ code: string, severity, message, entityId? }`). The `code` field is a plain `string` (NOT a frozen union), so the adapter extends it with the smallest compatible set of codes (no duplicated diagnostic system):
+
+- `INVALID_GPROJ` — the file is not valid JSON, the root is not an object, or the envelope `format` is not `"gproj"`.
+- `UNSUPPORTED_GPROJ_VERSION` — the envelope `formatVersion` is not in the supported read set.
+- `SCHEMA_INVALID` — the envelope or document structure has the wrong type.
+- `MISSING_REQUIRED_FIELD` — a required field on an entity is absent.
+- `INVALID_IDENTITY` — a branded identity field has the wrong primitive type or is empty.
+- `INVALID_REFERENCE` — a reference field points to a non-existent entity.
+- `INVALID_CALENDAR` — a calendar has a malformed working-week day key, exception, or period.
+- `INVALID_BASELINE` — a baseline has a malformed `capturedAt` or snapshot.
+- `INVALID_ASSIGNMENT` — an assignment has non-numeric work/cost/units or a malformed id.
+- `INVALID_TASK` — a task has a non-numeric duration/priority/percentComplete or an unknown enum.
+- `INVALID_RESOURCE` — a resource has a non-numeric rate/maxUnits or an unknown kind.
+
+The engine's canonical `validateProjectDocument` diagnostics (e.g. `DUPLICATE_TASK_ID`, `MISSING_TASK_REFERENCE`, `MISSING_BASE_CALENDAR`, `CALENDAR_PERIOD_MALFORMED`, `CALENDAR_CYCLE`) are surfaced as additional error-level `ImportDiagnostic` entries (passed through verbatim — they are already valid `code` strings).
+
+### File security
+
+The parser safely handles: malformed JSON (rejected), deeply nested invalid structures (depth limit `64`), oversized collections (input byte limit `100 MiB`), invalid primitive types (rejected with entity-specific codes), unexpected fields (ignored safely — no crash, no execution), and prototype-pollution payloads (`__proto__`, `constructor`, `prototype` keys are filtered before the document is constructed). The parser does NOT execute file content. The parser does NOT deserialize arbitrary classes. `JSON.parse` is used with NO reviver (no code execution path).
+
+### Determinism
+
+Proven by the test suite:
+
+1. Same `ProjectDocument` → identical bytes.
+2. Reordered semantically-equivalent collections (e.g. `Record<CustomFieldId, …>` keys reordered) → identical bytes (object keys are sorted by Unicode code point).
+3. Round-trip → identical canonical semantics.
+4. `serialize → deserialize → serialize → identical bytes` (byte-identity invariant, asserted for every golden).
+
+The serializer uses NO `Date.now()`, NO random UUID generation, NO `localeCompare`, NO object-insertion-order for semantic ordering. Stable IDs come from the document.
