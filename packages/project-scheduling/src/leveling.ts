@@ -16,7 +16,7 @@ import type {
   Task,
   TaskId,
 } from '@genoffice/project-contracts'
-import { asTaskId } from '@genoffice/project-contracts'
+import { asISODateTime, asTaskId } from '@genoffice/project-contracts'
 import { CalendarBook, addWorkingTime, nextWorkingInstant, resolveCalendar } from './calendar.js'
 import { resolveResourceCalendarId, schedule, type SchedulingOptions } from './schedule.js'
 
@@ -254,53 +254,100 @@ const assignmentIntervalsForResource = (
 }
 
 /**
- * Detects over-allocation conflicts for a single work resource using a sweep
- * over assignment-interval endpoints. Returns the maximal windows where
- * combined `units` exceed the resource's effective max-units (considering
+ * Detects over-allocation conflicts for a single work resource using a
+ * segment-based sweep. A conflict exists on a maximal window where combined
+ * assignment `units` exceed the resource's effective max-units (considering
  * availability windows), with the conflicting assignments active during each
  * window.
+ *
+ * SEGMENTATION (correctness-critical): the sweep collects EVERY boundary
+ * timestamp at which either demand or effective capacity can change —
+ * assignment start/finish endpoints AND availability-window start/finish
+ * endpoints. Between two consecutive boundaries the active assignment set and
+ * the effective capacity are both constant, so one evaluation per segment is
+ * both sufficient and complete. Omitting availability-window boundaries would
+ * miss over-allocations that arise ONLY from a mid-assignment capacity drop
+ * (the assignment endpoints alone do not bracket the conflict). Capacity is
+ * evaluated at the segment midpoint (any point strictly inside the open
+ * segment reflects the window coverage for that segment, independent of event
+ * ordering).
  */
 const detectConflictsForResource = (
   resource: Resource,
   intervals: AssignmentInterval[],
 ): Conflict[] => {
   if (intervals.length === 0 || resource.maxUnits <= 0) return []
-  type Event = { time: ISODateTime; kind: 'end' | 'start'; interval: AssignmentInterval }
-  const events: Event[] = []
-  for (const interval of intervals) {
-    events.push({ time: interval.start, kind: 'start', interval })
-    events.push({ time: interval.finish, kind: 'end', interval })
+  // Bound the sweep to the assignment span. Availability windows outside this
+  // span cannot bracket a conflict (no assignment is active there).
+  const startMs = intervals.reduce(
+    (min, iv) => Math.min(min, new Date(iv.start).getTime()),
+    Number.POSITIVE_INFINITY,
+  )
+  const finishMs = intervals.reduce(
+    (max, iv) => Math.max(max, new Date(iv.finish).getTime()),
+    Number.NEGATIVE_INFINITY,
+  )
+  const boundaries = new Set<number>()
+  for (const iv of intervals) {
+    boundaries.add(new Date(iv.start).getTime())
+    boundaries.add(new Date(iv.finish).getTime())
   }
-  // Sort: at equal times, process 'end' before 'start' so half-open intervals
-  // [start, finish) that touch at a point do not falsely overlap.
-  events.sort((a, b) => {
-    const ta = new Date(a.time).getTime()
-    const tb = new Date(b.time).getTime()
-    if (ta !== tb) return ta - tb
-    // 'end' < 'start' at the same instant.
-    return a.kind === b.kind ? 0 : a.kind === 'end' ? -1 : 1
-  })
+  for (const slot of resource.availability) {
+    const s = new Date(slot.start).getTime()
+    if (s >= startMs && s <= finishMs) boundaries.add(s)
+    if (slot.finish !== undefined) {
+      const f = new Date(slot.finish).getTime()
+      if (f >= startMs && f <= finishMs) boundaries.add(f)
+    }
+  }
+  const sorted = [...boundaries].sort((a, b) => a - b)
+  if (sorted.length < 2) return []
+
+  const isoAt = (ms: number): ISODateTime => asISODateTime(new Date(ms).toISOString())
   const conflicts: Conflict[] = []
-  let active: AssignmentInterval[] = []
   let inConflict = false
-  let conflictStart: ISODateTime | undefined
+  let conflictStartMs = 0
   let conflictSides: AssignmentInterval[] = []
   let peakDemand = 0
   let conflictMaxUnits = resource.maxUnits
-  let lastTime: ISODateTime | undefined
-  for (const event of events) {
-    if (event.kind === 'end') {
-      active = active.filter((i) => i !== event.interval)
-    } else {
-      active.push(event.interval)
-    }
+
+  const closeConflict = (endMs: number) => {
+    conflicts.push({
+      resourceId: resource.id,
+      resource,
+      sides: conflictSides,
+      window: { start: isoAt(conflictStartMs), finish: isoAt(endMs) },
+      peakDemand,
+      // Report the effective (tightest) capacity that was exceeded. The
+      // nominal `resource.maxUnits` is still echoed on the `resource` field
+      // for downstream layers.
+      maxUnits: conflictMaxUnits,
+    })
+    inConflict = false
+    conflictSides = []
+    peakDemand = 0
+    conflictMaxUnits = resource.maxUnits
+  }
+
+  for (let k = 0; k < sorted.length - 1; k += 1) {
+    const t0 = sorted[k]
+    const t1 = sorted[k + 1]
+    if (t0 >= t1) continue
+    // Active assignments on the open segment (t0, t1): a half-open interval
+    // [start, finish) is active throughout (t0, t1) iff start <= t0 and
+    // finish >= t1 (it was already active at t0 and remains active past t1).
+    const active = intervals.filter((iv) => {
+      const s = new Date(iv.start).getTime()
+      const f = new Date(iv.finish).getTime()
+      return s <= t0 && f >= t1
+    })
     const demand = active.reduce((sum, i) => sum + i.units, 0)
-    // Effective capacity at this instant (considers availability windows).
-    const capacity = effectiveMaxUnits(resource, event.time)
+    // Capacity is constant on (t0, t1); evaluate at the midpoint.
+    const capacity = effectiveMaxUnits(resource, isoAt(t0 + (t1 - t0) / 2))
     if (demand > capacity) {
       if (!inConflict) {
         inConflict = true
-        conflictStart = event.time
+        conflictStartMs = t0
         conflictSides = [...active]
         peakDemand = demand
         conflictMaxUnits = capacity
@@ -312,30 +359,13 @@ const detectConflictsForResource = (
         }
       }
     } else if (inConflict) {
-      const window = {
-        start: conflictStart!,
-        finish: event.time,
-      }
-      conflicts.push({
-        resourceId: resource.id,
-        resource,
-        sides: conflictSides,
-        window,
-        peakDemand,
-        // Report the effective (tightest) capacity that was exceeded. The
-        // nominal `resource.maxUnits` is still echoed on the `resource` field
-        // for downstream layers.
-        maxUnits: conflictMaxUnits,
-      })
-      inConflict = false
-      conflictStart = undefined
-      conflictSides = []
-      peakDemand = 0
-      conflictMaxUnits = resource.maxUnits
+      closeConflict(t0)
     }
-    lastTime = event.time
   }
-  void lastTime
+  // Close a trailing conflict that extends to the last boundary.
+  if (inConflict) {
+    closeConflict(sorted[sorted.length - 1])
+  }
   return conflicts
 }
 
@@ -683,7 +713,16 @@ const applyDelayToWorkingCopy = (
   tasks: document.tasks.map((t) => (t.id === taskId ? { ...t, start: newStart } : t)),
 })
 
-/** Signature for deduplication of over-allocations across iterations. */
+/**
+ * Signature for deduplication of over-allocations across iterations. The
+ * signature MUST include the conflict window identity (start + finish) so that
+ * the same resource+tasks+assignments producing MULTIPLE distinct conflict
+ * windows (e.g. a capacity drop, then recovery, then a second drop) are
+ * reported as distinct over-allocations rather than collapsing into one entry
+ * whose `resolved` state the final pass would overwrite. Window endpoints are
+ * normalized to epoch milliseconds so the signature is independent of ISO
+ * string formatting.
+ */
 const conflictSignature = (conflict: Conflict): string => {
   const tasks = conflict.sides
     .map((s) => s.task.id as string)
@@ -693,7 +732,9 @@ const conflictSignature = (conflict: Conflict): string => {
     .map((s) => s.assignment.id as string)
     .sort(compareIds)
     .join(',')
-  return `${conflict.resourceId as string}|${tasks}|${assignments}`
+  const startMs = new Date(conflict.window.start).getTime()
+  const finishMs = new Date(conflict.window.finish).getTime()
+  return `${conflict.resourceId as string}|${tasks}|${assignments}|${startMs}|${finishMs}`
 }
 
 const MAX_ITERATIONS = 256

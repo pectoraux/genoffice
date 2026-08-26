@@ -30,6 +30,12 @@ import {
 
 const day = (minutes: number) => wm(minutes)
 
+// Mid-working-day boundaries used by the availability-window regression
+// fixtures (MONDAY = 09:00; the working day runs 09:00–17:00).
+const MONDAY_TEN_AM = '2026-08-03T10:00:00.000Z'
+const MONDAY_NOON = '2026-08-03T12:00:00.000Z'
+const MONDAY_ONE_PM = '2026-08-03T13:00:00.000Z'
+
 const resultOf = (document: ProjectDocument): DerivedSchedule => {
   const result = schedule(document)
   expect(result.diagnostics).toEqual([])
@@ -795,11 +801,57 @@ describe('PROJECT-013 golden L24 — material and cost resources excluded', () =
     ])
     expect(scheduleOf(schedule, 'a').scheduledStart).toBe(MONDAY)
     expect(scheduleOf(schedule, 'b').scheduledStart).toBe(TUESDAY)
-    // Only r1 appears in the over-allocations list.
-    expect(result.overallocations.every((o) => o.resourceId === asResourceId('r1') || true)).toBe(
-      true,
-    )
-    expect(result.overallocations.map((o) => o.resourceId as string)).toEqual(['r1'])
+    // Material and cost resources never appear in over-allocations: every
+    // reported over-allocation references the work resource r1 only, and the
+    // exact resource-id set is {r1}. (Replaces a previous tautological
+    // `... || true` assertion that always passed.)
+    expect(result.overallocations.every((o) => o.resourceId === asResourceId('r1'))).toBe(true)
+    expect([...new Set(result.overallocations.map((o) => o.resourceId as string))]).toEqual(['r1'])
+  })
+})
+
+describe('PROJECT-013 golden L25 — mid-assignment capacity drop', () => {
+  it('detects an over-allocation bounded only by availability-window transitions', () => {
+    // Two tasks span the full working day (09:00–17:00) at 0.5 units each.
+    // Combined demand is 1.0 everywhere. The resource maxUnits is 1.0, so
+    // there is NO over-allocation from assignment endpoints alone. The only
+    // over-allocation arises during the 12:00–13:00 availability window whose
+    // units (0.5) drop capacity below demand. A sweep that segments only at
+    // assignment start/finish would evaluate capacity at 09:00 (1.0, no
+    // conflict) and at 17:00 (0 demand, no conflict) and MISS the conflict
+    // entirely — there is no assignment event at 12:00 or 13:00.
+    const document = makeDocument({
+      tasks: [makeTask({ id: 'a', duration: day(480) }), makeTask({ id: 'b', duration: day(480) })],
+      resources: [
+        makeResource({
+          id: 'r1',
+          kind: 'work',
+          maxUnits: 1,
+          availability: [{ start: iso(MONDAY_NOON), finish: iso(MONDAY_ONE_PM), units: 0.5 }],
+        }),
+      ],
+      assignments: [
+        makeAssignment('as1', 'a', 'r1', { units: 0.5 }),
+        makeAssignment('as2', 'b', 'r1', { units: 0.5 }),
+      ],
+    })
+    const { result, schedule } = applyLeveling(document)
+    // The conflict is bounded [12:00, 13:00). b (larger TaskId, equal priority
+    // and scheduled start) is delayed to Tuesday; a alone demands 0.5 ≤ the
+    // 0.5 capacity during 12:00–13:00, so the conflict is resolved.
+    expect(result.proposedCommands).toEqual([
+      { type: 'SetTaskStart', taskId: asTaskId('b'), start: TUESDAY },
+    ])
+    expect(scheduleOf(schedule, 'a').scheduledStart).toBe(MONDAY)
+    expect(scheduleOf(schedule, 'b').scheduledStart).toBe(TUESDAY)
+    expect(result.overallocations).toHaveLength(1)
+    expect(result.overallocations[0].window).toEqual({
+      start: iso(MONDAY_NOON),
+      finish: iso(MONDAY_ONE_PM),
+    })
+    expect(result.overallocations[0].peakDemand).toBe(1)
+    expect(result.overallocations[0].maxUnits).toBe(0.5)
+    expect(result.overallocations[0].resolved).toBe(true)
   })
 })
 
@@ -1269,5 +1321,73 @@ describe('PROJECT-013 schedule-after-leveling is canonical', () => {
     const sched = schedule(exec.document)
     expect(sched.diagnostics).toEqual([])
     expect(sched.projectFinish).toBe(WEDNESDAY_FINISH)
+  })
+})
+
+describe('PROJECT-013 multi-window conflict identity', () => {
+  it('reports distinct conflict windows for the same assignments (no collapse)', () => {
+    // Two MSO tasks overlap all day at 0.5 units each (combined demand 1.0).
+    // The resource maxUnits is 1.0, so over-allocation arises ONLY inside two
+    // disjoint availability windows whose units (0.5) drop capacity below
+    // demand: [09:00, 10:00) and [12:00, 13:00). The SAME assignments produce
+    // TWO distinct conflict windows. A conflict signature keyed only by
+    // resource+tasks+assignments would collapse them into a single entry whose
+    // `resolved` state the final pass would overwrite; the signature MUST
+    // include window identity. Both tasks are MSO so neither can be delayed —
+    // both conflicts persist and must both be reported as distinct entries.
+    const document = makeDocument({
+      tasks: [
+        makeTask({
+          id: 'a',
+          duration: day(480),
+          constraintType: 'mustStartOn',
+          constraintDate: iso(MONDAY),
+        }),
+        makeTask({
+          id: 'b',
+          duration: day(480),
+          constraintType: 'mustStartOn',
+          constraintDate: iso(MONDAY),
+        }),
+      ],
+      resources: [
+        makeResource({
+          id: 'r1',
+          kind: 'work',
+          maxUnits: 1,
+          availability: [
+            { start: iso(MONDAY), finish: iso(MONDAY_TEN_AM), units: 0.5 },
+            { start: iso(MONDAY_NOON), finish: iso(MONDAY_ONE_PM), units: 0.5 },
+          ],
+        }),
+      ],
+      assignments: [
+        makeAssignment('as1', 'a', 'r1', { units: 0.5 }),
+        makeAssignment('as2', 'b', 'r1', { units: 0.5 }),
+      ],
+    })
+    const result = levelResources(document)
+    expect(result.proposedCommands).toEqual([])
+    expect(result.diagnostics.some((d) => d.code === 'LEVELING_CONSTRAINT_CONFLICT')).toBe(true)
+    // Two distinct windows survive — they do NOT collapse into one entry.
+    expect(result.overallocations).toHaveLength(2)
+    expect(result.overallocations.map((o) => o.window)).toEqual([
+      { start: iso(MONDAY), finish: iso(MONDAY_TEN_AM) },
+      { start: iso(MONDAY_NOON), finish: iso(MONDAY_ONE_PM) },
+    ])
+    // Both reference the same resource + assignments + tasks but are distinct
+    // by window; both are unresolved (MSO is immovable).
+    expect(result.overallocations.every((o) => o.resolved === false)).toBe(true)
+    expect(result.overallocations.every((o) => o.resourceId === asResourceId('r1'))).toBe(true)
+    expect(result.overallocations.every((o) => o.peakDemand === 1)).toBe(true)
+    expect(result.overallocations.every((o) => o.maxUnits === 0.5)).toBe(true)
+    // Exact resource-id set: only r1 (the work resource) appears.
+    expect([...new Set(result.overallocations.map((o) => o.resourceId as string))]).toEqual(['r1'])
+    // The leveled document is unchanged (no proposed commands); both MSO
+    // tasks remain pinned to Monday by the no-op LevelResources command.
+    const exec = applyProjectCommand(document, { type: 'LevelResources' })
+    expect(exec.result.accepted).toBe(true)
+    expect(scheduleOf(resultOf(exec.document), 'a').scheduledStart).toBe(MONDAY)
+    expect(scheduleOf(resultOf(exec.document), 'b').scheduledStart).toBe(MONDAY)
   })
 })
