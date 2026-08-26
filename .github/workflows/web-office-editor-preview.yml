@@ -1,0 +1,101 @@
+name: Web Office Editor Preview
+
+# The Excel/Web parity sprint is developed on web-office-editor and must have
+# its own deploy + browser acceptance gate. Production remains main-only in
+# vercel-deploy.yml. This workflow deliberately deploys a Vercel PREVIEW and
+# then runs the same deployed Playwright suite used for post-production checks.
+
+on:
+  push:
+    branches:
+      - web-office-editor
+  workflow_dispatch:
+
+concurrency:
+  group: web-office-editor-preview
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck web + office API
+        run: |
+          npm run typecheck -w @contractor/web
+          npm run typecheck -w @contractor/web-host
+          npm run typecheck -w @contractor/core
+
+      - name: Unit tests web + office API
+        run: |
+          npm run test -w @contractor/web
+          npm run test -w @contractor/web-host
+          npm run test -w @contractor/core
+
+      - name: Build tracked Vercel API bundle
+        run: npm run build:api
+
+      - name: Verify tracked API bundle is deterministic
+        run: git diff --exit-code -- api/serverless.mjs
+
+      - name: Build web application
+        run: npm run build -w @contractor/web
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Deploy Vercel preview
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          vercel deploy --yes --token="$VERCEL_TOKEN" > vercel-deploy.log 2>&1
+          cat vercel-deploy.log
+          DEPLOYMENT_URL=$(grep -Eo 'https://[^[:space:]]+\.vercel\.app' vercel-deploy.log | tail -n 1)
+          if [ -z "$DEPLOYMENT_URL" ]; then
+            echo "Unable to determine Vercel preview URL" >&2
+            exit 1
+          fi
+          echo "url=$DEPLOYMENT_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify deployed Excel/Web parity
+        env:
+          DEPLOYED_BASE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          npm run test:e2e -w @contractor/web -- -c playwright.deployed.config.ts
+
+      - name: Upload deployed E2E artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a0 # v7.0.1
+        with:
+          name: web-office-editor-preview-e2e
+          path: apps/web/tests/e2e/.results-deployed
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Report preview URL
+        if: always()
+        run: echo "Web Office Editor preview: ${{ steps.deploy.outputs.url }}"
