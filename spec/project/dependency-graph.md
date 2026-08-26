@@ -93,3 +93,22 @@ Static package dependencies remain exactly as accepted since PROJECT-014:
 ```
 
 The spike that grounds the report ran entirely outside the repository (MPXJ 16.7.0 + OpenJDK 21 in a disposable `/tmp` workspace); nothing entered any package. The work-item chain `014 → 015 → 016 → 017` is complete; `017 → 018` (MPP import) remains the next edge — contingent on the Principal Architect accepting the report's recommended strategy (externalized MPXJ sidecar + foundation-level normalization-only adapter contract; see `spec/project/mpp-feasibility.md` §15/§16). MPP export (PROJECT-019) is recommended for rescoping to a diagnostic-only deliverable per report §17.
+
+## Package dependency edges (PROJECT-018)
+
+PROJECT-018 (MPP import) adds ONE new workspace package and changes no existing edge. The foundation four-package graph is untouched:
+
+```text
+@genoffice/project-file → @genoffice/project-engine → @genoffice/project-contracts
+@genoffice/project-file → @genoffice/project-contracts (direct, for types + brand helpers)
+```
+
+The new HOST package `@genoffice/project-mpp-host` (NOT a foundation package — it is the sanctioned location for process code, exactly like `@genoffice/xlsx-gateway`/`platform-electron` are for the Sheets sidecar):
+
+```text
+@genoffice/project-mpp-host → @genoffice/project-file → @genoffice/project-engine → @genoffice/project-contracts
+@genoffice/project-mpp-host → @genoffice/project-contracts (types)
+@genoffice/project-mpp-host → @genoffice/project-scheduling (host-side schedule() of the imported document)
+```
+
+The dependency direction is host → foundation ONLY (a static architecture test asserts that `packages/project-file/src/mpp/**` never references the host package and carries no process imports — the CI foundation boundary grep also still covers the whole of `project-file`). The host package uses Node `child_process`/`fs` by design (one-shot MPXJ sidecar launcher); it has NO renderer, Electron, React, or HTTP imports (static guard). Tests import `vitest` + the packages above + the pinned external sidecar artifacts (`.sidecar-deps/`, gitignored, fetched by `scripts/fetch-sidecar-deps.mjs` with SHA-256 verification). The Project CI gate runs setup-java → fetch → typecheck → test for this package (19 steps total). The work-item chain `014 → 015 → 016 → 017 → 018` is complete; `018 → 019` (MPP export) is BLOCKED pending formal rescoping by the Principal Architect — the feasibility report recommends closing it as not-feasible with PROJECT-016's MSPDI export as the sanctioned interchange output.

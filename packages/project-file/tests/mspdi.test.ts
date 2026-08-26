@@ -708,9 +708,25 @@ describe('PROJECT-015 — whole-minute calendar boundaries', () => {
 
   it('mspdiTimeToMinutes rejects malformed times', () => {
     expect(mspdiTimeToMinutes('9:00')).toBeNull()
-    expect(mspdiTimeToMinutes('24:00:00')).toBeNull()
+    // 24:00:00 is now the ACCEPTED day-end expression (PROJECT-018 minimal
+    // compatible correction — see conversions.ts); the malformed family is
+    // exercised with its nearest neighbors instead:
+    expect(mspdiTimeToMinutes('25:00:00')).toBeNull()
+    expect(mspdiTimeToMinutes('24:00:01')).toBeNull()
+    expect(mspdiTimeToMinutes('24:30:00')).toBeNull()
     expect(mspdiTimeToMinutes('09:60:00')).toBeNull()
     expect(mspdiTimeToMinutes('')).toBeNull()
+  })
+
+  it('mspdiTimeToMinutes accepts exactly 24:00:00 as the ISO-8601 day-end (minute 1440)', () => {
+    // PROJECT-018 documented correction: MPXJ emits "until midnight" working
+    // periods as ToTime 00:00:00 (the Microsoft convention); the lossless
+    // re-expression is the XSD xsd:time legal day-end value 24:00:00 → 1440.
+    expect(mspdiTimeToMinutes('24:00:00')).toBe(1440)
+    // Every other out-of-range hour/minute/second remains rejected:
+    expect(mspdiTimeToMinutes('24:00:00 ')).toBe(1440) // trimmed input is accepted
+    expect(mspdiTimeToMinutes('024:00:00')).toBeNull()
+    expect(mspdiTimeToMinutes('24:0000')).toBeNull()
   })
 
   it('importer drops a sub-minute WorkingTime with INVALID_MSPDI_CALENDAR (never rounded)', () => {

@@ -1,0 +1,24 @@
+{
+  "name": "@genoffice/project-mpp-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GenOffice Project MPP import host library — the host-managed MPXJ conversion sidecar launcher (process isolation, timeouts, size caps), the sidecar wire protocol, and the full MPP→MSPDI→canonical→schedule pipeline. NOT a foundation package: process code lives here by design (architecture-lock §13); the foundation contract is @genoffice/project-file.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "fetch-sidecar-deps": "node scripts/fetch-sidecar-deps.mjs"
+  },
+  "dependencies": {
+    "@genoffice/project-contracts": "0.1.0",
+    "@genoffice/project-file": "0.1.0",
+    "@genoffice/project-scheduling": "0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

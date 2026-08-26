@@ -295,3 +295,15 @@ Conclusion: the intermediary is viable; the loss profile is acceptable _and diag
 FEASIBILITY DECISION: **FEASIBLE — MSPDI/INTERMEDIARY ADAPTER** (MPP import only, via an externalized MPXJ sidecar feeding the accepted PROJECT-015 importer; MPP export rejected — no open-source writer exists, commercial SDK is the sole conditional path, documented in §17).
 
 Objective basis: end-to-end spike on real MPP8/9/14 files through the accepted importer (§11, [S17]); ecosystem survey showing the only open-source full-coverage reader is MPXJ (LGPL, no MPP write) (§5, [S1][S2][S6]); architecture-lock compatibility without modification (§14); enumerated, mechanical normalization requirements (§10); licensing and security postures defined (§6, §8).
+
+---
+
+## 21. PROJECT-018 adoption record (post-acceptance addendum)
+
+PROJECT-018 implemented this report's recommended strategy (§15) verbatim, and the investigation is superseded by working production code:
+
+- **Pipeline as built**: `MPP bytes → host-managed MPXJ sidecar (packages/project-mpp-host, one-shot java single-file source launcher) → MSPDI → N1–N5 normalization (packages/project-file/src/mpp, pure TS) → the accepted PROJECT-015 importer → ProjectDocument → validateProjectDocument → schedule()`. The §16 proposed scope was delivered in full: the foundation carries contract + normalization + diagnostics only; the MPXJ process is host-managed; the corpus is consumed by pinned external download (§11's recommended model) with a SHA-256 manifest; determinism is proven at the canonical level (§12's requirement — the `<CurrentDate>` finding guided the proof design exactly as documented).
+- **One deviation from the investigation's assumptions, handled by the brief's own protocol**: N4 required the documented minimal PROJECT-015 correction (`24:00:00` → minute 1440) — no lossless XML-level rewrite of the "until midnight" convention exists, as this report's §10 wording implied but did not spell out. The correction is documented in requirements.md PROJECT-018 and disclosed to the Principal Architect.
+- **Licensing (§6)**: posture as recommended — MPXJ 16.7.0 pinned, downloaded at build/test time, nothing LGPL in the repository; bundling obligations pre-documented in `packages/project-mpp-host/LICENSE-THIRD-PARTY.md`.
+- **Security (§8)**: the sidecar-process boundary is implemented as specified (direct argv, headless JVM, `-Xmx` cap, wall-clock timeout, size caps, temp-workspace isolation, deterministic cleanup). The one unimplemented aspiration — OS-level network sandboxing of the JVM — is recorded as a known limitation rather than silently claimed.
+- **PROJECT-019**: remains blocked pending formal rescoping (§17 recommendation (a) stands: close as not-feasible, keep PROJECT-016's MSPDI export as the sanctioned Microsoft interchange output).

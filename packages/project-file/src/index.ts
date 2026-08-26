@@ -68,3 +68,9 @@ export {
 
 // PROJECT-015 — MSPDI XML importer (import + inspect only; no export).
 export * from './mspdi/index.js'
+
+// PROJECT-018 — MPP import foundation contract (host-neutral types, the
+// N1–N5 MSPDI normalizations, staged diagnostics, and the canonical import
+// entry point consuming a host-managed MPXJ sidecar conversion outcome).
+// No process/binary/Java code lives here (architecture-lock §13).
+export * from './mpp/index.js'

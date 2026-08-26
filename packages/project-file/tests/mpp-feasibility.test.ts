@@ -152,12 +152,20 @@ describe('PROJECT-017 — no production MPP implementation introduced', () => {
     expect(allDeps.filter((d) => /mpp|mpxj|aspose/i.test(d))).toEqual([])
   })
 
-  it('the public surface gained no MPP module or export (index surface unchanged)', async () => {
-    // The package index re-exports gproj + mspdi only; an MPP adapter would
-    // add src/mpp/** — assert the import surface does not reference one.
+  it('the public surface gained no MPP parser/PROCESS module (the PROJECT-018 foundation contract is host-neutral)', async () => {
+    // PROJECT-017 delivered NO production MPP code. PROJECT-018 (subsequently
+    // authorized) added the host-neutral foundation contract (types, N1–N5
+    // MSPDI normalization, staged diagnostics, importMppFromMspdi) under
+    // src/mpp/** — the superseding-authorization update of this assertion,
+    // exactly as PROJECT-016 superseded the PROJECT-015 no-export test.
+    // The guard still enforces what remains true: no MPP PARSER or PROCESS
+    // code — the package must never spawn processes or parse MPP bytes.
     const indexSource = (await import('../src/index.ts?raw')).default as string
-    expect(indexSource).not.toMatch(/from\s+'\.\/mpp\b/)
-    expect(indexSource).not.toContain('MppAdapter')
+    expect(indexSource).toContain("from './mspdi/index.js'")
+    // The foundation MPP surface is contract-only (no child_process/fs/
+    // process spawning — that lives in the host package):
+    const mppIndexSource = (await import('../src/mpp/index.ts?raw')).default as string
+    expect(mppIndexSource).not.toMatch(/child_process|node:|spawn|exec/)
   })
 
   it('the frozen architecture lock still forbids foundation MPP parser imports', () => {

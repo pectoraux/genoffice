@@ -306,6 +306,16 @@ export function isValidExceptionDate(raw: string): boolean {
  * seconds would admit fractional working minutes, so such a time is
  * rejected (`null`) — the importer emits `INVALID_MSPDI_CALENDAR` and drops
  * the period rather than silently rounding (PROJECT-015 correction round 1).
+ *
+ * PROJECT-018 minimal compatible correction (documented per the
+ * MPP-origin-gap protocol, NOT a silent semantics change): the exact value
+ * `24:00:00` — the ISO 8601 / XSD `xsd:time` legal day-end expression — is
+ * accepted as minute 1440. MPXJ emits working periods that run "until
+ * midnight" as `ToTime 00:00:00` (the Microsoft convention), which is
+ * otherwise unrepresentable: every textual hour is capped at 23:59, so no
+ * lossless XML-level rewrite of such a period exists. The PROJECT-018 MPP
+ * normalization layer rewrites `ToTime 00:00:00` → `24:00:00` before import.
+ * Every other hour > 23 (e.g. `25:00:00`, `24:00:01`) remains rejected.
  */
 export function mspdiTimeToMinutes(raw: string): number | null {
   const m = /^(\d{2}):(\d{2}):(\d{2})$/.exec(raw.trim())
@@ -313,6 +323,7 @@ export function mspdiTimeToMinutes(raw: string): number | null {
   const h = Number(m[1])
   const mi = Number(m[2])
   const s = Number(m[3])
+  if (raw.trim() === '24:00:00') return 1440
   if (h > 23 || mi > 59 || s > 59) return null
   if (s !== 0) return null // sub-minute boundary — rejected, never rounded
   return h * 60 + mi
