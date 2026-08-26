@@ -2433,3 +2433,159 @@ export async function buildExcelDedupeMixedReferencesFixture(): Promise<Buffer> 
 
   return toBytes(zip)
 }
+
+// ── EXCEL-020 Protection fixtures ────────────────────────────────────────────
+
+/**
+ * Deterministic XLSX for the Review → Protection E2E (EXCEL-020) — the
+ * notes fixture's ledger shape (header row + 4 data rows, shared strings,
+ * styles with cellXfs) with three variants:
+ *
+ *   buildExcelProtectionFixture():     NO protection elements (protect
+ *                                      from scratch, editable-vs-locked).
+ *   buildExcelProtectedFixture():      worksheet <sheetProtection sheet="1"
+ *                                      objects="1" scenarios="1"/> + workbook
+ *                                      <workbookProtection lockStructure="1"/>
+ *                                      (read + unprotect + reopen).
+ *   buildExcelPasswordFixture():      password-bearing elements (legacy hash
+ *                                      form) on BOTH levels — the negative
+ *                                      authorization cases (unprotect must be
+ *                                      refused up front; the gateway fails
+ *                                      closed on the write too).
+ */
+export async function buildExcelProtectionFixture(): Promise<Buffer> {
+  return buildProtectionLedgerFixture({})
+}
+
+export async function buildExcelProtectedFixture(): Promise<Buffer> {
+  return buildProtectionLedgerFixture({
+    sheetProtection: '<sheetProtection sheet="1" objects="1" scenarios="1"/>',
+    workbookProtection: '<workbookProtection lockStructure="1"/>',
+  })
+}
+
+export async function buildExcelPasswordFixture(): Promise<Buffer> {
+  return buildProtectionLedgerFixture({
+    sheetProtection: '<sheetProtection sheet="1" password="83AF"/>',
+    workbookProtection: '<workbookProtection lockStructure="1" workbookPassword="83AF"/>',
+  })
+}
+
+async function buildProtectionLedgerFixture(options: {
+  readonly sheetProtection?: string
+  readonly workbookProtection?: string
+}): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  ${options.workbookProtection ?? ''}
+  <sheets>
+    <sheet name="Ledger" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="6" uniqueCount="6">
+  <si><t>Item</t></si>
+  <si><t>Amount</t></si>
+  <si><t>Fee</t></si>
+  <si><t>Tax</t></si>
+  <si><t>Tip</t></si>
+  <si><t>Total</t></si>
+</sst>`,
+  )
+
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="2">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="2"><xf/><xf fontId="1" applyFont="1"/></cellXfs>
+</styleSheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s" s="1"><v>0</v></c>
+      <c r="B1" t="s" s="1"><v>1</v></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s"><v>2</v></c>
+      <c r="B2"><v>10</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="s"><v>3</v></c>
+      <c r="B3"><v>5</v></c>
+    </row>
+    <row r="4">
+      <c r="A4" t="s"><v>4</v></c>
+      <c r="B4"><v>2</v></c>
+    </row>
+    <row r="5">
+      <c r="A5" t="s"><v>5</v></c>
+      <c r="B5"><v>17</v></c>
+    </row>
+  </sheetData>
+  ${options.sheetProtection ?? ''}
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}

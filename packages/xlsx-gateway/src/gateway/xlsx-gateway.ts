@@ -80,6 +80,8 @@ import {
   applyProtectedRanges,
   applySheetProtection,
   applyWorkbookProtection,
+  parseSheetProtectionState,
+  parseWorkbookProtectionState,
   type ProtectedRangeState,
 } from './xlsx-protection'
 import { applyThemeState, type WorkbookThemeState } from './xlsx-theme'
@@ -448,6 +450,13 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     } catch (error) {
       if (!(error instanceof NoteReadError)) throw error
     }
+    // Sheet protection read (EXCEL-020): the <sheetProtection> element is
+    // a flat attribute bag — parse it directly. null (absent field) means
+    // no element, so a no-op save preserves the file's XML byte-for-byte
+    // while a protected sheet surfaces both its enabled flag and whether
+    // a password guards it (the toggle must refuse up front — the gateway
+    // fails closed on unprotecting password-bearing elements).
+    const sheetProtection = parseSheetProtectionState(worksheetXml)
     sheets.push({
       id,
       name: decodedName,
@@ -466,12 +475,21 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
       ...(filterState ? { filterState } : {}),
       ...(dvRules ? { dvRules } : {}),
       ...(sheetNotes ? { notes: sheetNotes } : {}),
+      ...(sheetProtection ? { sheetProtection } : {}),
     })
     sheetNamesById[id] = decodedName
   }
   if (sheets.length === 0) throw new Error('Workbook contains no readable worksheets.')
+  // Workbook structure protection (EXCEL-020): parsed from workbook.xml the
+  // same way the per-sheet state comes from the worksheet part. Absent
+  // field = no <workbookProtection> element (byte-preserving no-op saves).
+  const workbookProtection = parseWorkbookProtectionState(workbookXml)
   return {
-    snapshot: { revision: 0, sheets },
+    snapshot: {
+      revision: 0,
+      sheets,
+      ...(workbookProtection ? { workbookProtection } : {}),
+    },
     sheetNamesById,
   }
 }
@@ -655,6 +673,7 @@ export async function applyCellEditsToXlsx(
   pageSetupStates: readonly SheetPageSetupState[] = [],
   noteStates: readonly SheetNoteState[] = [],
   formulaValues: readonly SheetFormulaValues[] = [],
+  workbookProtectionState: { readonly lockStructure: boolean } | null = null,
 ): Promise<XlsxMutation> {
   const plan = await planCellEditsToXlsx(
     await createBufferEntrySource(source),
@@ -678,6 +697,8 @@ export async function applyCellEditsToXlsx(
     [],
     [],
     formulaValues,
+    null,
+    workbookProtectionState,
   )
   return assembleWithJsZip(source, plan)
 }

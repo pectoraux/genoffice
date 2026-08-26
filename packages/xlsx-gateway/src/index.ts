@@ -85,6 +85,16 @@ export { parseDataValidations, DvReadError, DvEditError } from './gateway/xlsx-d
 export type { SheetNote } from './gateway/xlsx-notes.js'
 export { parseCommentsPart, NoteReadError, NoteEditError } from './gateway/xlsx-notes.js'
 
+// ── Protection (EXCEL-020) ──
+export type {
+  SheetProtectionReadState,
+  WorkbookProtectionReadState,
+} from './gateway/xlsx-protection.js'
+export {
+  parseSheetProtectionState,
+  parseWorkbookProtectionState,
+} from './gateway/xlsx-protection.js'
+
 // ── Defined names ──
 export type { DefinedNamesState } from './gateway/xlsx-defined-names.js'
 export { DefinedNameError } from './gateway/xlsx-defined-names.js'

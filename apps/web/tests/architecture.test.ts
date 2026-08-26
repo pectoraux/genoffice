@@ -497,3 +497,130 @@ describe('architecture: EXCEL-018 Remove Duplicates uses the canonical structura
     ).toEqual([])
   })
 })
+
+// ── EXCEL-020: Protection canonical wire-family guards ────────────────────
+//
+// Sheet/Workbook Protection is implemented through the CANONICAL save-plan
+// families the desktop already ships — no new engine path, no browser-side
+// OOXML, no parallel protection model:
+//   - Review → Protect Sheet journals per-sheet desired states and emits
+//     `savePlan.sheetProtections: [{ sheetName, protected }]` (the wire
+//     type + strict validation live in contractor-core's office-routes;
+//     the gateway's applySheetProtection writes/removes the worksheet's
+//     `<sheetProtection>` element).
+//   - Review → Protect Workbook emits `savePlan.workbookProtectionState:
+//     { lockStructure }` (applyWorkbookProtection writes workbook.xml).
+//   - Review → Lock/Unlock Cell journals style-only CellEdits carrying
+//     `style.protectionLocked` — the SAME canonical WorkbookStyleEdit
+//     family formatting uses (the desktop's neutral-delta path for cell
+//     protection, since Univer's OSS presets carry no cell-protection
+//     model).
+//   - Password semantics are fail-closed EVERYWHERE: the browser refuses
+//     to unprotect a password-protected sheet/structure up front (the
+//     file state's hasPassword flag comes from the gateway reader), the
+//     wire rejects password-bearing payloads as unknown fields, and the
+//     gateway throws SheetProtectionError on the write.
+//
+// The guards below enforce that no future shortcut re-introduces:
+//   - browser-side OOXML/JSZip construction for protection elements,
+//   - a protection write that bypasses the save plan (e.g. calling a
+//     gateway function directly from the browser),
+//   - the disabled Protect Sheet stub (the feature must stay wired),
+//   - password fields on the wire (the canonical family carries none).
+
+describe('architecture: EXCEL-020 Protection uses the canonical wire families', () => {
+  const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+  const ribbonPath = join(WEB_ROOT, 'src', 'screens', 'excel', 'Ribbon.tsx')
+  const clientPath = join(WEB_ROOT, 'src', 'api', 'office-client.ts')
+
+  it('ExcelEditor emits the sheetProtections save-plan family', () => {
+    expect(existsSync(editorPath), `${editorPath} should exist`).toBe(true)
+    const content = readFileSync(editorPath, 'utf8')
+    expect(content).toContain('sheetProtectionJournalRef')
+    expect(
+      /sheetProtections\.length > 0 \? \{ sheetProtections \} : \{\}/.test(content),
+      'handleSave must conditionally emit the sheetProtections family',
+    ).toBe(true)
+  })
+
+  it('ExcelEditor emits the workbookProtectionState save-plan family', () => {
+    const content = readFileSync(editorPath, 'utf8')
+    expect(content).toContain('workbookProtectionJournalRef')
+    expect(
+      /workbookProtectionState !== null \? \{ workbookProtectionState \} : \{\}/.test(content),
+      'handleSave must conditionally emit the workbookProtectionState family',
+    ).toBe(true)
+  })
+
+  it('ExcelEditor toggles implement desktop recordSheetProtection semantics', () => {
+    const content = readFileSync(editorPath, 'utf8')
+    // The journal entry is DROPPED when the desired state matches the
+    // file's original — the desktop's recordSheetProtection contract.
+    expect(content).toContain('desired === original')
+    // Password fail-closed guard BEFORE any journal write.
+    expect(content).toContain('hasPassword')
+    expect(content).toContain('removing its protection is not supported')
+  })
+
+  it('Ribbon Protection group carries NO disabled stub and wires all four commands', () => {
+    expect(existsSync(ribbonPath), `${ribbonPath} should exist`).toBe(true)
+    const content = readFileSync(ribbonPath, 'utf8')
+    // The old stub documented the missing wire family — it must be gone.
+    expect(
+      content.includes('does not yet expose the sheetProtections family'),
+      'the disabled Protect Sheet stub must be removed',
+    ).toBe(false)
+    expect(content.includes("'Protect Sheet'")).toBe(true)
+    expect(content.includes("'Unprotect Sheet'")).toBe(true)
+    expect(content.includes("'Protect Workbook'")).toBe(true)
+    expect(content.includes("'Unprotect Workbook'")).toBe(true)
+    expect(content.includes(`label="Lock Cell"`)).toBe(true)
+    expect(content.includes(`label="Unlock Cell"`)).toBe(true)
+    // The buttons must call back into the shell-owned journal handlers.
+    expect(content).toContain('protection?.onToggleSheetProtection()')
+    expect(content).toContain('protection?.onToggleWorkbookProtection()')
+    expect(content).toContain('protection?.onSetCellsLocked(true)')
+    expect(content).toContain('protection?.onSetCellsLocked(false)')
+  })
+
+  it('Lock/Unlock Cell journals canonical protectionLocked style-only CellEdits', () => {
+    const content = readFileSync(editorPath, 'utf8')
+    expect(
+      content.includes('style: { protectionLocked: locked }'),
+      'setCellsLocked must journal WorkbookStyleEdit.protectionLocked deltas',
+    ).toBe(true)
+    // Style-only edits never rewrite cell content.
+    expect(content).toContain('writeValue: false')
+  })
+
+  it('apps/web/src has NO raw OOXML, JSZip, or direct-gateway protection writes', () => {
+    // The browser must never construct protection XML or call the
+    // gateway's applySheetProtection/applyWorkbookProtection directly —
+    // protection travels ONLY through the typed save-plan families.
+    const webFiles = readFiles(join(WEB_ROOT, 'src'))
+    const forbidden = [
+      /applySheetProtection/,
+      /applyWorkbookProtection/,
+      /applyProtectedRanges/,
+      /<sheetProtection\b/,
+      /<workbookProtection\b/,
+      /<protectedRanges\b/,
+      /from\s+['"]jszip['"]/,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('office-client carries the typed protection families (no passwords)', () => {
+    expect(existsSync(clientPath), `${clientPath} should exist`).toBe(true)
+    const content = readFileSync(clientPath, 'utf8')
+    expect(content).toContain('sheetProtections?:')
+    expect(content).toContain('workbookProtectionState?:')
+    // The wire family carries no password field — fail-closed by design.
+    const passwordFields = nonCommentLines(content).filter((line) => /password\s*[?:]/i.test(line))
+    expect(passwordFields).toEqual([])
+  })
+})

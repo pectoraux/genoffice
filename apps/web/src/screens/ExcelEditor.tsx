@@ -371,6 +371,34 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   //    edited + untouched notes alike) — editing one note never drops its
   //    neighbors; an empty snapshot removes the whole comment set.
   const noteDirtyRef = useRef<Set<string>>(new Set())
+  // ── Protection journal (Review → Protect Sheet / Protect Workbook,
+  //    EXCEL-020). Desktop parity (App.tsx sheetProtections +
+  //    edit-journal.ts recordSheetProtection): protection is a FILE-level
+  //    journal concern — the editor itself does not enforce it (the
+  //    desktop's own status string). Two structures per level:
+  //    - file refs: the state as opened from the snapshot (seeded on open,
+  //      merged after save). hasPassword drives the fail-closed toggle
+  //      guard — the gateway refuses to unprotect password-bearing
+  //      elements, so the browser refuses up front and says why.
+  //    - journal refs: desired states for sheets the user toggled
+  //      in-session. An entry is DROPPED when toggled back to the file's
+  //      original state (recordSheetProtection semantics), so a no-op save
+  //      emits NO protection family and preserves the file's XML
+  //      byte-for-byte.
+  const sheetProtectionFileRef = useRef<Map<string, { protected: boolean; hasPassword: boolean }>>(
+    new Map(),
+  )
+  const sheetProtectionJournalRef = useRef<Map<string, boolean>>(new Map())
+  const workbookProtectionFileRef = useRef<{
+    lockStructure: boolean
+    hasPassword: boolean
+  } | null>(null)
+  const workbookProtectionJournalRef = useRef<boolean | null>(null)
+  // Echo for the ribbon's Protect Sheet / Protect Workbook buttons —
+  // recomputed whenever the journal, the file state, or the ACTIVE SHEET
+  // changes (the runtime's ActiveSheetChanged subscription re-renders the
+  // editor, and the echo is derived at render time below).
+  const [protectionSeq, setProtectionSeq] = useState(0)
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState<string>('Ready')
   const [fileName, setFileName] = useState<string>('workbook.xlsx')
@@ -465,224 +493,408 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
 
   const api = useExcelRuntime(runtime)
 
-  const loadSnapshot = useCallback((snapshot: WorkbookSnapshot) => {
+  // ── EXCEL-020: Protection echo (ribbon button state). Derived at render
+  //    time from the file refs + journal + the LIVE active sheet name, so it
+  //    tracks sheet switches (the runtime's ActiveSheetChanged subscription
+  //    re-renders) as well as toggles and saves (protectionSeq bump).
+  //    protectionSeq is read so ESLint's exhaustive-deps-style consumers see
+  //    the dependency; the value itself is derived from refs.
+  void protectionSeq
+  const activeSheetName =
+    runtimeRef.current?.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName() ?? null
+  const hasFile = handleRef.current !== null
+  const sheetEcho = (() => {
+    if (!activeSheetName) return null
+    const journaled = sheetProtectionJournalRef.current.get(activeSheetName)
+    if (journaled !== undefined) return journaled
+    const file = sheetProtectionFileRef.current.get(activeSheetName)
+    if (file) return file.protected
+    // A sheet that exists in the live workbook but not in the file map
+    // (e.g. added in-session) starts unprotected — desktop parity for
+    // added sheets (sheetProtectionEcho's editJournal.sheets.added branch).
+    return false
+  })()
+  const sheetEchoHasPassword =
+    activeSheetName !== null
+      ? (sheetProtectionFileRef.current.get(activeSheetName)?.hasPassword ?? false)
+      : false
+  const workbookEcho = (() => {
+    if (!hasFile) return null
+    if (workbookProtectionJournalRef.current !== null) return workbookProtectionJournalRef.current
+    return workbookProtectionFileRef.current?.lockStructure ?? false
+  })()
+  const workbookEchoHasPassword = workbookProtectionFileRef.current?.hasPassword ?? false
+
+  const bumpProtectionEcho = useCallback(() => setProtectionSeq((n) => n + 1), [])
+
+  /**
+   * Review → Protect Sheet / Unprotect Sheet (EXCEL-020). Desktop parity
+   * with ribbon-actions.ts 'sheet-protect': journal-only semantics —
+   * recordSheetProtection DROPS the entry when the desired state matches
+   * the file's original, refuses password-protected sheets up front
+   * (fail-closed — the gateway would reject the unprotect anyway), and
+   * surfaces the desktop's own status strings. The editor itself does not
+   * enforce protection; the toggle writes the canonical sheetProtections
+   * family on save.
+   */
+  const toggleSheetProtection = useCallback(() => {
     const rt = runtimeRef.current
-    if (!rt) return
-    const active = rt.univerAPI.getActiveWorkbook()
-    if (active) {
-      try {
-        rt.univerAPI.disposeUnit(active.getId())
-      } catch {
-        /* already gone */
+    const wb = rt?.univerAPI.getActiveWorkbook()
+    const ws = wb?.getActiveSheet()
+    const sheetName = ws?.getSheetName()
+    if (!handleRef.current || !sheetName) {
+      setStatus('Open an XLSX file first — protection saves into the file.')
+      return
+    }
+    const file = sheetProtectionFileRef.current.get(sheetName)
+    const original = file?.protected ?? false
+    const current = sheetProtectionJournalRef.current.get(sheetName) ?? original
+    if (current && (file?.hasPassword ?? false)) {
+      setStatus(
+        'This sheet is protected with a password — removing its protection is not supported.',
+      )
+      return
+    }
+    const desired = !current
+    if (desired === original) sheetProtectionJournalRef.current.delete(sheetName)
+    else sheetProtectionJournalRef.current.set(sheetName, desired)
+    setDirty(true)
+    bumpProtectionEcho()
+    setStatus(
+      desired
+        ? 'Sheet protection will be written on save (no password). The editor itself does not enforce it.'
+        : 'Sheet protection will be removed on save.',
+    )
+  }, [bumpProtectionEcho])
+
+  /**
+   * Review → Protect Workbook / Unprotect Workbook (EXCEL-020). Desktop
+   * parity with ribbon-actions.ts 'workbook-protect': journal-only
+   * semantics for the workbook STRUCTURE lock; refuses a password-
+   * protected structure up front (fail-closed).
+   */
+  const toggleWorkbookProtection = useCallback(() => {
+    if (!handleRef.current) {
+      setStatus('Open an XLSX file first — protection saves into the file.')
+      return
+    }
+    const file = workbookProtectionFileRef.current
+    if (file?.hasPassword) {
+      setStatus('The workbook structure is password-protected — it cannot be changed here.')
+      return
+    }
+    const original = file?.lockStructure ?? false
+    const current = workbookProtectionJournalRef.current ?? original
+    const desired = !current
+    workbookProtectionJournalRef.current = desired === original ? null : desired
+    setDirty(true)
+    bumpProtectionEcho()
+    setStatus(
+      desired
+        ? 'Workbook structure protection will be written on save.'
+        : 'Workbook structure protection will be removed on save.',
+    )
+  }, [bumpProtectionEcho])
+
+  /**
+   * Review → Lock Cell / Unlock Cell (EXCEL-020 — "editable vs locked cell
+   * behavior"). Journals canonical WorkbookStyleEdit.protectionLocked
+   * deltas for every cell of the active selection — the SAME neutral-delta
+   * path the desktop's Format Cells → Protection tab uses ("No Univer
+   * model for cell protection — journal the neutral delta"). Univer has no
+   * cell-protection model in the OSS presets, so nothing fires through the
+   * mutation subscription: the edits are journaled directly and merged
+   * with any existing per-cell entries via mergeCellEdit (value edits keep
+   * their cell content; the protection flag rides along in `style`). The
+   * gateway's buildProtection writes `<protection locked="0|1"/>` into the
+   * cell's xf — together with a protected sheet that IS Excel's
+   * editable-vs-locked semantics in the saved file.
+   */
+  const setCellsLocked = useCallback((locked: boolean) => {
+    const rt = runtimeRef.current
+    const wb = rt?.univerAPI.getActiveWorkbook()
+    const ws = wb?.getActiveSheet()
+    if (!wb || !ws) return
+    if (!handleRef.current) {
+      setStatus('Open an XLSX file first — protection saves into the file.')
+      return
+    }
+    const sheetName = ws.getSheetName()
+    const range = ws.getActiveRange()
+    if (!range) {
+      setStatus('Select the cells to lock or unlock first.')
+      return
+    }
+    const startRow = Math.max(0, range.getRow())
+    const startColumn = Math.max(0, range.getColumn())
+    // FRange dimensions: getHeight() = row count, getWidth() = column
+    // count (f-range.d.ts) — the facade's own selection-extent API.
+    const numRows = range.getHeight()
+    const numColumns = range.getWidth()
+    let touched = false
+    for (let row = startRow; row < startRow + numRows; row += 1) {
+      for (let column = startColumn; column < startColumn + numColumns; column += 1) {
+        const key = dirtyKey(sheetName, row, column)
+        const edit: CellEdit = {
+          sheetName,
+          row,
+          column,
+          writeValue: false,
+          cell: { value: null },
+          style: { protectionLocked: locked },
+        }
+        const existing = dirtyCellsRef.current.get(key)
+        dirtyCellsRef.current.set(key, mergeCellEdit(existing, { edit, replacesFormula: false }))
+        touched = true
       }
     }
-    // Clear the freeze-state journal before seeding from the snapshot —
-    // stale freeze state from a previous workbook must never leak across
-    // an open.
-    freezeStateRef.current.clear()
-    const sheetsConfig: Record<string, IWorksheetData> = {}
-    for (const sheet of snapshot.sheets) {
-      const fr = sheet.freeze
-      const frozenRows = fr && fr.frozenRows > 0 ? fr.frozenRows : 0
-      const frozenColumns = fr && fr.frozenColumns > 0 ? fr.frozenColumns : 0
-      sheetsConfig[sheet.id] = {
-        id: sheet.id,
-        name: sheet.name,
-        tabColor: '',
-        hidden: (sheet as { hidden?: boolean }).hidden ? 1 : (0 as BooleanNumber),
-        // Univer freeze config: startRow/startColumn are the first
-        // scrollable (non-frozen) row/column index — so startRow = frozenRows,
-        // startColumn = frozenColumns. -1 means "no freeze" on that axis.
-        freeze: {
-          startRow: frozenRows > 0 ? frozenRows : -1,
-          startColumn: frozenColumns > 0 ? frozenColumns : -1,
-          xSplit: frozenColumns,
-          ySplit: frozenRows,
-        },
-        rowCount: 1000,
-        columnCount: 26,
-        zoomRatio: 1,
-        scrollTop: 0,
-        scrollLeft: 0,
-        defaultColumnWidth: 100,
-        defaultRowHeight: 20,
-        cellData: buildCellDataMatrix(sheet.cells, sheet.styles),
-        mergeData: buildMergeData(sheet.merges),
-        rowData: buildRowData(sheet.rowHeights),
-        columnData: buildColumnData(sheet.colWidths),
-        rowHeader: { width: 46, hidden: 0 as BooleanNumber },
-        columnHeader: { height: 20, hidden: 0 as BooleanNumber },
-        showGridlines: 1 as BooleanNumber,
-        rightToLeft: 0 as BooleanNumber,
-      }
+    if (touched) {
+      setDirty(true)
+      setStatus(
+        locked
+          ? 'Cells locked — they will be read-only when the sheet is protected.'
+          : 'Cells unlocked — they stay editable when the sheet is protected.',
+      )
     }
-    // Suppress the journal for the whole load (desktop
-    // journalSuppression parity): createWorkbook on a live-formula
-    // snapshot fires set-range-values mutations (the engine registering
-    // and calculating formulas) — none of them are user edits, so none
-    // of them may dirty the workbook. Cell styles are inlined INTO the
-    // cellData (see buildCellDataMatrix) — no post-create style
-    // mutations fire during load.
-    journalSuppressionRef.current = true
-    moduleJournalSuppression.active = true
-    // Clear the filter journal before seeding from the snapshot — stale
-    // filter-dirty marks from a previous workbook must never leak across
-    // an open (a reopened workbook starts NOT filter-dirty, so a no-op
-    // save preserves the file's own <autoFilter> XML). Same for DV.
-    filterDirtyRef.current.clear()
-    filterOriginsRef.current.clear()
-    dvDirtyRef.current.clear()
-    noteDirtyRef.current.clear()
-    try {
-      rt.univerAPI.createWorkbook({
-        id: WORKBOOK_UNIT_ID,
-        name: fileNameRef.current.replace(/\.[^.]+$/, ''),
-        sheets: sheetsConfig,
-      })
-      for (const sheet of snapshot.sheets) {
-        // Seed the freeze-state journal from the snapshot — so a save
-        // without any freeze change still round-trips the file's existing
-        // freeze. The journal subscription updates this map when the user
-        // toggles freeze interactively.
-        if (sheet.freeze && (sheet.freeze.frozenRows > 0 || sheet.freeze.frozenColumns > 0)) {
-          freezeStateRef.current.set(sheet.name, {
-            frozenRows: sheet.freeze.frozenRows,
-            frozenColumns: sheet.freeze.frozenColumns,
-          })
-        }
-        // Render the file's existing AutoFilter in the REAL Univer UI:
-        // install the filter range, then re-apply the file's criteria so
-        // the live model is complete (dropdowns reflect the file state and
-        // a later user edit snapshots the FULL filter, not just the delta).
-        // The criteria re-application recalculates filteredOutRows, which
-        // drives Univer's render-time row-hidden interceptor — the grid
-        // shows exactly the rows the file's criteria keep visible. All of
-        // it runs under journal suppression: installing the FILE's filter
-        // is a load, not an edit.
-        const fs = sheet.filterState
-        if (fs && fs.filter) {
-          try {
-            const wb = rt.univerAPI.getActiveWorkbook()
-            const ws = wb?.getSheetByName(sheet.name)
-            const range = fs.filter.range
-            const fFilter = ws
-              ?.getRange(
-                range.startRow,
-                range.startColumn,
-                range.endRow - range.startRow + 1,
-                range.endColumn - range.startColumn + 1,
-              )
-              ?.createFilter()
-            if (fFilter) {
-              for (const column of fs.filter.columns) {
-                const absoluteColumn = range.startColumn + column.colId
-                // IFilterColumn criteria shape (Univer's filter model):
-                // { colId, filters?: { blank?: true, filters?: string[] },
-                //   customFilters?: { and?: TRUE, customFilters: [c1] | [c1, c2] } }.
-                const criteria: IFilterColumn = { colId: column.colId }
-                if (column.values !== undefined || column.blank) {
-                  criteria.filters = {
-                    ...(column.values !== undefined ? { filters: [...column.values] } : {}),
-                    ...(column.blank ? { blank: true } : {}),
-                  }
-                }
-                if (column.customs) {
-                  const customFilters = column.customs.filters.map((custom) => ({
-                    val: custom.val,
-                    ...(custom.operator !== undefined ? { operator: custom.operator } : {}),
-                  }))
-                  // ICustomFilters.customFilters is a 1-or-2 tuple; the
-                  // gateway's parser rejects criteria-less and >2-entry
-                  // filterColumns, so the runtime shape is already valid.
-                  criteria.customFilters = {
-                    ...(column.customs.and === true ? { and: 1 } : {}),
-                    customFilters: customFilters as
-                      [ICustomFilter] | [ICustomFilter, ICustomFilter],
-                  }
-                }
-                fFilter.setColumnFilterCriteria(absoluteColumn, criteria)
-              }
-            }
-            // Record the origin: the file's own filter range. A later
-            // move/remove unhides this span (visibilityRange = union).
-            filterOriginsRef.current.set(sheet.name, { ...range })
-          } catch {
-            // Installing the file's filter must never fail the open —
-            // the workbook still renders; only the filter dropdowns are
-            // absent (and a no-op save preserves the file's XML).
-          }
-        }
-        // Install the file's data-validation rules into the REAL Univer
-        // model (desktop applyDataValidations parity): each DvWireRule
-        // becomes a data-validation.mutation.addRule execution under
-        // journal suppression — loading a workbook is not an edit, and the
-        // installed rules give real in-cell validation behavior (reject
-        // dialogs on invalid input, list dropdowns, prompts). The rule
-        // shape is the Univer IDataValidationRule wire form with the
-        // desktop's toUniverDvRule transforms: list literals unquote
-        // ("a,b" → a,b) while references/custom gain a leading '='.
-        if (sheet.dvRules && sheet.dvRules.length > 0) {
-          try {
-            const wb = rt.univerAPI.getActiveWorkbook()
-            const ws = wb?.getSheetByName(sheet.name)
-            if (ws) {
-              for (const [index, wire] of sheet.dvRules.entries()) {
-                const mapped = toUniverDvRule(wire, `file-dv-${sheet.id}-${index}`)
-                if (!mapped) continue
-                try {
-                  rt.univerAPI.syncExecuteCommand('data-validation.mutation.addRule', {
-                    unitId: wb!.getId(),
-                    subUnitId: ws.getSheetId(),
-                    rule: mapped,
-                  })
-                } catch {
-                  // An unsupported rule shape must not break the open.
-                }
-              }
-            }
-          } catch {
-            // Installing the file's validations must never fail the open.
-          }
-        }
-        // Install the file's legacy notes into the REAL Univer note model
-        // (desktop applyWorkbookNotes parity): each SheetNote becomes a
-        // createOrUpdateNote under journal suppression — the canonical
-        // "Author:\nText" blob convention (re-split at save), the same id
-        // scheme, and the Inc-4 undo filter keeps ⌘Z clean. The notes then
-        // render through the real Univer note UI (cell markers + popup).
-        if (sheet.notes && sheet.notes.length > 0) {
-          try {
-            const wb = rt.univerAPI.getActiveWorkbook()
-            const ws = wb?.getSheetByName(sheet.name)
-            if (ws) {
-              for (const note of sheet.notes) {
-                try {
-                  ws.getRange(note.row, note.column).createOrUpdateNote({
-                    id: `note-${sheet.id}-${note.row}-${note.column}`,
-                    row: note.row,
-                    col: note.column,
-                    width: 220,
-                    height: 90,
-                    note: note.author ? `${note.author}:\n${note.text}` : note.text,
-                  })
-                } catch {
-                  // Notes are best-effort decoration (desktop parity).
-                }
-              }
-            }
-          } catch {
-            // Installing the file's notes must never fail the open.
-          }
-        }
-      }
-    } finally {
-      journalSuppressionRef.current = false
-      moduleJournalSuppression.active = false
-    }
-    dirtyCellsRef.current.clear()
-    structuralOpsRef.current.clear()
-    setDirty(false)
   }, [])
+
+  const loadSnapshot = useCallback(
+    (snapshot: WorkbookSnapshot) => {
+      const rt = runtimeRef.current
+      if (!rt) return
+      const active = rt.univerAPI.getActiveWorkbook()
+      if (active) {
+        try {
+          rt.univerAPI.disposeUnit(active.getId())
+        } catch {
+          /* already gone */
+        }
+      }
+      // Clear the freeze-state journal before seeding from the snapshot —
+      // stale freeze state from a previous workbook must never leak across
+      // an open.
+      freezeStateRef.current.clear()
+      // Same leak guard for the EXCEL-020 protection state: the file refs are
+      // re-seeded from THIS snapshot (per-sheet sheetProtection + the
+      // workbook-level workbookProtection the gateway reader surfaces), and
+      // the toggle journals start empty — a freshly opened workbook carries
+      // no protection decisions, so a no-op save emits no protection family
+      // and preserves the file's XML byte-for-byte.
+      sheetProtectionFileRef.current.clear()
+      sheetProtectionJournalRef.current.clear()
+      workbookProtectionFileRef.current = snapshot.workbookProtection ?? null
+      workbookProtectionJournalRef.current = null
+      for (const sheet of snapshot.sheets) {
+        if (sheet.sheetProtection) {
+          sheetProtectionFileRef.current.set(sheet.name, sheet.sheetProtection)
+        }
+      }
+      bumpProtectionEcho()
+      const sheetsConfig: Record<string, IWorksheetData> = {}
+      for (const sheet of snapshot.sheets) {
+        const fr = sheet.freeze
+        const frozenRows = fr && fr.frozenRows > 0 ? fr.frozenRows : 0
+        const frozenColumns = fr && fr.frozenColumns > 0 ? fr.frozenColumns : 0
+        sheetsConfig[sheet.id] = {
+          id: sheet.id,
+          name: sheet.name,
+          tabColor: '',
+          hidden: (sheet as { hidden?: boolean }).hidden ? 1 : (0 as BooleanNumber),
+          // Univer freeze config: startRow/startColumn are the first
+          // scrollable (non-frozen) row/column index — so startRow = frozenRows,
+          // startColumn = frozenColumns. -1 means "no freeze" on that axis.
+          freeze: {
+            startRow: frozenRows > 0 ? frozenRows : -1,
+            startColumn: frozenColumns > 0 ? frozenColumns : -1,
+            xSplit: frozenColumns,
+            ySplit: frozenRows,
+          },
+          rowCount: 1000,
+          columnCount: 26,
+          zoomRatio: 1,
+          scrollTop: 0,
+          scrollLeft: 0,
+          defaultColumnWidth: 100,
+          defaultRowHeight: 20,
+          cellData: buildCellDataMatrix(sheet.cells, sheet.styles),
+          mergeData: buildMergeData(sheet.merges),
+          rowData: buildRowData(sheet.rowHeights),
+          columnData: buildColumnData(sheet.colWidths),
+          rowHeader: { width: 46, hidden: 0 as BooleanNumber },
+          columnHeader: { height: 20, hidden: 0 as BooleanNumber },
+          showGridlines: 1 as BooleanNumber,
+          rightToLeft: 0 as BooleanNumber,
+        }
+      }
+      // Suppress the journal for the whole load (desktop
+      // journalSuppression parity): createWorkbook on a live-formula
+      // snapshot fires set-range-values mutations (the engine registering
+      // and calculating formulas) — none of them are user edits, so none
+      // of them may dirty the workbook. Cell styles are inlined INTO the
+      // cellData (see buildCellDataMatrix) — no post-create style
+      // mutations fire during load.
+      journalSuppressionRef.current = true
+      moduleJournalSuppression.active = true
+      // Clear the filter journal before seeding from the snapshot — stale
+      // filter-dirty marks from a previous workbook must never leak across
+      // an open (a reopened workbook starts NOT filter-dirty, so a no-op
+      // save preserves the file's own <autoFilter> XML). Same for DV.
+      filterDirtyRef.current.clear()
+      filterOriginsRef.current.clear()
+      dvDirtyRef.current.clear()
+      noteDirtyRef.current.clear()
+      try {
+        rt.univerAPI.createWorkbook({
+          id: WORKBOOK_UNIT_ID,
+          name: fileNameRef.current.replace(/\.[^.]+$/, ''),
+          sheets: sheetsConfig,
+        })
+        for (const sheet of snapshot.sheets) {
+          // Seed the freeze-state journal from the snapshot — so a save
+          // without any freeze change still round-trips the file's existing
+          // freeze. The journal subscription updates this map when the user
+          // toggles freeze interactively.
+          if (sheet.freeze && (sheet.freeze.frozenRows > 0 || sheet.freeze.frozenColumns > 0)) {
+            freezeStateRef.current.set(sheet.name, {
+              frozenRows: sheet.freeze.frozenRows,
+              frozenColumns: sheet.freeze.frozenColumns,
+            })
+          }
+          // Render the file's existing AutoFilter in the REAL Univer UI:
+          // install the filter range, then re-apply the file's criteria so
+          // the live model is complete (dropdowns reflect the file state and
+          // a later user edit snapshots the FULL filter, not just the delta).
+          // The criteria re-application recalculates filteredOutRows, which
+          // drives Univer's render-time row-hidden interceptor — the grid
+          // shows exactly the rows the file's criteria keep visible. All of
+          // it runs under journal suppression: installing the FILE's filter
+          // is a load, not an edit.
+          const fs = sheet.filterState
+          if (fs && fs.filter) {
+            try {
+              const wb = rt.univerAPI.getActiveWorkbook()
+              const ws = wb?.getSheetByName(sheet.name)
+              const range = fs.filter.range
+              const fFilter = ws
+                ?.getRange(
+                  range.startRow,
+                  range.startColumn,
+                  range.endRow - range.startRow + 1,
+                  range.endColumn - range.startColumn + 1,
+                )
+                ?.createFilter()
+              if (fFilter) {
+                for (const column of fs.filter.columns) {
+                  const absoluteColumn = range.startColumn + column.colId
+                  // IFilterColumn criteria shape (Univer's filter model):
+                  // { colId, filters?: { blank?: true, filters?: string[] },
+                  //   customFilters?: { and?: TRUE, customFilters: [c1] | [c1, c2] } }.
+                  const criteria: IFilterColumn = { colId: column.colId }
+                  if (column.values !== undefined || column.blank) {
+                    criteria.filters = {
+                      ...(column.values !== undefined ? { filters: [...column.values] } : {}),
+                      ...(column.blank ? { blank: true } : {}),
+                    }
+                  }
+                  if (column.customs) {
+                    const customFilters = column.customs.filters.map((custom) => ({
+                      val: custom.val,
+                      ...(custom.operator !== undefined ? { operator: custom.operator } : {}),
+                    }))
+                    // ICustomFilters.customFilters is a 1-or-2 tuple; the
+                    // gateway's parser rejects criteria-less and >2-entry
+                    // filterColumns, so the runtime shape is already valid.
+                    criteria.customFilters = {
+                      ...(column.customs.and === true ? { and: 1 } : {}),
+                      customFilters: customFilters as
+                        [ICustomFilter] | [ICustomFilter, ICustomFilter],
+                    }
+                  }
+                  fFilter.setColumnFilterCriteria(absoluteColumn, criteria)
+                }
+              }
+              // Record the origin: the file's own filter range. A later
+              // move/remove unhides this span (visibilityRange = union).
+              filterOriginsRef.current.set(sheet.name, { ...range })
+            } catch {
+              // Installing the file's filter must never fail the open —
+              // the workbook still renders; only the filter dropdowns are
+              // absent (and a no-op save preserves the file's XML).
+            }
+          }
+          // Install the file's data-validation rules into the REAL Univer
+          // model (desktop applyDataValidations parity): each DvWireRule
+          // becomes a data-validation.mutation.addRule execution under
+          // journal suppression — loading a workbook is not an edit, and the
+          // installed rules give real in-cell validation behavior (reject
+          // dialogs on invalid input, list dropdowns, prompts). The rule
+          // shape is the Univer IDataValidationRule wire form with the
+          // desktop's toUniverDvRule transforms: list literals unquote
+          // ("a,b" → a,b) while references/custom gain a leading '='.
+          if (sheet.dvRules && sheet.dvRules.length > 0) {
+            try {
+              const wb = rt.univerAPI.getActiveWorkbook()
+              const ws = wb?.getSheetByName(sheet.name)
+              if (ws) {
+                for (const [index, wire] of sheet.dvRules.entries()) {
+                  const mapped = toUniverDvRule(wire, `file-dv-${sheet.id}-${index}`)
+                  if (!mapped) continue
+                  try {
+                    rt.univerAPI.syncExecuteCommand('data-validation.mutation.addRule', {
+                      unitId: wb!.getId(),
+                      subUnitId: ws.getSheetId(),
+                      rule: mapped,
+                    })
+                  } catch {
+                    // An unsupported rule shape must not break the open.
+                  }
+                }
+              }
+            } catch {
+              // Installing the file's validations must never fail the open.
+            }
+          }
+          // Install the file's legacy notes into the REAL Univer note model
+          // (desktop applyWorkbookNotes parity): each SheetNote becomes a
+          // createOrUpdateNote under journal suppression — the canonical
+          // "Author:\nText" blob convention (re-split at save), the same id
+          // scheme, and the Inc-4 undo filter keeps ⌘Z clean. The notes then
+          // render through the real Univer note UI (cell markers + popup).
+          if (sheet.notes && sheet.notes.length > 0) {
+            try {
+              const wb = rt.univerAPI.getActiveWorkbook()
+              const ws = wb?.getSheetByName(sheet.name)
+              if (ws) {
+                for (const note of sheet.notes) {
+                  try {
+                    ws.getRange(note.row, note.column).createOrUpdateNote({
+                      id: `note-${sheet.id}-${note.row}-${note.column}`,
+                      row: note.row,
+                      col: note.column,
+                      width: 220,
+                      height: 90,
+                      note: note.author ? `${note.author}:\n${note.text}` : note.text,
+                    })
+                  } catch {
+                    // Notes are best-effort decoration (desktop parity).
+                  }
+                }
+              }
+            } catch {
+              // Installing the file's notes must never fail the open.
+            }
+          }
+        }
+      } finally {
+        journalSuppressionRef.current = false
+        moduleJournalSuppression.active = false
+      }
+      dirtyCellsRef.current.clear()
+      structuralOpsRef.current.clear()
+      setDirty(false)
+    },
+    [bumpProtectionEcho],
+  )
 
   const handleOpenFile = useCallback(
     async (file: File) => {
@@ -702,95 +914,137 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     [loadSnapshot],
   )
 
-  const handleSave = useCallback(async (saveAs: boolean) => {
-    const handle = handleRef.current
-    if (!handle) {
-      setStatus('Nothing to save — open a file first')
-      return
-    }
-    setStatus('Saving...')
-    try {
-      const edits = Array.from(dirtyCellsRef.current.values())
-      const structuralOps = Array.from(structuralOpsRef.current.entries())
-        .map(([sheetName, ops]) => ({ sheetName, ops }))
-        .filter((s) => s.ops.length > 0)
-      // Emit per-sheet page-setup states for every sheet with journaled
-      // freeze (View → Freeze Panes). The engine's applyPageSetupState
-      // writes the <pane> element into the worksheet XML on save.
-      const pageSetupStates = Array.from(freezeStateRef.current.entries())
-        .filter(([, f]) => f.frozenRows > 0 || f.frozenColumns > 0)
-        .map(([sheetName, f]) => ({
-          sheetName,
-          frozenRows: f.frozenRows,
-          frozenColumns: f.frozenColumns,
-        }))
-      // Snapshot the LIVE filter model for every filter-dirty sheet
-      // (Data → Filter). Declarative, desktop collectFilterStates parity:
-      // never replay mutations. Sheets NOT in the set emit NO filter state,
-      // so their <autoFilter> XML survives a no-op save byte-for-byte.
-      const filterStates = collectFilterStates(runtimeRef.current, filterDirtyRef, filterOriginsRef)
-      // Snapshot the LIVE validation model for every DV-dirty sheet
-      // (Data → Data Validation). Declarative, desktop collectDvStates
-      // parity: the FULL rule set of each dirty sheet — untouched rules
-      // ride along, so editing one rule never drops its neighbors. An
-      // empty list means all validation on the sheet was cleared.
-      const dvStates = collectDvStates(runtimeRef.current, dvDirtyRef)
-      // Snapshot the LIVE note model for every note-dirty sheet
-      // (Review → New Comment). Declarative, desktop collectNoteStates
-      // parity: the FULL note set of each dirty sheet — untouched notes
-      // ride along, so editing one note never drops its neighbors. An
-      // empty list means all notes on the sheet were cleared.
-      const noteStates = collectNoteStates(runtimeRef.current, noteDirtyRef)
-      let nextFileName = handle.fileName
-      if (saveAs) {
-        const newName = window.prompt('Save as:', nextFileName)
-        if (!newName) {
-          setStatus('Save cancelled')
-          return
+  const handleSave = useCallback(
+    async (saveAs: boolean) => {
+      const handle = handleRef.current
+      if (!handle) {
+        setStatus('Nothing to save — open a file first')
+        return
+      }
+      setStatus('Saving...')
+      try {
+        const edits = Array.from(dirtyCellsRef.current.values())
+        const structuralOps = Array.from(structuralOpsRef.current.entries())
+          .map(([sheetName, ops]) => ({ sheetName, ops }))
+          .filter((s) => s.ops.length > 0)
+        // Emit per-sheet page-setup states for every sheet with journaled
+        // freeze (View → Freeze Panes). The engine's applyPageSetupState
+        // writes the <pane> element into the worksheet XML on save.
+        const pageSetupStates = Array.from(freezeStateRef.current.entries())
+          .filter(([, f]) => f.frozenRows > 0 || f.frozenColumns > 0)
+          .map(([sheetName, f]) => ({
+            sheetName,
+            frozenRows: f.frozenRows,
+            frozenColumns: f.frozenColumns,
+          }))
+        // Snapshot the LIVE filter model for every filter-dirty sheet
+        // (Data → Filter). Declarative, desktop collectFilterStates parity:
+        // never replay mutations. Sheets NOT in the set emit NO filter state,
+        // so their <autoFilter> XML survives a no-op save byte-for-byte.
+        const filterStates = collectFilterStates(
+          runtimeRef.current,
+          filterDirtyRef,
+          filterOriginsRef,
+        )
+        // Snapshot the LIVE validation model for every DV-dirty sheet
+        // (Data → Data Validation). Declarative, desktop collectDvStates
+        // parity: the FULL rule set of each dirty sheet — untouched rules
+        // ride along, so editing one rule never drops its neighbors. An
+        // empty list means all validation on the sheet was cleared.
+        const dvStates = collectDvStates(runtimeRef.current, dvDirtyRef)
+        // Snapshot the LIVE note model for every note-dirty sheet
+        // (Review → New Comment). Declarative, desktop collectNoteStates
+        // parity: the FULL note set of each dirty sheet — untouched notes
+        // ride along, so editing one note never drops its neighbors. An
+        // empty list means all notes on the sheet were cleared.
+        const noteStates = collectNoteStates(runtimeRef.current, noteDirtyRef)
+        // EXCEL-020: emit the journaled protection decisions (Review →
+        // Protect Sheet / Protect Workbook). Desktop save-actions parity —
+        // only sheets the user toggled carry a state; an untouched workbook
+        // emits NOTHING, so a no-op save preserves the file's protection
+        // XML byte-for-byte. The wire validates the typed family and the
+        // gateway writes/removes the OOXML elements.
+        const sheetProtections = Array.from(sheetProtectionJournalRef.current.entries()).map(
+          ([sheetName, protect]) => ({ sheetName, protected: protect }),
+        )
+        const workbookProtectionState =
+          workbookProtectionJournalRef.current !== null
+            ? { lockStructure: workbookProtectionJournalRef.current }
+            : null
+        let nextFileName = handle.fileName
+        if (saveAs) {
+          const newName = window.prompt('Save as:', nextFileName)
+          if (!newName) {
+            setStatus('Save cancelled')
+            return
+          }
+          nextFileName = newName.endsWith('.xlsx') ? newName : `${newName}.xlsx`
         }
-        nextFileName = newName.endsWith('.xlsx') ? newName : `${newName}.xlsx`
+        const savedBytes = await saveWorkbook({
+          fileName: nextFileName,
+          fileBytes: handle.sourceBytes,
+          savePlan: {
+            edits,
+            ...(structuralOps.length > 0 ? { structuralOps } : {}),
+            ...(pageSetupStates.length > 0 ? { pageSetupStates } : {}),
+            ...(filterStates.length > 0 ? { filterStates } : {}),
+            ...(dvStates.length > 0 ? { dvStates } : {}),
+            ...(noteStates.length > 0 ? { noteStates } : {}),
+            ...(sheetProtections.length > 0 ? { sheetProtections } : {}),
+            ...(workbookProtectionState !== null ? { workbookProtectionState } : {}),
+          },
+        })
+        handleRef.current = {
+          fileName: nextFileName,
+          sourceBytes: savedBytes,
+          revision: handle.revision + 1,
+        }
+        setFileName(nextFileName)
+        dirtyCellsRef.current.clear()
+        structuralOpsRef.current.clear()
+        // A saved filter state is now IN the source bytes — the sheet is no
+        // longer filter-dirty (another no-op save must not re-emit it). Same
+        // for DV: the snapshot is in the file; a no-op save must preserve it.
+        filterDirtyRef.current.clear()
+        dvDirtyRef.current.clear()
+        noteDirtyRef.current.clear()
+        // EXCEL-020: the saved protection state is now IN the source bytes —
+        // merge the journal into the file refs (the ribbon echo must reflect
+        // the saved state) and clear the journals, so a subsequent no-op
+        // save emits no protection family and preserves the file's XML.
+        for (const [sheetName, protect] of sheetProtectionJournalRef.current) {
+          const prior = sheetProtectionFileRef.current.get(sheetName)
+          sheetProtectionFileRef.current.set(sheetName, {
+            protected: protect,
+            hasPassword: prior?.hasPassword ?? false,
+          })
+        }
+        sheetProtectionJournalRef.current.clear()
+        if (workbookProtectionJournalRef.current !== null) {
+          workbookProtectionFileRef.current = {
+            lockStructure: workbookProtectionJournalRef.current,
+            hasPassword: workbookProtectionFileRef.current?.hasPassword ?? false,
+          }
+        }
+        workbookProtectionJournalRef.current = null
+        bumpProtectionEcho()
+        const blob = new Blob([savedBytes.buffer as ArrayBuffer], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = nextFileName
+        a.click()
+        URL.revokeObjectURL(url)
+        setStatus(`Saved ${nextFileName}`)
+        setDirty(false)
+      } catch (e) {
+        setStatus(`Save failed: ${e instanceof Error ? e.message : String(e)}`)
       }
-      const savedBytes = await saveWorkbook({
-        fileName: nextFileName,
-        fileBytes: handle.sourceBytes,
-        savePlan: {
-          edits,
-          ...(structuralOps.length > 0 ? { structuralOps } : {}),
-          ...(pageSetupStates.length > 0 ? { pageSetupStates } : {}),
-          ...(filterStates.length > 0 ? { filterStates } : {}),
-          ...(dvStates.length > 0 ? { dvStates } : {}),
-          ...(noteStates.length > 0 ? { noteStates } : {}),
-        },
-      })
-      handleRef.current = {
-        fileName: nextFileName,
-        sourceBytes: savedBytes,
-        revision: handle.revision + 1,
-      }
-      setFileName(nextFileName)
-      dirtyCellsRef.current.clear()
-      structuralOpsRef.current.clear()
-      // A saved filter state is now IN the source bytes — the sheet is no
-      // longer filter-dirty (another no-op save must not re-emit it). Same
-      // for DV: the snapshot is in the file; a no-op save must preserve it.
-      filterDirtyRef.current.clear()
-      dvDirtyRef.current.clear()
-      noteDirtyRef.current.clear()
-      const blob = new Blob([savedBytes.buffer as ArrayBuffer], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = nextFileName
-      a.click()
-      URL.revokeObjectURL(url)
-      setStatus(`Saved ${nextFileName}`)
-      setDirty(false)
-    } catch (e) {
-      setStatus(`Save failed: ${e instanceof Error ? e.message : String(e)}`)
-    }
-  }, [])
+    },
+    [bumpProtectionEcho],
+  )
 
   const isError = status.startsWith('Open failed') || status.startsWith('Save failed')
 
@@ -858,7 +1112,18 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         </div>
       </header>
 
-      <Ribbon api={api} />
+      <Ribbon
+        api={api}
+        protection={{
+          sheetProtected: sheetEcho,
+          sheetHasPassword: sheetEchoHasPassword,
+          workbookLocked: workbookEcho,
+          workbookHasPassword: workbookEchoHasPassword,
+          onToggleSheetProtection: toggleSheetProtection,
+          onToggleWorkbookProtection: toggleWorkbookProtection,
+          onSetCellsLocked: setCellsLocked,
+        }}
+      />
 
       <div className="excel-formula-row" data-testid="excel-formula-row">
         <NameBox

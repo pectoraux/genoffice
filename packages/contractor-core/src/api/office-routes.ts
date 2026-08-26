@@ -32,6 +32,7 @@ import {
   type SheetFilterState,
   type SheetNoteState,
   type SheetPageSetupState,
+  type SheetProtectionState,
   type SheetStructuralOps,
   type StructuralOp,
   type WorkbookSnapshot,
@@ -113,6 +114,20 @@ export interface BrowserWorkbookSavePlan {
    * empty notes array removes the sheet's comment part entirely.
    */
   readonly noteStates?: readonly SheetNoteState[]
+  /**
+   * Per-sheet protection states (Review → Protect Sheet, EXCEL-020). Each
+   * entry carries the desired protected flag for one sheet — the engine
+   * adds/removes the worksheet's `<sheetProtection>` element (no password
+   * support: unprotecting a password-protected sheet fails closed in the
+   * engine, surfacing as a 4xx malformed error).
+   */
+  readonly sheetProtections?: readonly SheetProtectionState[]
+  /**
+   * Desired workbook structure protection (Review → Protect Workbook,
+   * EXCEL-020). null/absent = untouched — the engine leaves workbook.xml's
+   * `<workbookProtection>` alone.
+   */
+  readonly workbookProtectionState?: { readonly lockStructure: boolean } | null
   // Extensibility seam — future mutation families land here as optional
   // readonly fields (chartEdits?, hyperlinkEdits?, …).
   // The route handler ignores unknown keys, so adding a field is a
@@ -2387,6 +2402,65 @@ function expectDvRule(value: Record<string, unknown>, field: string): Record<str
   return out
 }
 
+// ── Protection validation (Review → Protection, EXCEL-020) ───────────────────────────────────────────────────────
+
+/** Caps mirroring the desktop's workbookSheetProtectionSchema. */
+const MAX_SHEET_PROTECTIONS = 1_000
+
+/**
+ * Validate one per-sheet protection state from the wire (EXCEL-020). The
+ * browser only emits the journal's toggle decisions — exactly the shape
+ * the desktop ships (`{ sheetId, protected }` resolved to sheet names).
+ * Unknown fields, non-boolean flags, and excessive counts are rejected
+ * with a 400 rather than reaching the engine.
+ */
+function expectSheetProtectionState(value: unknown, index: number): SheetProtectionState {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `sheetProtections[${index}] must be an object`)
+  }
+  const sheetName = expectString(value.sheetName, `sheetProtections[${index}].sheetName`)
+  const protect = expectBoolean(value.protected, `sheetProtections[${index}].protected`)
+  // Reject unknown extra keys — the canonical state carries exactly these
+  // two fields; password-bearing payloads must not slip through the wire
+  // (the engine takes no passwords by design).
+  for (const key of Object.keys(value)) {
+    if (!['sheetName', 'protected'].includes(key)) {
+      throw new OfficeValidationError(
+        'validation',
+        `sheetProtections[${index}] carries an unknown field "${key}"`,
+      )
+    }
+  }
+  return { sheetName, protected: protect }
+}
+
+/**
+ * Validate the workbook structure-protection state from the wire
+ * (EXCEL-020). null = untouched. Mirrors the desktop's strict Zod
+ * `{ lockStructure: boolean }` — anything else is a 400.
+ */
+function expectWorkbookProtectionState(value: unknown): { readonly lockStructure: boolean } {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError(
+      'validation',
+      'savePlan.workbookProtectionState must be an object',
+    )
+  }
+  const lockStructure = expectBoolean(
+    value.lockStructure,
+    'savePlan.workbookProtectionState.lockStructure',
+  )
+  for (const key of Object.keys(value)) {
+    if (key !== 'lockStructure') {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.workbookProtectionState carries an unknown field "${key}"`,
+      )
+    }
+  }
+  return { lockStructure }
+}
+
 // ── SheetNoteState validation (Review → Notes/Comments, Phase 4 Inc. 6) ─────
 
 /** Caps mirroring the desktop's workbookNoteStateSchema. */
@@ -2524,6 +2598,27 @@ function parseSaveWorkbookRequest(
         `savePlan.noteStates exceeds ${MAX_NOTE_STATES} entries`,
       )
     }
+    // EXCEL-020: per-sheet protection toggles + workbook structure lock.
+    // Both are strictly validated — nothing unvalidated reaches the engine.
+    const sheetProtections =
+      body.savePlan.sheetProtections !== undefined && body.savePlan.sheetProtections !== null
+        ? expectArray(
+            body.savePlan.sheetProtections,
+            'savePlan.sheetProtections',
+            expectSheetProtectionState,
+          )
+        : undefined
+    if (sheetProtections !== undefined && sheetProtections.length > MAX_SHEET_PROTECTIONS) {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.sheetProtections exceeds ${MAX_SHEET_PROTECTIONS} entries`,
+      )
+    }
+    const workbookProtectionState =
+      body.savePlan.workbookProtectionState !== undefined &&
+      body.savePlan.workbookProtectionState !== null
+        ? expectWorkbookProtectionState(body.savePlan.workbookProtectionState)
+        : null
     return {
       fileName,
       fileBytes,
@@ -2534,6 +2629,8 @@ function parseSaveWorkbookRequest(
         ...(filterStates ? { filterStates } : {}),
         ...(dvStates ? { dvStates } : {}),
         ...(noteStates ? { noteStates } : {}),
+        ...(sheetProtections ? { sheetProtections } : {}),
+        ...(workbookProtectionState !== null ? { workbookProtectionState } : {}),
       },
     }
   }
@@ -2607,6 +2704,8 @@ async function handleSaveWorkbook(
   const filterStates = req.savePlan.filterStates ?? []
   const dvStates = req.savePlan.dvStates ?? []
   const noteStates = req.savePlan.noteStates ?? []
+  const sheetProtections = req.savePlan.sheetProtections ?? []
+  const workbookProtectionState = req.savePlan.workbookProtectionState ?? null
   let mutation
   try {
     // filterStates is argument 6 (after chartEdits/sheetPlan): the canonical
@@ -2616,7 +2715,10 @@ async function handleSaveWorkbook(
     // validation rules likewise replay after structural + cell changes.
     // noteStates is argument 13 (after pageSetupStates): note snapshots run
     // after the worksheet flush so the legacyDrawing element lands on the
-    // final sheet XML. See planCellEditsToXlsx in @genoffice/xlsx-gateway.
+    // final sheet XML. sheetProtections is argument 10 (after dvStates) and
+    // workbookProtectionState is the trailing argument — both write their
+    // OOXML protection elements after the content flush. See
+    // planCellEditsToXlsx in @genoffice/xlsx-gateway.
     mutation = await applyCellEditsToXlsx(
       buf,
       edits,
@@ -2627,10 +2729,12 @@ async function handleSaveWorkbook(
       [],
       [],
       dvStates,
-      [],
+      sheetProtections,
       null,
       pageSetupStates,
       noteStates,
+      [],
+      workbookProtectionState,
     )
   } catch (e) {
     throw new OfficeValidationError(

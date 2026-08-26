@@ -7,6 +7,59 @@ export class SheetProtectionError extends Error {}
 
 const ELEMENT_PATTERN = /<sheetProtection\b[^>]*\/>|<sheetProtection\b[^>]*>\s*<\/sheetProtection>/
 
+/// Read-side state of a worksheet's <sheetProtection> element.
+/// null = the worksheet carries no element (unprotected).
+export interface SheetProtectionReadState {
+  readonly protected: boolean
+  readonly hasPassword: boolean
+}
+
+/// Parses a worksheet's <sheetProtection> element into the reader state
+/// the browser snapshot exposes (EXCEL-020). `protected` follows the
+/// sheet attribute ("1"/"true" = protected; anything else, including an
+/// absent attribute, = not protected — Excel's own default is sheet="0").
+/// `hasPassword` is true for EITHER password form: the legacy hash
+/// attribute or the modern algorithmName/hashValue pair. Both make
+/// unprotecting fail closed, so the browser must know about them up front
+/// (the desktop's range reader exposes the same flag).
+export function parseSheetProtectionState(worksheetXml: string): SheetProtectionReadState | null {
+  const element = ELEMENT_PATTERN.exec(worksheetXml)
+  if (element === null) return null
+  const tag = element[0]
+  const sheet = /<sheetProtection\b[^>]*\bsheet="([^"]*)"/.exec(tag)?.[1] ?? ''
+  return {
+    protected: sheet === '1' || sheet === 'true',
+    hasPassword: /\b(?:password|algorithmName|hashValue)="/.test(tag),
+  }
+}
+
+const WORKBOOK_PROTECTION_PATTERN =
+  /<workbookProtection\b[^>]*\/>|<workbookProtection\b[^>]*>\s*<\/workbookProtection>/
+
+/// Read-side state of workbook.xml's <workbookProtection> element.
+/// null = the workbook carries no element.
+export interface WorkbookProtectionReadState {
+  readonly lockStructure: boolean
+  readonly hasPassword: boolean
+}
+
+/// Parses workbook.xml's <workbookProtection> element (EXCEL-020).
+/// lockStructure follows the attribute ("1"/"true"); hasPassword covers
+/// the legacy workbookPassword hash and the modern workbookAlgorithmName/
+/// workbookHashValue pair — both make unlocking fail closed.
+export function parseWorkbookProtectionState(
+  workbookXml: string,
+): WorkbookProtectionReadState | null {
+  const element = WORKBOOK_PROTECTION_PATTERN.exec(workbookXml)
+  if (element === null) return null
+  const tag = element[0]
+  const lock = /<workbookProtection\b[^>]*\blockStructure="([^"]*)"/.exec(tag)?.[1] ?? ''
+  return {
+    lockStructure: lock === '1' || lock === 'true',
+    hasPassword: /\bworkbook(?:Password|AlgorithmName|HashValue)="/.test(tag),
+  }
+}
+
 export function applySheetProtection(worksheetXml: string, protect: boolean): string {
   const existing = ELEMENT_PATTERN.exec(worksheetXml)
   if (!protect) {
@@ -35,9 +88,6 @@ export function applySheetProtection(worksheetXml: string, protect: boolean): st
   const at = anchor.index + anchor[0].length
   return worksheetXml.slice(0, at) + element + worksheetXml.slice(at)
 }
-
-const WORKBOOK_PROTECTION_PATTERN =
-  /<workbookProtection\b[^>]*\/>|<workbookProtection\b[^>]*>\s*<\/workbookProtection>/
 
 /// Workbook structure lock in workbook.xml. Unlocking a password-protected
 /// structure fails closed; other workbookProtection attributes stay verbatim.
