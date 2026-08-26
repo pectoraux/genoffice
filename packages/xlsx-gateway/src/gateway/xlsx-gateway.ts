@@ -3,6 +3,7 @@ import JSZip from 'jszip'
 import { sha256Hex } from '../sha256.js'
 
 import type {
+  CellFormatState,
   CellState,
   ChangePlan,
   WorkbookSnapshot,
@@ -34,7 +35,7 @@ import {
   type PivotValueSpec,
 } from './xlsx-pivot-add'
 import type { SheetFilterState } from './xlsx-filter'
-import { applyFilterState } from './xlsx-filter'
+import { applyFilterState, FilterReadError, parseAutoFilter } from './xlsx-filter'
 import type { SheetAllocation, SheetEditPlan, SheetElement } from './xlsx-sheets'
 import {
   addWorksheetOverride,
@@ -73,7 +74,7 @@ import {
   DefinedNameError,
   type DefinedNamesState,
 } from './xlsx-defined-names'
-import { applyDvRules, type DvWireRule } from './xlsx-dv'
+import { applyDvRules, DvReadError, parseDataValidations, type DvWireRule } from './xlsx-dv'
 import { applyPageSetupState, applyPrintAreas, type SheetPageSetupState } from './xlsx-page-setup'
 import {
   applyProtectedRanges,
@@ -82,7 +83,10 @@ import {
   type ProtectedRangeState,
 } from './xlsx-protection'
 import { applyThemeState, type WorkbookThemeState } from './xlsx-theme'
-import { applySheetNotes, type SheetNote } from './xlsx-notes'
+import { applySheetNotes, NoteReadError, parseCommentsPart, type SheetNote } from './xlsx-notes'
+
+const COMMENTS_REL_TYPE =
+  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments'
 import {
   applySparklineAdditions,
   type SheetSparklineAddition,
@@ -105,7 +109,7 @@ import {
   shiftTablePart,
   StructuralShiftError,
 } from './xlsx-structure'
-import { StylesheetEditor } from './xlsx-styles'
+import { StylesheetEditor, StylesheetReader } from './xlsx-styles'
 
 const MAX_ENTRY_COUNT = 10_000
 const MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
@@ -385,6 +389,11 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
   const zip = await createBufferEntrySource(buffer)
   const workbookXml = await zip.readText('xl/workbook.xml')
   const sharedStrings = await readSharedStrings(zip)
+  // Presentation reader: resolves cellXfs indexes to the editable format
+  // subset so the browser grid renders existing styling (bold, fills,
+  // alignment, …). Unmodeled properties stay in the file's own XML.
+  const stylesXml = (await zip.has('xl/styles.xml')) ? await zip.readText('xl/styles.xml') : null
+  const styleReader = stylesXml !== null ? new StylesheetReader(stylesXml) : null
   const sheets: WorksheetState[] = []
   const sheetNamesById: Record<string, string> = {}
   const sheetPattern = /<sheet\b([^>]*)\/?>/g
@@ -398,10 +407,65 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     const id = `sheet-${sheetNumber}`
     const worksheetPath = await resolveWorksheetPath(zip, decodedName)
     const worksheetXml = await zip.readText(worksheetPath)
+    const presentation = parseWorksheetPresentation(worksheetXml, styleReader)
+    // AutoFilter read: fail closed PER FILTER — an unrepresentable
+    // <autoFilter> (top10 / dynamicFilter / iconFilter / dateGroup / color
+    // criteria) surfaces no filterState, so the browser never renders a
+    // filter it cannot save faithfully, while the workbook itself still
+    // opens and a no-op save preserves the file's XML byte-for-byte.
+    let filterState: SheetFilterState | undefined
+    try {
+      const parsed = parseAutoFilter(worksheetXml, decodedName)
+      if (parsed !== null) filterState = parsed
+    } catch (error) {
+      if (!(error instanceof FilterReadError)) throw error
+    }
+    // Data-validation read: fail closed PER SHEET — an unrepresentable
+    // <dataValidations> section (x14 extensions, unknown
+    // types/operators/error styles, malformed sqref) surfaces no dvRules,
+    // so the browser never renders a validation it cannot save faithfully,
+    // while the workbook itself still opens and a no-op save preserves the
+    // file's XML byte-for-byte.
+    let dvRules: readonly DvWireRule[] | undefined
+    try {
+      const parsed = parseDataValidations(worksheetXml)
+      if (parsed.length > 0) dvRules = parsed
+    } catch (error) {
+      if (!(error instanceof DvReadError)) throw error
+    }
+    // Notes read: resolve the comments part through the worksheet rels
+    // (the same two-step lookup resolveWorksheetPath uses) and parse it.
+    // Fail closed PER SHEET — an unrepresentable comments part (unreadable
+    // refs, missing text, oversized sets) surfaces no notes, the workbook
+    // still opens, and a no-op save preserves the file's parts.
+    let sheetNotes: readonly SheetNote[] | undefined
+    try {
+      const commentsPath = await resolveCommentsPath(zip, worksheetPath)
+      if (commentsPath !== null && (await zip.has(commentsPath))) {
+        const parsed = parseCommentsPart(await zip.readText(commentsPath))
+        if (parsed.length > 0) sheetNotes = parsed
+      }
+    } catch (error) {
+      if (!(error instanceof NoteReadError)) throw error
+    }
     sheets.push({
       id,
       name: decodedName,
       cells: parseWorksheetCells(worksheetXml, sharedStrings),
+      ...(presentation.styles && Object.keys(presentation.styles).length > 0
+        ? { styles: presentation.styles }
+        : {}),
+      ...(presentation.merges.length > 0 ? { merges: presentation.merges } : {}),
+      ...(presentation.rowHeights && Object.keys(presentation.rowHeights).length > 0
+        ? { rowHeights: presentation.rowHeights }
+        : {}),
+      ...(presentation.colWidths && Object.keys(presentation.colWidths).length > 0
+        ? { colWidths: presentation.colWidths }
+        : {}),
+      ...(presentation.freeze ? { freeze: presentation.freeze } : {}),
+      ...(filterState ? { filterState } : {}),
+      ...(dvRules ? { dvRules } : {}),
+      ...(sheetNotes ? { notes: sheetNotes } : {}),
     })
     sheetNamesById[id] = decodedName
   }
@@ -410,6 +474,116 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     snapshot: { revision: 0, sheets },
     sheetNamesById,
   }
+}
+
+/**
+ * Presentation pass over one worksheet: per-cell resolved formats (via the
+ * StylesheetReader), merged ranges, custom row heights (points, 1-based row
+ * keys) and custom column widths (px, column-label keys — the OOXML
+ * character width is converted with the Calibri-11 default-font metric the
+ * ecosystem uses, a display approximation; the file keeps the exact width).
+ */
+function parseWorksheetPresentation(
+  worksheetXml: string,
+  styleReader: StylesheetReader | null,
+): {
+  styles: Readonly<Record<string, CellFormatState>>
+  merges: readonly string[]
+  rowHeights: Readonly<Record<string, number>>
+  colWidths: Readonly<Record<string, number>>
+  freeze: { frozenRows: number; frozenColumns: number } | undefined
+} {
+  const styles: Record<string, CellFormatState> = {}
+  if (styleReader) {
+    const cellPattern = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g
+    let cellMatch: RegExpExecArray | null
+    while ((cellMatch = cellPattern.exec(worksheetXml)) !== null) {
+      const attrs = cellMatch[1] ?? ''
+      const address = readXmlAttribute(attrs, 'r')
+      const styleIndex = readXmlAttribute(attrs, 's')
+      if (!address || styleIndex === undefined) continue
+      const format = styleReader.formatAt(Number(styleIndex))
+      if (format) styles[address] = format
+    }
+  }
+  const merges: string[] = []
+  const mergePattern = /<mergeCell\b[^>]*\bref="([^"]+)"/g
+  let mergeMatch: RegExpExecArray | null
+  while ((mergeMatch = mergePattern.exec(worksheetXml)) !== null) {
+    merges.push(mergeMatch[1] ?? '')
+  }
+  const rowHeights: Record<string, number> = {}
+  const rowPattern = /<row\b([^>]*)\/?>/g
+  let rowMatch: RegExpExecArray | null
+  while ((rowMatch = rowPattern.exec(worksheetXml)) !== null) {
+    const attrs = rowMatch[1] ?? ''
+    if (readXmlAttribute(attrs, 'customHeight') !== '1') continue
+    const rowNumber = readXmlAttribute(attrs, 'r')
+    const height = Number(readXmlAttribute(attrs, 'ht'))
+    if (rowNumber && Number.isFinite(height) && height > 0) {
+      rowHeights[rowNumber] = height
+    }
+  }
+  const colWidths: Record<string, number> = {}
+  const colPattern = /<col\b([^>]*)\/?>/g
+  let colMatch: RegExpExecArray | null
+  while ((colMatch = colPattern.exec(worksheetXml)) !== null) {
+    const attrs = colMatch[1] ?? ''
+    if (readXmlAttribute(attrs, 'customWidth') !== '1') continue
+    const min = Number(readXmlAttribute(attrs, 'min'))
+    const max = Number(readXmlAttribute(attrs, 'max'))
+    const width = Number(readXmlAttribute(attrs, 'width'))
+    if (!Number.isInteger(min) || !Number.isInteger(max) || !Number.isFinite(width)) continue
+    if (min < 1 || max < min || max - min > 1024) continue
+    const px = Math.round(width * 7 + 5)
+    for (let column = min; column <= max; column++) {
+      colWidths[columnLabel(column)] = px
+    }
+  }
+  const freeze = parseFrozenPane(worksheetXml)
+  return { styles, merges, rowHeights, colWidths, freeze }
+}
+
+/**
+ * Parse the frozen-pane state from a worksheet's <sheetView><pane>.
+ *
+ * The OOXML <pane> element carries:
+ *   - xSplit: number of frozen columns (0 when absent)
+ *   - ySplit: number of frozen rows    (0 when absent)
+ *   - state: "frozen" | "frozenSplit" | "split" (only "frozen" counts)
+ *   - topLeftCell: the first scrollable cell (e.g. "A4" for 3 frozen rows)
+ *
+ * Only a pane with state="frozen" represents a real freeze. The engine's
+ * applyPageSetupState writes the same shape (xlsx-freeze.test.ts), so this
+ * parser is the read-side counterpart. Returns undefined when no frozen
+ * pane is present (so the WorksheetState stays minimal).
+ */
+function parseFrozenPane(
+  worksheetXml: string,
+): { frozenRows: number; frozenColumns: number } | undefined {
+  const paneMatch = /<pane\b([^>]*)\/?>/.exec(worksheetXml)
+  if (!paneMatch) return undefined
+  const attrs = paneMatch[1] ?? ''
+  const state = readXmlAttribute(attrs, 'state')
+  if (state !== 'frozen' && state !== 'frozenSplit') return undefined
+  const ySplit = Number(readXmlAttribute(attrs, 'ySplit') ?? '0')
+  const xSplit = Number(readXmlAttribute(attrs, 'xSplit') ?? '0')
+  const frozenRows = Number.isInteger(ySplit) && ySplit > 0 ? ySplit : 0
+  const frozenColumns = Number.isInteger(xSplit) && xSplit > 0 ? xSplit : 0
+  if (frozenRows === 0 && frozenColumns === 0) return undefined
+  return { frozenRows, frozenColumns }
+}
+
+/** 1-based column index → A1 column label (1 → "A", 27 → "AA"). */
+function columnLabel(column: number): string {
+  let label = ''
+  let n = column
+  while (n > 0) {
+    const rem = (n - 1) % 26
+    label = String.fromCharCode(65 + rem) + label
+    n = Math.floor((n - 1) / 26)
+  }
+  return label || 'A'
 }
 
 export async function inventoryXlsx(buffer: Buffer): Promise<readonly PackageEntry[]> {
@@ -1572,6 +1746,30 @@ async function shiftAnchoredSheetParts(
 /// save because r:id preceded name, or the name used numeric char refs).
 function findSheetElement(workbookXml: string, sheetName: string): SheetElement | undefined {
   return parseSheetElements(workbookXml).find((element) => element.name === sheetName)
+}
+
+/// Resolve a worksheet's comments part via its rels (COMMENTS_REL_TYPE),
+/// mirroring the desktop's sidecar lookup. Null when the sheet has none.
+async function resolveCommentsPath(
+  reader: Pick<EntrySource, 'readText' | 'has'>,
+  worksheetPath: string,
+): Promise<string | null> {
+  const relsPath = worksheetPath.replace(/^(xl\/worksheets\/)([^/]+)$/, '$1_rels/$2.rels')
+  if (!(await reader.has(relsPath))) return null
+  const relsXml = await reader.readText(relsPath)
+  const relationship = new RegExp(`<Relationship[^>]*Type="${COMMENTS_REL_TYPE}"[^>]*/?>`).exec(
+    relsXml,
+  )?.[0]
+  const target =
+    relationship === undefined ? undefined : /\bTarget="([^"]+)"/.exec(relationship)?.[1]
+  if (target === undefined) return null
+  if (target.startsWith('/')) return target.slice(1)
+  const base = worksheetPath.split('/').slice(0, -1)
+  for (const part of target.split('/')) {
+    if (part === '..') base.pop()
+    else if (part !== '.') base.push(part)
+  }
+  return base.join('/')
 }
 
 async function resolveWorksheetPath(

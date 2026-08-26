@@ -1,0 +1,594 @@
+/**
+ * GenOffice web — light/dark theme tokens.
+ *
+ * One theme source: the <html data-theme="light|dark"> attribute (set by
+ * useTheme in theme.ts). Univer's canvas grid is wired to the same source
+ * via ThemeService.setDarkMode() in ExcelEditor — no parallel theme state.
+ *
+ * The tokens here are consumed by styles.ts (which already references
+ * --surface / --text / --border / --chrome-bg / --accent etc.) and by the
+ * Sheets shell chrome (ribbon, status bar, name box, formula bar).
+ */
+
+:root {
+  /* brand accent — green, to match Univer's greenTheme (no indigo/blue) */
+  --accent: #0f7b3d;
+  --accent-weak: #e6f4ea;
+
+  --surface: #ffffff;
+  --surface-subtle: #f6f7f9;
+  --surface-strong: #ffffff;
+  --chrome-bg: #ffffff;
+  --ribbon-bg: #f5f6f8;
+  --ribbon-tab-bg: transparent;
+  --ribbon-tab-active-bg: #ffffff;
+  --ribbon-border: #d8dde6;
+  --ribbon-group-border: #e3e6ea;
+
+  --text: #242424;
+  --text-secondary: #606366;
+  --text-tertiary: #909499;
+
+  --border: #e3e6ea;
+  --border-subtle: #efefef;
+  --border-strong: #d8dde6;
+
+  --danger: #d13438;
+  --danger-bg: #fdf3f3;
+  --danger-border: #f0c8c9;
+
+  --input-bg: #ffffff;
+  --input-border: #c9ced6;
+
+  --grid-bg: #ffffff;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme='dark'] {
+  --accent: #4ade80;
+  --accent-weak: #1e3a28;
+
+  --surface: #1f1f1f;
+  --surface-subtle: #2a2a2a;
+  --surface-strong: #292929;
+  --chrome-bg: #1f1f1f;
+  --ribbon-bg: #262626;
+  --ribbon-tab-bg: transparent;
+  --ribbon-tab-active-bg: #2d2d2d;
+  --ribbon-border: #3a3a3a;
+  --ribbon-group-border: #333333;
+
+  --text: #e8e8e8;
+  --text-secondary: #a8a8a8;
+  --text-tertiary: #6e6e6e;
+
+  --border: #3a3a3a;
+  --border-subtle: #2f2f2f;
+  --border-strong: #454545;
+
+  --danger: #f87171;
+  --danger-bg: #3a1d1d;
+  --danger-border: #5a2a2a;
+
+  --input-bg: #2a2a2a;
+  --input-border: #454545;
+
+  --grid-bg: #1e1e1e;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--gs-font-sans, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* ── Sheets workspace shell ─────────────────────────────────────────── */
+
+.excel-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--ribbon-bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.excel-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 44px;
+  padding: 0 12px;
+  background: var(--chrome-bg);
+  border-bottom: 1px solid var(--ribbon-border);
+  flex: 0 0 auto;
+}
+
+.excel-titlebar .brand {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.excel-titlebar .filename {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+.excel-titlebar .save-state {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.excel-titlebar .save-state.dirty {
+  color: var(--accent);
+}
+
+.excel-titlebar .quick-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Ribbon ─────────────────────────────────────────────────────────── */
+
+.excel-ribbon {
+  flex: 0 0 auto;
+  background: var(--ribbon-bg);
+  border-bottom: 1px solid var(--ribbon-border);
+}
+
+.excel-ribbon-tabs {
+  display: flex;
+  align-items: stretch;
+  height: 30px;
+  padding: 0 8px;
+  background: var(--chrome-bg);
+  border-bottom: 1px solid var(--ribbon-border);
+}
+
+.excel-ribbon-tab {
+  border: none;
+  background: var(--ribbon-tab-bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 0 12px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+
+.excel-ribbon-tab:hover {
+  color: var(--text);
+}
+
+.excel-ribbon-tab.active {
+  color: var(--text);
+  background: var(--ribbon-tab-active-bg);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+
+.excel-ribbon-panel {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  height: 76px;
+  padding: 4px 8px;
+  background: var(--ribbon-bg);
+  overflow-x: auto;
+}
+
+.excel-ribbon-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2px 8px;
+  border-right: 1px solid var(--ribbon-group-border);
+  min-width: 0;
+}
+
+.excel-ribbon-group:last-child {
+  border-right: none;
+}
+
+.excel-ribbon-group-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.excel-ribbon-group-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-align: center;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+.rb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.rb-btn:hover:not(:disabled) {
+  background: var(--surface-subtle);
+  border-color: var(--border);
+}
+
+.rb-btn:disabled {
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.rb-btn.active {
+  background: var(--accent-weak);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rb-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.rb-select {
+  height: 26px;
+  font-size: 12px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0 6px;
+  max-width: 130px;
+}
+
+.rb-color {
+  width: 28px;
+  height: 26px;
+  padding: 2px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* ── Remove Duplicates dialog + transient message (EXCEL-018) ─────── */
+
+.rb-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+
+.rb-dialog {
+  min-width: 360px;
+  max-width: 440px;
+  padding: 18px 20px 16px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.rb-dialog-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.rb-dialog-body {
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.rb-dialog-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.rb-dialog-check input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.rb-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rb-dialog-actions button {
+  min-width: 72px;
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.rb-dialog-actions button:hover {
+  border-color: var(--accent);
+}
+
+.rb-dialog-actions .rb-dialog-ok {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.rb-toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 28px;
+  padding: 8px 16px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+  font-size: 12px;
+  z-index: 70;
+  pointer-events: none;
+}
+
+/* ── Name box + formula bar row ─────────────────────────────────────── */
+
+.excel-formula-row {
+  display: flex;
+  align-items: stretch;
+  height: 26px;
+  border-bottom: 1px solid var(--ribbon-border);
+  background: var(--chrome-bg);
+  flex: 0 0 auto;
+}
+
+.excel-name-box {
+  width: 120px;
+  border: none;
+  border-right: 1px solid var(--ribbon-border);
+  background: var(--chrome-bg);
+  color: var(--text);
+  font-size: 12px;
+  padding: 0 8px;
+  outline: none;
+}
+
+.excel-name-box.invalid {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.excel-name-box:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.excel-formula-fx {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-style: italic;
+  font-family: 'Times New Roman', serif;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border-right: 1px solid var(--ribbon-border);
+}
+
+.excel-formula-bar {
+  flex: 1;
+  border: none;
+  background: var(--chrome-bg);
+  color: var(--text);
+  font-size: 13px;
+  padding: 0 8px;
+  outline: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.excel-formula-bar:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── Grid container ─────────────────────────────────────────────────── */
+
+/* The grid container owns the remaining viewport height (flex:1 + min-height:0).
+   With SheetsCorePreset header:false + formulaBar:false (create-browser-univer.ts),
+   Univer's SpreadsheetHeader plugin is never mounted — the grid canvas is the
+   first child of #genoffice-web-excel and owns the full container height. The
+   custom Name Box + Formula Bar (.excel-formula-row above) are the SOLE name
+   box / formula bar — no duplicate. Do NOT add position:relative / background
+   here: Univer's internal canvas layout is sensitive to container styling and
+   renders the grid at ~27px tall when these are set. The dark-mode grid
+   background comes from Univer's ThemeService, not CSS. */
+.excel-grid {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Status bar ─────────────────────────────────────────────────────── */
+
+.excel-statusbar {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--chrome-bg);
+  border-top: 1px solid var(--ribbon-border);
+  flex: 0 0 auto;
+  gap: 12px;
+}
+
+.excel-status-msg {
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.excel-status-msg.error {
+  color: var(--danger);
+}
+
+.excel-zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.excel-zoom button {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.excel-zoom input[type='range'] {
+  width: 100px;
+  accent-color: var(--accent);
+}
+
+.excel-zoom-value {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 38px;
+  text-align: right;
+}
+
+.excel-statusbar .stat {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ── Sheet tabs (Univer preset renders the tabs; this just styles the
+   wrapper so it blends with the status bar) ───────────────────────── */
+
+.excel-sheetbar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.excel-new-sheet {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ── Theme toggle ───────────────────────────────────────────────────── */
+
+.theme-toggle {
+  height: 26px;
+  font-size: 11px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+/* ── Titlebar quick-action buttons ──────────────────────────────────── */
+
+.tlb-btn {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tlb-btn:hover:not(:disabled) {
+  background: var(--surface-subtle);
+}
+
+.tlb-btn:disabled {
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.tlb-btn.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* ── Status line (transient open/save feedback) ─────────────────────── */
+
+.excel-statusline {
+  padding: 3px 12px;
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.excel-statusline.error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}

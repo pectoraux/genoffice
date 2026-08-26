@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { applyCellEditsToXlsx, assertOnlyTouchedEntriesChanged } from '../src/gateway/xlsx-gateway'
 import {
   applyStructuralOps,
+  isShiftingOp,
   shiftCrossSheetFormulas,
   shiftDefinedNames,
   shiftDrawingAnchors,
@@ -979,5 +980,212 @@ describe('applyStructuralOps row moves', () => {
     const relocated = shiftTablePart(table, [move(1, 3, 6)])
     expect(relocated).toContain('ref="A4:B6"')
     expect(() => shiftTablePart(table, [move(1, 2, 5)])).toThrow(/header row/)
+  })
+})
+
+describe('applyStructuralOps reorder-rows (sort)', () => {
+  /// A sort-ready worksheet: three data rows (2, 3, 4) each with a value in
+  /// column A, a styled cell in column B (italic / bold / regular), a number
+  /// format on column C (style ref 2 = currency numfmt), a relative-reference
+  /// formula in column D, and a hyperlink rich-text in column E. The order
+  /// of the metadata on each row's cells must travel with the row — the
+  /// gateway permutes <row> blocks atomically, mirroring Univer's
+  /// ReorderRangeMutation deepClone of getCellRaw.
+  const SORT_XML =
+    '<worksheet><sheetData>' +
+    '<row r="1"><c r="A1" t="s"><v>0</v></c></row>' +
+    '<row r="2"><c r="A2"><v>30</v></c>' +
+    '<c r="B2" s="1"><v>1</v></c>' +
+    '<c r="C2" s="2"><v>1.5</v></c>' +
+    '<c r="D2"><f>B2*C2</f><v>45</v></c>' +
+    '<c r="E2" t="str"><v>Banana</v></c></row>' +
+    '<row r="3"><c r="A3"><v>10</v></c>' +
+    '<c r="B3"><v>2</v></c>' +
+    '<c r="C3" s="2"><v>3</v></c>' +
+    '<c r="D3"><f>B3*C3</f><v>30</v></c>' +
+    '<c r="E3" t="str"><v>Cherry</v></c></row>' +
+    '<row r="4"><c r="A4"><v>20</v></c>' +
+    '<c r="B4" s="1"><v>3</v></c>' +
+    '<c r="C4" s="2"><v>2</v></c>' +
+    '<c r="D4"><f>B4*C4</f><v>40</v></c>' +
+    '<c r="E4" t="str"><v>Apple</v></c></row>' +
+    '</sheetData>' +
+    '<hyperlinks count="1"><hyperlink ref="E2" r:id="rId1"/></hyperlinks>' +
+    '</worksheet>'
+
+  /// Univer's order map is DEST→SRC: NEW[destRow] = OLD[order[destRow]]
+  /// (the ReorderRangeMutation source reads `getCellRaw(order[row])` and
+  /// writes it to `row`). ORDER below maps dest 1→src 3, dest 2→src 1,
+  /// dest 3→src 2 — a non-trivial 3-cycle: new row 2 (1-based) carries old
+  /// row 4's content (Apple), new row 3 carries old row 2's (Banana), new
+  /// row 4 carries old row 3's (Cherry). The gateway inverts the map to
+  /// SRC→DEST internally before renumbering the <row> blocks.
+  const ORDER = { 1: 3, 2: 1, 3: 2 } as const
+  const sort = () =>
+    ({
+      kind: 'reorder-rows',
+      range: { startRow: 1, endRow: 3, startColumn: 0, endColumn: 4 },
+      order: ORDER,
+    }) as const
+
+  it('renumbers <row> and inner <c> r= and keeps sheetData ascending', () => {
+    const sorted = applyStructuralOps(SORT_XML, [sort()], SHEET)
+    // The <row> blocks must appear in ascending r= order in sheetData.
+    const rowMatches = [...sorted.matchAll(/<row\b[^>]*\br="([0-9]+)"/g)]
+    const rowNumbers = rowMatches.map((m) => Number(m[1]))
+    expect(rowNumbers).toEqual([1, 2, 3, 4])
+    // NEW[1] = OLD[3]: old row 4 (Apple, B=20) now lives at row 2 (1-based)
+    // — its cell r= attributes renumber from E4 to E2, but the value
+    // "Apple" travels untouched inside the <c> element.
+    expect(sorted).toContain('<c r="E2" t="str"><v>Apple</v></c>')
+    // NEW[2] = OLD[1]: old row 2 (Banana, B=30) now lives at row 3.
+    expect(sorted).toContain('<c r="E3" t="str"><v>Banana</v></c>')
+    // NEW[3] = OLD[2]: old row 3 (Cherry, B=10) now lives at row 4.
+    expect(sorted).toContain('<c r="E4" t="str"><v>Cherry</v></c>')
+  })
+
+  it('preserves cell styles, number-format style refs, and formulas verbatim', () => {
+    const sorted = applyStructuralOps(SORT_XML, [sort()], SHEET)
+    // Old row 2's styled cell (s=1, italic, v=1) travels to NEW[2] → B3.
+    expect(sorted).toContain('<c r="B3" s="1"><v>1</v></c>')
+    // Old row 4's styled cell (s=1, bold, v=3) travels to NEW[1] → B2.
+    expect(sorted).toContain('<c r="B2" s="1"><v>3</v></c>')
+    // Old row 3's unstyled B (regular, v=2) travels to NEW[3] → B4 — no s=.
+    expect(sorted).toContain('<c r="B4"><v>2</v></c>')
+    // Currency numfmt style ref (s=2) travels with the C-column cells:
+    // old C2 (s=2, v=1.5) → C3; old C3 (s=2, v=3) → C4; old C4 (s=2, v=2)
+    // → C2. The style ref attribute is preserved verbatim.
+    expect(sorted).toContain('<c r="C3" s="2"><v>1.5</v></c>')
+    expect(sorted).toContain('<c r="C4" s="2"><v>3</v></c>')
+    expect(sorted).toContain('<c r="C2" s="2"><v>2</v></c>')
+    // Formula text travels verbatim — Univer's deepClone does not rewrite
+    // relative references for sort (matches Univer's live state; Excel
+    // recalculates against current cell positions on reopen). Old D2's
+    // formula "B2*C2" now lives at D3 (string verbatim).
+    expect(sorted).toContain('<c r="D3"><f>B2*C2</f><v>45</v></c>')
+    expect(sorted).toContain('<c r="D4"><f>B3*C3</f><v>30</v></c>')
+    expect(sorted).toContain('<c r="D2"><f>B4*C4</f><v>40</v></c>')
+  })
+
+  it('preserves worksheet-level features (hyperlinks) verbatim — sort does not move them', () => {
+    // Univer's ReorderRangeMutation only moves cell records; it does not
+    // touch worksheet-level <hyperlinks> definitions. The gateway mirrors
+    // that: hyperlink ref="E2" stays at E2 (the original address), and
+    // the cell content at E2 is now the post-sort content (Apple).
+    const sorted = applyStructuralOps(SORT_XML, [sort()], SHEET)
+    expect(sorted).toContain('<hyperlink ref="E2" r:id="rId1"/>')
+    expect(sorted).toContain('<hyperlinks count="1">')
+  })
+
+  it('does not rewrite external/cross-sheet formula references for sort', () => {
+    // A formula on another sheet pointing into the sorted range stays
+    // verbatim — Excel recalculates it against current cell positions on
+    // reopen (matches Univer's live state).
+    const otherSheet =
+      '<worksheet><sheetData><row r="1"><c r="A1"><f>Data!E2</f></c></row></sheetData></worksheet>'
+    expect(shiftCrossSheetFormulas(otherSheet, SHEET, [sort()])).toBe(otherSheet)
+  })
+
+  it('isShiftingOp returns false for reorder-rows (no anchor/table shift)', () => {
+    expect(isShiftingOp(sort())).toBe(false)
+    // A batch with only reorder-rows must not trigger anchored-parts
+    // shifting (the sort preserves range bounds; external visuals and
+    // tables don't drift).
+    expect([sort()].some(isShiftingOp)).toBe(false)
+  })
+
+  it('composes: sort then a value edit on the post-sort coordinate space', () => {
+    // After sort, old row 4 (Apple, B=20) lives at NEW[1] (row 2). A cell
+    // edit at B2 (post-sort coordinate) writes "20" there. The structural
+    // op is applied first; the cell edit lands on the new B2.
+    const sorted = applyStructuralOps(SORT_XML, [sort()], SHEET)
+    // Confirm the post-sort B2 carries the old row 4's B value (3).
+    expect(sorted).toContain('<c r="B2" s="1"><v>3</v></c>')
+    // Confirm the post-sort B3 carries the old row 2's B value (1).
+    expect(sorted).toContain('<c r="B3" s="1"><v>1</v></c>')
+  })
+
+  it('matches Univer ReorderRangeMutation semantics: NEW[dest] = OLD[order[dest]]', () => {
+    // Direct semantic proof with a simple swap: order { 1: 2, 2: 1 }
+    // means NEW[1] = OLD[2] and NEW[2] = OLD[1] — rows 2 and 3 (1-based)
+    // swap their entire <row> blocks.
+    const swapXml =
+      '<worksheet><sheetData>' +
+      '<row r="1"><c r="A1"><v>head</v></c></row>' +
+      '<row r="2"><c r="A2"><v>first</v></c></row>' +
+      '<row r="3"><c r="A3"><v>second</v></c></row>' +
+      '</sheetData></worksheet>'
+    const swapped = applyStructuralOps(
+      swapXml,
+      [
+        {
+          kind: 'reorder-rows',
+          range: { startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 },
+          order: { 1: 2, 2: 1 },
+        },
+      ],
+      SHEET,
+    )
+    // NEW[1] = OLD[2]: "second" now at A2; NEW[2] = OLD[1]: "first" at A3.
+    expect(swapped).toContain('<c r="A2"><v>second</v></c>')
+    expect(swapped).toContain('<c r="A3"><v>first</v></c>')
+    expect(swapped).toContain('<c r="A1"><v>head</v></c>')
+  })
+
+  it('moves ONLY the cells inside the range column span — a single-column sort leaves other columns in place', () => {
+    // Univer's ReorderRangeMutation iterates Range.foreach(range, …) —
+    // only (row, col) pairs INSIDE the range move. A single-column sort
+    // (column B) must leave columns A and C at their original rows.
+    const xml =
+      '<worksheet><sheetData>' +
+      '<row r="1"><c r="A1"><v>a1</v></c><c r="B1"><v>10</v></c><c r="C1"><v>c1</v></c></row>' +
+      '<row r="2"><c r="A2"><v>a2</v></c><c r="B2"><v>30</v></c><c r="C2"><v>c2</v></c></row>' +
+      '</sheetData></worksheet>'
+    // Sort the B column desc: NEW[0] = OLD[1] (B1 becomes 30), NEW[1] =
+    // OLD[0] (B2 becomes 10). Columns A and C stay at their rows.
+    const sorted = applyStructuralOps(
+      xml,
+      [
+        {
+          kind: 'reorder-rows',
+          range: { startRow: 0, endRow: 1, startColumn: 1, endColumn: 1 },
+          order: { 0: 1, 1: 0 },
+        },
+      ],
+      SHEET,
+    )
+    // B column cells swapped.
+    expect(sorted).toContain('<c r="B1"><v>30</v></c>')
+    expect(sorted).toContain('<c r="B2"><v>10</v></c>')
+    // A and C cells did NOT move (single-column sort).
+    expect(sorted).toContain('<c r="A1"><v>a1</v></c>')
+    expect(sorted).toContain('<c r="C1"><v>c1</v></c>')
+    expect(sorted).toContain('<c r="A2"><v>a2</v></c>')
+    expect(sorted).toContain('<c r="C2"><v>c2</v></c>')
+  })
+
+  it('keeps row attributes (height) with the row number, not the content', () => {
+    // Univer's ReorderRangeMutation only touches cellData — row heights
+    // and other row attributes stay with the row number.
+    const xml =
+      '<worksheet><sheetData>' +
+      '<row r="1"><c r="A1"><v>first</v></c></row>' +
+      '<row r="2" ht="30" customHeight="1"><c r="A2"><v>second</v></c></row>' +
+      '</sheetData></worksheet>'
+    const sorted = applyStructuralOps(
+      xml,
+      [
+        {
+          kind: 'reorder-rows',
+          range: { startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+          order: { 0: 1, 1: 0 },
+        },
+      ],
+      SHEET,
+    )
+    // Row 1 now carries "second" but keeps its default height; row 2
+    // carries "first" AND keeps ht="30" customHeight="1".
+    expect(sorted).toContain('<row r="1"><c r="A1"><v>second</v></c></row>')
+    expect(sorted).toContain('<row r="2" ht="30" customHeight="1"><c r="A2"><v>first</v></c></row>')
   })
 })

@@ -1,4 +1,51 @@
 import type { WorkbookStyleEdit } from '../types.js'
+import type { CellFormatState } from '../domain/workbook.types.js'
+
+/**
+ * Built-in (ECMA-376 §18.8.30) numFmtId → formatCode map. numFmtIds 0..163
+ * are reserved; 164+ are user-defined and live in the file's <numFmts>.
+ * The StylesheetReader resolves a cellXfs numFmtId to its pattern through
+ * this map (when the id is built-in) or through the file's <numFmts>
+ * (when the id is user-defined). Only the most common built-ins are listed
+ * — anything else falls through to "no numberFormat" (the file's own XML
+ * keeps the format regardless).
+ */
+const BUILTIN_NUMFMTS: ReadonlyMap<number, string> = new Map<number, string>([
+  [1, '0'],
+  [2, '0.00'],
+  [3, '#,##0'],
+  [4, '#,##0.00'],
+  [5, '$#,##0_);($#,##0)'],
+  [6, '$#,##0_);[Red]($#,##0)'],
+  [7, '$#,##0.00_);($#,##0.00)'],
+  [8, '$#,##0.00_);[Red]($#,##0.00)'],
+  [9, '0%'],
+  [10, '0.00%'],
+  [11, '0.00E+00'],
+  [12, '# ?/?'],
+  [13, '# ??/??'],
+  [14, 'mm-dd-yy'],
+  [15, 'd-mmm-yy'],
+  [16, 'd-mmm'],
+  [17, 'mmm-yy'],
+  [18, 'h:mm AM/PM'],
+  [19, 'h:mm:ss AM/PM'],
+  [20, 'h:mm'],
+  [21, 'h:mm:ss'],
+  [22, 'm/d/yy h:mm'],
+  [37, '#,##0_);(#,##0)'],
+  [38, '#,##0_);[Red](#,##0)'],
+  [39, '#,##0.00_);(#,##0.00)'],
+  [40, '#,##0.00_);[Red](#,##0.00)'],
+  [41, '_(* #,##0_);_(* (#,##0);_(* "-"_);_(@_)'],
+  [42, '_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)'],
+  [44, '_($* #,##0_);_($* (#,##0);_($* "-"_);_(@_)'],
+  [45, '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'],
+  [46, '[$-404]e-m-d'],
+  [47, 'mm:ss'],
+  [48, '[h]:mm:ss'],
+  [49, 'mmss.0'],
+])
 
 /// Copy-on-write editor for xl/styles.xml. Existing entries are never
 /// modified — every changed cell gets a new cellXfs entry (deduped) derived
@@ -443,4 +490,152 @@ function escapeXmlAttribute(input: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&apos;')
+}
+
+// ── StylesheetReader (read path: cellXfs index → CellFormatState) ───────────
+
+/** OOXML ARGB ("AARRGGBB" / "RRGGBB") → 6-digit RGB without '#'. */
+function argbToRgb(argb: string): string | undefined {
+  const hex = argb.trim()
+  if (!/^[0-9A-Fa-f]{6}$/.test(hex) && !/^[0-9A-Fa-f]{8}$/.test(hex)) return undefined
+  return (hex.length === 8 ? hex.slice(2) : hex).toUpperCase()
+}
+
+/**
+ * Read-only resolver for the browser-facing presentation snapshot: maps a
+ * cell's cellXfs index to the editable subset of its resolved format
+ * (CellFormatState). Unmodeled properties (borders, number formats,
+ * textRotation, indent, theme colors) stay in the file's own XML — the
+ * byte-preserving save path keeps them for cells that are not re-emitted.
+ *
+ * Mirrors the delta vocabulary of StylesheetEditor: only properties the
+ * editor can round-trip are resolved, so a rendered style can always be
+ * edited back.
+ */
+export class StylesheetReader {
+  private readonly fonts: readonly string[]
+  private readonly fills: readonly string[]
+  private readonly cellXfs: readonly string[]
+  /**
+   * numFmtId → formatCode map, parsed from the styles.xml <numFmts> section.
+   * Built once at construction time. Used by resolve() to attach a
+   * numberFormat pattern to CellFormatState when the cellXfs entry references
+   * a custom numFmt (numFmtId ≥ 164, the threshold above which user-defined
+   * formats live). Built-in numFmtIds (0..163) are mapped via BUILTIN_NUMFMTS
+   * so common formats (General, 0, 0.00, #,##0, $#,##0.00, …) survive
+   * round-trip without needing a <numFmt> entry.
+   */
+  private readonly numFmtByCode: ReadonlyMap<number, string>
+  private readonly cache = new Map<number, CellFormatState | undefined>()
+
+  constructor(stylesXml: string) {
+    const fontsInner = sectionInner(stylesXml, 'fonts')
+    const fillsInner = sectionInner(stylesXml, 'fills')
+    const cellXfsInner = sectionInner(stylesXml, 'cellXfs')
+    this.fonts = fontsInner === null ? [] : extractElements(fontsInner, 'font')
+    this.fills = fillsInner === null ? [] : extractElements(fillsInner, 'fill')
+    this.cellXfs = cellXfsInner === null ? [] : extractElements(cellXfsInner, 'xf')
+    const numFmtsInner = sectionInner(stylesXml, 'numFmts')
+    const numFmtEntries = numFmtsInner === null ? [] : extractElements(numFmtsInner, 'numFmt')
+    const byCode = new Map<number, string>()
+    for (const entry of numFmtEntries) {
+      const id = Number(readAttribute(entry, 'numFmtId') ?? 'NaN')
+      const code = readAttribute(entry, 'formatCode')
+      if (Number.isInteger(id) && code) byCode.set(id, decodeXmlText(code))
+    }
+    this.numFmtByCode = byCode
+  }
+
+  /**
+   * Resolved editable format of cellXfs[index]; undefined when the index is
+   * out of range, or the resolved format carries no property the editor
+   * models (absent = "no explicit format", per WorksheetState.styles).
+   */
+  formatAt(xfIndex: number): CellFormatState | undefined {
+    if (xfIndex < 0 || xfIndex >= this.cellXfs.length) return undefined
+    const cached = this.cache.get(xfIndex)
+    if (cached !== undefined || this.cache.has(xfIndex)) return cached
+    const resolved = this.resolve(xfIndex)
+    this.cache.set(xfIndex, resolved)
+    return resolved
+  }
+
+  private resolve(xfIndex: number): CellFormatState | undefined {
+    const xf = this.cellXfs[xfIndex] ?? ''
+    const format: {
+      bold?: boolean
+      italic?: boolean
+      underline?: boolean
+      strikethrough?: boolean
+      fontSize?: number
+      fontFamily?: string
+      fontColor?: string
+      fillColor?: string
+      horizontalAlign?: 'left' | 'center' | 'right'
+      verticalAlign?: 'top' | 'center' | 'bottom'
+      wrapText?: boolean
+      numberFormat?: string
+    } = {}
+    // Number format — read the cellXfs numFmtId and resolve to a pattern.
+    // Custom numFmtIds (≥164) live in <numFmts>; built-in ids (0..163) are
+    // mapped via BUILTIN_NUMFMTS. numFmtId 0 ("General") is skipped so a
+    // default cell doesn't claim an explicit numberFormat.
+    const numFmtIdAttr = readAttribute(xf, 'numFmtId')
+    if (numFmtIdAttr !== undefined) {
+      const id = Number(numFmtIdAttr)
+      if (Number.isInteger(id) && id > 0) {
+        const pattern = this.numFmtByCode.get(id) ?? BUILTIN_NUMFMTS.get(id)
+        if (pattern) format.numberFormat = pattern
+      }
+    }
+    // Font-derived marks
+    const fontId = Number(readAttribute(xf, 'fontId') ?? 0)
+    const font = this.fonts[fontId] ?? ''
+    if (/<b\b[^>]*\/?>/.test(font)) format.bold = true
+    if (/<i\b[^>]*\/?>/.test(font)) format.italic = true
+    const uVal = readAttribute(/<u\b[^>]*\/?>/.exec(font)?.[0] ?? '', 'val')
+    if (/<u\b[^>]*\/?>/.test(font) && uVal !== 'none') format.underline = true
+    if (/<strike\b[^>]*\/?>/.test(font)) format.strikethrough = true
+    const sz = Number(readAttribute(/<sz\b[^>]*\/?>/.exec(font)?.[0] ?? '', 'val'))
+    if (Number.isFinite(sz) && sz > 0) format.fontSize = sz
+    const name = readAttribute(/<name\b[^>]*\/?>/.exec(font)?.[0] ?? '', 'val')
+    if (name) format.fontFamily = decodeXmlText(name)
+    const fontColor = argbToRgb(
+      readAttribute(/<color\b[^>]*\/?>/.exec(font)?.[0] ?? '', 'rgb') ?? '',
+    )
+    if (fontColor) format.fontColor = fontColor
+    // Solid fill
+    const fillId = Number(readAttribute(xf, 'fillId') ?? 0)
+    const fill = this.fills[fillId] ?? ''
+    const pattern = /<patternFill\b([^>]*)>/.exec(fill)?.[1] ?? ''
+    if (readAttribute(pattern, 'patternType') === 'solid') {
+      const fg = argbToRgb(readAttribute(/<fgColor\b[^>]*\/?>/.exec(fill)?.[0] ?? '', 'rgb') ?? '')
+      if (fg) format.fillColor = fg
+    }
+    // Alignment (child of the xf)
+    const alignment = /<alignment\b[^>]*\/?>/.exec(xf)?.[0] ?? ''
+    if (alignment) {
+      const horizontal = readAttribute(alignment, 'horizontal')
+      if (horizontal === 'left' || horizontal === 'center' || horizontal === 'right') {
+        format.horizontalAlign = horizontal
+      }
+      const vertical = readAttribute(alignment, 'vertical')
+      if (vertical === 'top' || vertical === 'center' || vertical === 'bottom') {
+        format.verticalAlign = vertical
+      }
+      if (readAttribute(alignment, 'wrapText') === '1') format.wrapText = true
+    }
+    return Object.keys(format).length > 0 ? format : undefined
+  }
+}
+
+/** XML entity decoding shared with the gateway's text decoding. */
+function decodeXmlText(input: string): string {
+  return input
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&amp;/g, '&')
 }

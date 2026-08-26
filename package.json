@@ -60,6 +60,7 @@
     "playwright-core": "^1.61.1",
     "pngjs": "^7.0.0",
     "prettier": "^3.9.6",
+    "tsx": "^4.23.12",
     "typescript-eslint": "^8.65.0",
     "ws": "^8.21.3"
   }

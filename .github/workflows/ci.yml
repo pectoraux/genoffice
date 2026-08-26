@@ -107,6 +107,63 @@ jobs:
           npm run fixtures -w @genoffice/sheets
           npm run compat -w @genoffice/sheets
 
+  # ── Browser office editor (apps/web) ────────────────────────────────────────
+  # The web app + its office API surface run as an independent job so the
+  # application's typecheck/test/E2E stages always execute (and are reported
+  # separately from the desktop-oriented lint debt in the `test` job).
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (web app + office API host)
+        run: |
+          npm run typecheck -w @contractor/web
+          npm run typecheck -w @contractor/web-host
+          npm run typecheck -w @contractor/core
+
+      - name: Unit tests (web app + office API host)
+        run: |
+          npm run test -w @contractor/web
+          npm run test -w @contractor/web-host
+          npm run test -w @contractor/core
+
+      - name: Production build (web app)
+        run: npm run build -w @contractor/web
+
+      # Real browser E2E: Playwright boots the actual API host (the same
+      # vercel-handler the Vercel function bundles) on :5179 and the Vite dev
+      # server on :5178, then drives the real browser → HTTP → engine → bytes
+      # path. Chromium is installed per the @playwright/test pin.
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright browser E2E (real Vite + API stack)
+        run: npm run test:e2e -w @contractor/web
+
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-e2e-artifacts
+          path: |
+            apps/web/tests/e2e/.results
+            apps/web/tests/e2e/.artifacts
+          retention-days: 7
+          if-no-files-found: ignore
+
   e2e:
     # 22.04, not -latest: 24.04's AppArmor hardening blocks Electron renderer
     # spawn under xvfb even with --no-sandbox and the userns sysctl lifted

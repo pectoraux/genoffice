@@ -8,6 +8,7 @@ coverage/
 
 # Generated artifacts and dependency-managed metadata.
 package-lock.json
+api/serverless.mjs
 apps/*/build/
 apps/shell/build/THIRD-PARTY-NOTICES.txt
 
