@@ -47,3 +47,14 @@ PROJECT-001
 ```
 
 A work item cannot be authorized until all direct dependencies are objectively accepted. A dependency change requires synchronized updates to `work-items.md`, this file, and `architecture-lock.md` when the change affects a frozen invariant.
+
+## Package dependency edges (PROJECT-014)
+
+The `.gproj` adapter lives in `@genoffice/project-file`. Its static package dependencies are:
+
+```text
+@genoffice/project-file → @genoffice/project-engine → @genoffice/project-contracts
+@genoffice/project-file → @genoffice/project-contracts (direct, for types + brand helpers)
+```
+
+`@genoffice/project-file` does NOT depend on `@genoffice/project-scheduling` (the scheduling package is a logical work-item dependency `006 → 014`, not a static package import — the file format stores canonical input only; derived scheduling state is re-computed by the scheduling engine on load). The adapter has NO React, Electron, Node, browser, HTTP, or MPP/MSPDI imports (architecture-lock §13). The `project-foundation.yml` CI workflow greps `packages/project-file` for forbidden imports alongside `project-contracts`, `project-engine`, and `project-scheduling`.
