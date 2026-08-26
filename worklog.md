@@ -987,3 +987,29 @@ Stage Summary:
 - Password semantics are fail-closed at every layer (browser guard → wire rejection → gateway SheetProtectionError); desktop-parity journal semantics preserve byte-for-byte no-op saves.
 - Scope note: Allow Edit Ranges (protectedRanges) stays desktop-only — not in the EXCEL-020 verification list; the engine-side writer (applyProtectedRanges) remains available for a future work item.
 - Workflow state: IMPLEMENTED / PENDING ARCHITECT REVIEW. NOT VERIFIED — the architect owns the VERIFIED decision.
+
+---
+
+Task ID: EXCEL-020-ci
+Agent: Z.ai (Implementation Agent)
+Task: Push the EXCEL-020 implementation (PR #12) and collect CI + production-build evidence.
+
+Work Log:
+
+- Pushed commit `44ea624` to origin/excel-020-protection; opened PR #12 (base main).
+- First CI round (`44ea624`): the `web` job FAILED at the Typecheck step — the contractor-core tsconfig includes tests, and the new office-protection-routes.test.ts passed an OBJECT literal to the helper's `unknown[]`-typed parameter in the non-array-rejection case (error: "'sheetName' does not exist in type 'unknown[]'"). My local pre-push typecheck had covered apps/web and contractor-core's src but not the tests-inclusive workspace run the CI performs.
+- Fix commit `2c4d86c`: widened the test helper's sheetProtections/workbookProtectionState parameter types to `unknown` (the payloads are intentionally invalid shapes). All three CI workspaces typecheck clean locally: @contractor/web, @contractor/web-host, @contractor/core.
+- CI results for `2c4d86c`:
+  - `web` job (the canonical office gate): SUCCESS. All steps green — Typecheck (web app + office API host), Unit tests, Production build (web app), Install Playwright chromium, Playwright browser E2E (real Vite + API stack, including the 5 EXCEL-020 protection tests and the architect's sort/formula semantic gate).
+  - `test` job: FAILURE at the Lint step — pre-existing lint debt (351 errors across the FROZEN desktop apps apps/sheets + apps/docs, other web screens BOQ.tsx/Bid.tsx/Estimate.tsx/WordEditor.tsx, and non-office packages contractor-core commercial/persistence + platform-electron). Verified NONE of the EXCEL-020 files appear in the error list (the single architecture.test.ts match is packages/platform-electron's frozen copy, not apps/web's).
+  - `e2e` job: FAILURE at the "E2E (Electron shell)" step — pre-existing frozen-desktop environment issue (chromium_headless_shell-1234 binary missing + desktop sheets InvalidSessionError/sandbox failures), identical in character to the EXCEL-018 session's documentation.
+  - `foundation` workflow: FAILURE — pre-existing branch-isolation structural condition (diffs origin/main...HEAD and flags the parity-phase file set; fails for every commit on a feature branch).
+  - Vercel preview deployment: FAILED with the account's free-tier rate limit ("Resource is limited - try again in 24 hours (more than 100, code: api-deployments-free-per-day)") — an account-level infrastructure constraint; the deployed production verification therefore remains a POST-MERGE step (exactly as EXCEL-018's production evidence was collected after its merge).
+- Production-build evidence in lieu of the unavailable preview: ran the EXCEL-020 spec against the BUILT bundle (npx vite build + vite preview on :5178 with the dev-server API on :5179) via scripts/run-protection-vs-preview.sh — all 5 tests pass against the production-served URL (29.8s), proving the feature works against the built artifact, not just the Vite dev server.
+
+Stage Summary:
+
+- PR #12 carries EXCEL-020 at `2c4d86c` with the canonical `web` CI gate GREEN.
+- All other CI failures are pre-existing and verified unrelated to EXCEL-020 (frozen-surface lint debt, frozen Electron suite environment, branch-isolation condition, Vercel free-tier deploy limit).
+- Production-build E2E: 5/5 green against vite preview.
+- Workflow state: IMPLEMENTED / PENDING ARCHITECT REVIEW. NOT VERIFIED — the architect owns the VERIFIED decision; deployed (genoffice.vercel.app) verification follows the merge.
