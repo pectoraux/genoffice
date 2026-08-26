@@ -341,3 +341,99 @@ PROJECT-011 extends validation for work/cost inputs. Work fields (`work`, `actua
 ### Determinism
 
 The same canonical `ProjectDocument` + scheduling options MUST produce byte-identical `DerivedSchedule` output. The engine does not use current system time, random numbers, locale-sensitive sorting, or array position as identity. Assignment schedules are built from assignments sorted by `AssignmentId`; task schedules are assembled from tasks sorted by `TaskId`; summary roll-up processes summaries deepest-first with canonical `TaskId` tie-breaking. JSON serialization round-trips preserve derived work/cost values unchanged.
+
+## PROJECT-012 canonical semantic clarifications
+
+These clarifications record the canonical decisions required to strengthen and prove the critical-path and float model across edge cases deferred from PROJECT-006. They refine R-005 (scheduling determinism) and the PROJECT-006 critical-path/float contract without altering any frozen invariant; no architecture-change proposal is required. PROJECT-012 is an edge-case CORRECTNESS INCREMENT on top of the accepted CPM implementation — the scheduler is not rewritten wholesale.
+
+### Critical path and float authority
+
+Critical-path and float calculations belong exclusively in the scheduling engine (`packages/project-scheduling`). The canonical `schedule(projectDocument, schedulingOptions)` function remains the sole authoritative source of `earlyStart`, `earlyFinish`, `lateStart`, `lateFinish`, `totalSlack`, `freeSlack`, and `critical`. Renderer, host, UI, and selector code MUST NOT compute authoritative critical path or float. No second CPM engine is created.
+
+### Critical flag definition
+
+The canonical critical flag is derived from the accepted float model:
+
+```
+critical := totalSlack <= 0
+```
+
+This definition is preserved exactly from PROJECT-006. A task with zero total slack is critical. A task with negative total slack (a hard constraint makes the schedule impossible relative to the project finish) is also critical. A task with positive total slack is non-critical. The engine does NOT add UI-defined "critical" state and does NOT select only one "primary" critical path — every legitimately critical task on every critical chain is marked critical.
+
+### Total slack formula
+
+The canonical total slack is the SIGNED working-time distance between earlyFinish and lateFinish, measured in the task's resolved calendar:
+
+```
+totalSlack = signedWorkingDuration(calendar, earlyFinish, lateFinish)
+```
+
+This is the accepted PROJECT-006 formula, preserved exactly. Working-time arithmetic (not wall-clock minutes) is used so that a task whose earlyFinish is Monday 17:00 and lateFinish is Tuesday 09:00 has zero total slack (there are 0 working minutes in the Monday evening gap). Negative total slack arises when a hard constraint (MFO, MSO) pulls a predecessor's lateFinish earlier than its earlyFinish; the signed working-duration returns a negative value, and `critical := totalSlack <= 0` marks the task critical.
+
+### Free slack formula (relationship-aware)
+
+Free slack is relationship-aware: the distinct equations for FS, SS, FF, and SF are preserved exactly from PROJECT-006. Free slack measures how far the task can slip before the earliest date of a successor is affected. For a task with multiple successors, free slack is the minimum across all successor links. For a task with no successors, free slack equals total slack (the task can slip until the project finish without affecting anything).
+
+The anchor (start vs finish) differs by relationship type: FS and FF anchor on the task's earlyFinish; SS and SF anchor on the task's earlyStart. The bound is computed by subtracting the lag (working-time) from the successor's relevant early date. Negative free slack arises when a hard constraint on a successor pulls the bound earlier than the task's early anchor.
+
+### Forward pass (dependency-type semantics)
+
+The forward pass computes earlyStart and earlyFinish for every dependency type with explicit, distinct equations:
+
+- **FS** (finish-to-start): `successor.earlyStart = addWorkingTime(calendar, predecessor.earlyFinish, lag)`
+- **SS** (start-to-start): `successor.earlyStart = addWorkingTime(calendar, predecessor.earlyStart, lag)`
+- **FF** (finish-to-finish): `successor.earlyStart = subtractWorkingTime(calendar, addWorkingTime(calendar, predecessor.earlyFinish, lag), successorDuration)` — the successor starts late enough that its finish lands at predecessor.earlyFinish + lag.
+- **SF** (start-to-finish): `successor.earlyStart = subtractWorkingTime(calendar, addWorkingTime(calendar, predecessor.earlyStart, lag), successorDuration)` — the successor starts late enough that its finish lands at predecessor.earlyStart + lag.
+
+Positive lag delays the successor; negative lag (lead) overlaps the successor with the predecessor; zero lag applies no offset. The engine does NOT use one generic equation where the relationship semantics differ. Lag is measured in working minutes in the successor's task calendar (the forward pass iterates the successor and uses `calendarFor(successor)`).
+
+### Backward pass (dependency-type semantics)
+
+The backward pass computes lateStart and lateFinish for every dependency type with explicit, distinct equations:
+
+- **FS**: `predecessor.lateFinish = subtractWorkingTime(calendar, successor.lateStart, lag)`
+- **FF**: `predecessor.lateFinish = subtractWorkingTime(calendar, successor.lateFinish, lag)`
+- **SS**: `predecessor.lateFinish = addWorkingTime(calendar, subtractWorkingTime(calendar, successor.lateStart, lag), predecessorDuration)` — the predecessor's lateFinish is the start that lets it finish at successor.lateStart − lag.
+- **SF**: `predecessor.lateFinish = addWorkingTime(calendar, subtractWorkingTime(calendar, successor.lateFinish, lag), predecessorDuration)` — the predecessor's lateFinish is the start that lets it finish at successor.lateFinish − lag.
+
+Late dates are bounded by the project finish so that slack always measures "slip without extending the project". Start-domain bounds (SS/SF) alone can be looser than the project finish; the engine takes the earlier of the dependency bound and the project finish. Late-date propagation is deterministic: the backward pass iterates the reverse of the canonical topological order, so unrelated project branches never produce order-dependent answers. Lag is measured in working minutes in the predecessor's task calendar (the backward pass iterates the predecessor and uses `calendarFor(predecessor)`).
+
+### Multiple critical paths
+
+When two or more equal-length critical chains converge, every task on every critical chain is marked critical. The engine does NOT select one "primary" critical path and does NOT break ties by array order. Tasks with `totalSlack == 0` are critical regardless of which parallel chain they belong to. The canonical `TaskId` ordering (locale-free, code-unit comparison) ensures the same input always produces the same set of critical tasks.
+
+### Negative slack
+
+Negative total slack arises canonically when a hard constraint (MFO or MSO) on a successor pins the successor's late dates such that the predecessor's lateFinish precedes its earlyFinish. The engine does NOT clamp negative slack to zero — the signed working-duration returns the actual negative value, and `critical := totalSlack <= 0` marks the task critical. This is the canonical "impossible schedule" signal: the project cannot meet the hard constraint given the dependency chain. The engine produces the derived negative-slack values; the caller (reporting/UI layer) interprets them.
+
+### Milestones
+
+Zero-duration milestones are full participants in the CPM. A milestone's earlyFinish equals its earlyStart (zero working minutes). Milestones do not create divide-by-zero or calendar-arithmetic bugs — the working-time primitives handle zero-duration correctly. A milestone on the critical chain is critical; a milestone with float is non-critical. Milestones with lag, hard constraints, multiple predecessors, and multiple successors are all handled by the same relationship-aware forward/backward pass.
+
+### Summary tasks
+
+Summary criticality and float derive from the canonical scheduling engine, not from renderer state. A summary's early dates are the min/max of its children's early dates; its late dates are capped by its children's late dates (the tighter of the dependency-imposed bound and the children's late envelope). A summary is critical when `totalSlack <= 0`, computed from its rolled-up early/late dates. The engine does NOT simply copy the first or last child value and does NOT introduce renderer-specific summary logic. Nested summaries roll up correctly because the engine processes summaries deepest-first (children before parents) with canonical `TaskId` tie-breaking.
+
+### Constraint interaction
+
+All accepted PROJECT-008 constraint semantics are preserved: ASAP, ALAP, SNET, SNLT, MSO, FNET, FNLT, MFO. Hard constraints (MSO, MFO) pin both early and late dates, making the task critical. Soft constraints (SNET, FNET) push early dates later only, preserving slack. Late-scheduled constraints (ALAP, SNLT, FNLT) pull the scheduled start/finish to the late window bounded by the constraint. PROJECT-012 does NOT alter the accepted constraint semantics; it verifies critical path/float behavior under each constraint type with exact expected-value tests.
+
+### Calendar interaction
+
+Critical path and float use working-time arithmetic (the accepted `signedWorkingDuration`, `workingDuration`, `addWorkingTime`, `subtractWorkingTime` primitives), never wall-clock minute differences. When predecessor and successor have different task calendars, the forward pass measures lag in the successor's calendar and the backward pass measures lag in the predecessor's calendar — this is the accepted MS Project behavior. Calendar boundaries (weekends, holidays, split-day calendars, inherited calendars, nonworking boundaries) are handled by the same accepted primitives. A task spanning a weekend has its float measured in working minutes, not wall-clock hours.
+
+### Disconnected branches
+
+Tasks not connected to the main chain (isolated root tasks, independent parallel branches, isolated milestones, isolated summary subtrees) have deterministic total slack and criticality. A disconnected task's lateFinish defaults to the project finish, so its total slack is the working-time distance from its earlyFinish to the project finish. A disconnected task IS critical when it is the project finish (its earlyFinish equals the project finish, giving zero total slack). A disconnected task is NOT critical merely because it has no successor — the engine does not mark every leaf critical by default. The project finish is the latest leaf earlyFinish, so only the task(s) on the longest path are critical.
+
+### Deterministic task ordering
+
+The canonical topological order uses `TaskId` comparison (locale-free, code-unit comparison) as the deterministic tie-breaker. The same serialized `ProjectDocument` + options always produces the same topological order, the same forward/backward pass results, and byte-identical `DerivedSchedule` output. The engine does NOT use `localeCompare`, object/property iteration order, or array position as semantic ordering. Reversed task arrays, reversed dependency arrays, and reordered parallel branches all produce byte-identical schedule bytes.
+
+### Edge-case coverage
+
+PROJECT-012 proves the canonical CPM model across: multiple critical paths (two and three equal-length chains), converging paths (diamond, fan-in), diverging paths (fan-out), zero-duration milestones (critical, noncritical, with predecessor/successor, with lag, with hard constraints), mixed dependency types (FS/SS/FF/SF in one graph), lag/lead (positive lag, negative lead, zero lag), calendar boundaries (different task calendars, weekend, holiday, split-day, inherited, nonworking boundary), constraints (SNET, SNLT, MSO, FNET, FNLT, MFO, ALAP), summary-task hierarchies (critical-only children, critical+noncritical children, nested summaries, summary with dependency boundaries), disconnected/noncritical branches, dependency chains with different calendars, near-critical tasks (one-day and one-hour total slack), and negative/zero/positive float.
+
+### PROJECT-013 boundary
+
+PROJECT-012 does NOT implement `LevelResources`, resource leveling heuristics, resource-driven task movement, resource optimization, or over-allocation resolution. PROJECT-013 (resource leveling) is blocked until PROJECT-012 is independently accepted. PROJECT-012 may consume PROJECT-011 work/cost inputs only where useful for tests but does NOT change resource scheduling semantics.
