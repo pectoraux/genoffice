@@ -86,11 +86,13 @@ import {
   uidToTaskId,
 } from './identity.js'
 import {
+  DEFAULT_LAG_FACTORS,
   isoDurationToMinutes,
   isValidExceptionDate,
   lagToMinutes,
   mspdiTimeToMinutes,
   normalizeMspdiDate,
+  type LagFactors,
 } from './conversions.js'
 import {
   INVALID_MSPDI,
@@ -259,17 +261,48 @@ const TASK_TYPE_MAP: Partial<Record<number, Task['taskType']>> = {
 
 // ---- calendar parsing ----------------------------------------------------
 
-function parseWorkingTimes(parent: XmlNode): CalendarPeriod[] {
+function parseWorkingTimes(parent: XmlNode, sink: Sink, entityId: string): CalendarPeriod[] {
   const wt = firstChild(parent, 'WorkingTimes')
   if (wt === undefined) return []
   const periods: CalendarPeriod[] = []
   for (const period of childrenNamed(wt, 'WorkingTime')) {
     const from = childText(period, 'FromTime')
     const to = childText(period, 'ToTime')
-    if (from === undefined || to === undefined) continue
+    if (from === undefined || to === undefined) {
+      diag(
+        sink,
+        INVALID_MSPDI_CALENDAR,
+        'error',
+        `<WorkingTime> is missing <${from === undefined ? 'FromTime' : 'ToTime'}>; period dropped`,
+        entityId,
+      )
+      continue
+    }
     const start = mspdiTimeToMinutes(from)
     const end = mspdiTimeToMinutes(to)
-    if (start === null || end === null || start >= end) continue
+    if (start === null || end === null) {
+      // Whole-minute rule (PROJECT-015 correction round 1): canonical
+      // CalendarPeriod boundaries are integer minutes — a time carrying
+      // non-zero seconds is rejected with a diagnostic, never rounded.
+      diag(
+        sink,
+        INVALID_MSPDI_CALENDAR,
+        'error',
+        `<WorkingTime> ${JSON.stringify(from)}–${JSON.stringify(to)} cannot be converted to whole-minute boundaries (HH:MM:SS with zero seconds required); period dropped`,
+        entityId,
+      )
+      continue
+    }
+    if (start >= end) {
+      diag(
+        sink,
+        INVALID_MSPDI_CALENDAR,
+        'error',
+        `<WorkingTime> ${from}–${to} is empty or inverted; period dropped`,
+        entityId,
+      )
+      continue
+    }
     periods.push({ startMinute: start, endMinute: end })
   }
   return periods
@@ -311,7 +344,7 @@ function parseCalendar(node: XmlNode, sink: Sink): Calendar | undefined {
       }
       const key = dayType - 1
       const working = optionalBoolean(day, 'DayWorking') ?? false
-      workingWeek[key] = working ? parseWorkingTimes(day) : []
+      workingWeek[key] = working ? parseWorkingTimes(day, sink, String(id)) : []
     }
   }
   // exceptions
@@ -354,7 +387,7 @@ function parseCalendar(node: XmlNode, sink: Sink): Calendar | undefined {
           String(id),
         )
       }
-      const periods = parseWorkingTimes(exc)
+      const periods = parseWorkingTimes(exc, sink, String(id))
       exceptions.push({ date: startDate, periods })
     }
   }
@@ -669,9 +702,51 @@ function parseTask(
 
 // ---- dependency parsing --------------------------------------------------
 
+/**
+ * Read the project-level lag conversion factors from the `<Project>` root.
+ *
+ * MSPDI declares the working-time length of a day / week / month via
+ * `<MinutesPerDay>`, `<MinutesPerWeek>`, and `<DaysPerMonth>`. These are the
+ * authoritative conversion inputs for day/week/month `<LinkLagFormat>` lags
+ * (see conversions.ts and requirements.md — PROJECT-015 correction round 1).
+ * Absent declarations fall back to the documented MSPDI default settings
+ * (480 / 2400 / 20). A declared-but-malformed factor (non-positive or
+ * non-integer) emits `INVALID_MSPDI` and also falls back to the default —
+ * never a silent approximation of a declared value.
+ *
+ * The factors are import-time conversion parameters only: the canonical
+ * `ProjectDocument` stores the resulting integer `WorkingMinutes`, never the
+ * factors themselves.
+ */
+function parseLagFactors(root: XmlNode, sink: Sink): LagFactors {
+  const factors: LagFactors = { ...DEFAULT_LAG_FACTORS }
+  const declarations: Array<{ key: keyof LagFactors; tag: string }> = [
+    { key: 'minutesPerDay', tag: 'MinutesPerDay' },
+    { key: 'minutesPerWeek', tag: 'MinutesPerWeek' },
+    { key: 'daysPerMonth', tag: 'DaysPerMonth' },
+  ]
+  for (const { key, tag } of declarations) {
+    const text = childText(root, tag)
+    if (text === undefined) continue
+    const value = Number(text)
+    if (!Number.isInteger(value) || value <= 0) {
+      diag(
+        sink,
+        INVALID_MSPDI,
+        'error',
+        `<${tag}> is not a positive integer (${JSON.stringify(text)}); using the MSPDI default ${DEFAULT_LAG_FACTORS[key]} for lag conversion`,
+      )
+      continue
+    }
+    factors[key] = value
+  }
+  return factors
+}
+
 function parseDependencies(
   root: XmlNode,
   taskUidMap: ReadonlyMap<number, TaskId>,
+  lagFactors: LagFactors,
   sink: Sink,
 ): Dependency[] {
   const tasksNode = firstChild(root, 'Tasks')
@@ -716,7 +791,7 @@ function parseDependencies(
       }
       const linkLag = optionalInteger(link, 'LinkLag') ?? 0
       const linkLagFormat = optionalInteger(link, 'LinkLagFormat')
-      const lagResult = lagToMinutes(linkLag, linkLagFormat)
+      const lagResult = lagToMinutes(linkLag, linkLagFormat, lagFactors)
       let lagMinutes: number
       if (lagResult.ok) {
         lagMinutes = lagResult.minutes
@@ -1120,7 +1195,11 @@ export function importMspdi(input: Uint8Array, metadata?: ProjectFileMetadata): 
   const tasks = reconstructHierarchy(tasksRaw, sink)
 
   // Dependencies, assignments, baselines.
-  const dependencies = parseDependencies(root, taskUidMap, sink)
+  // Lag conversion factors are read before the dependency pass: day/week/
+  // month `<LinkLagFormat>` lags convert via the project-level settings
+  // (PROJECT-015 correction round 1).
+  const lagFactors = parseLagFactors(root, sink)
+  const dependencies = parseDependencies(root, taskUidMap, lagFactors, sink)
   const assignments = parseAssignments(root, taskUidMap, resourceUidMap, sink)
   // Baselines need a capturedAt fallback (MSPDI carries no per-baseline
   // captured date). Use <LastSaved>, then <CreationDate>, then the project

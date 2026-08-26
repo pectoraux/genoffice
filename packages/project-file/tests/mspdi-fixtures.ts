@@ -17,7 +17,9 @@
  *     WBS — WBS only rebuilds the hierarchy).
  *   - `<Duration>` / `<Work>` are ISO-8601 (`PT8H0M0S` = 8 working hours =
  *     480 working minutes).
- *   - `<LinkLag>` is in tenths of a minute (`2400` = 240 minutes).
+ *   - `<LinkLag>` is in tenths of the unit declared by `<LinkLagFormat>`
+ *     (`2400` fmt 1 = 240 minutes; `30` fmt 3 = 180 minutes;
+ *     `25` fmt 5 = 2.5 days = 1200 minutes with `MinutesPerDay` 480).
  *   - `<ConstraintType>` 0–7 maps to the eight canonical constraint types.
  *   - `<Type>` on `<Resource>`: 1=work, 2=material, 3=cost.
  *   - `<DayType>` 1=Sunday..7=Saturday (canonical week key = DayType-1).
@@ -220,15 +222,27 @@ export function projectXml(opts: {
   assignments?: string
   extendedAttributes?: string
   saveVersion?: number
+  /** Project-level lag conversion settings (root children). */
+  minutesPerDay?: number
+  minutesPerWeek?: number
+  daysPerMonth?: number
 }): Uint8Array {
   const sv = opts.saveVersion ?? 16
+  const factors =
+    (opts.minutesPerDay !== undefined
+      ? `  <MinutesPerDay>${opts.minutesPerDay}</MinutesPerDay>\n`
+      : '') +
+    (opts.minutesPerWeek !== undefined
+      ? `  <MinutesPerWeek>${opts.minutesPerWeek}</MinutesPerWeek>\n`
+      : '') +
+    (opts.daysPerMonth !== undefined ? `  <DaysPerMonth>${opts.daysPerMonth}</DaysPerMonth>\n` : '')
   const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Project xmlns="http://schemas.microsoft.com/project">
   <SaveVersion>${sv}</SaveVersion>
   <Name>${opts.name ?? 'Test Project'}</Name>
   <ScheduleFromStart>true</ScheduleFromStart>
   <StartDate>${opts.startDate ?? '2026-08-03T09:00:00'}</StartDate>
-  ${opts.lastSaved !== undefined ? `<LastSaved>${opts.lastSaved}</LastSaved>` : ''}
+${factors}  ${opts.lastSaved !== undefined ? `<LastSaved>${opts.lastSaved}</LastSaved>` : ''}
   ${opts.extendedAttributes !== undefined ? `<ExtendedAttributes>${opts.extendedAttributes}</ExtendedAttributes>` : ''}
   <Calendars>${opts.calendars ?? STANDARD_CALENDAR_XML}</Calendars>
   <Tasks>${opts.tasks ?? ''}</Tasks>
@@ -241,7 +255,7 @@ export function projectXml(opts: {
 
 export { taskXml, resourceXml, assignmentXml }
 
-// ---- the 17 golden fixtures ---------------------------------------------
+// ---- the golden fixtures (M01–M18) --------------------------------------
 
 /** M01 — minimal MSPDI project: properties + standard calendar, no tasks. */
 export function m01Minimal(): Uint8Array {
@@ -643,4 +657,77 @@ export function m17cMalformed(): Uint8Array {
   return encodeUtf8(
     '<?xml version="1.0"?>\n<Project xmlns="http://schemas.microsoft.com/project"><SaveVersion>16</SaveVersion>',
   )
+}
+
+/**
+ * M18 — lag units golden (PROJECT-015 correction round 1): one FS dependency
+ * per working lag unit, each with an exact expected conversion, plus a
+ * negative day-unit lead. Declares the conversion factors explicitly
+ * (`MinutesPerDay` 480 / `MinutesPerWeek` 2400 / `DaysPerMonth` 20 — the
+ * MSPDI defaults) so the exact values below are unambiguous:
+ *
+ *   t2  fmt 1  LinkLag  1500 →  150 min  (15 hours of minutes)
+ *   t3  fmt 3  LinkLag    30 →  180 min  (3 working hours)
+ *   t4  fmt 5  LinkLag    25 → 1200 min  (2.5 working days)
+ *   t5  fmt 7  LinkLag    76 → 18240 min (7.6 working weeks)
+ *   t6  fmt 9  LinkLag    25 → 24000 min (2.5 working months)
+ *   t7  fmt 5  LinkLag    -5 →  -240 min (-0.5 working day lead)
+ *
+ * The anchor finishes Monday 2026-08-03 13:00 (PT4H); every successor is a
+ * 1-hour FS task of the anchor, so each unit's converted working minutes are
+ * directly observable in `lagMinutes` and in the scheduled start dates.
+ */
+export function m18LagUnits(): Uint8Array {
+  const tasks = [
+    taskXml({ uid: 1, name: 'Anchor', outlineNumber: '1', duration: 'PT4H0M0S' }),
+    taskXml({
+      uid: 2,
+      name: 'Minute Lag',
+      outlineNumber: '2',
+      duration: 'PT1H0M0S',
+      predecessorLinks: [{ predUid: 1, type: 0, lag: 1500, lagFormat: 1 }],
+    }),
+    taskXml({
+      uid: 3,
+      name: 'Hour Lag',
+      outlineNumber: '3',
+      duration: 'PT1H0M0S',
+      predecessorLinks: [{ predUid: 1, type: 0, lag: 30, lagFormat: 3 }],
+    }),
+    taskXml({
+      uid: 4,
+      name: 'Day Lag',
+      outlineNumber: '4',
+      duration: 'PT1H0M0S',
+      predecessorLinks: [{ predUid: 1, type: 0, lag: 25, lagFormat: 5 }],
+    }),
+    taskXml({
+      uid: 5,
+      name: 'Week Lag',
+      outlineNumber: '5',
+      duration: 'PT1H0M0S',
+      predecessorLinks: [{ predUid: 1, type: 0, lag: 76, lagFormat: 7 }],
+    }),
+    taskXml({
+      uid: 6,
+      name: 'Month Lag',
+      outlineNumber: '6',
+      duration: 'PT1H0M0S',
+      predecessorLinks: [{ predUid: 1, type: 0, lag: 25, lagFormat: 9 }],
+    }),
+    taskXml({
+      uid: 7,
+      name: 'Day Lead',
+      outlineNumber: '7',
+      duration: 'PT1H0M0S',
+      predecessorLinks: [{ predUid: 1, type: 0, lag: -5, lagFormat: 5 }],
+    }),
+  ].join('\n')
+  return projectXml({
+    name: 'M18 Lag Units',
+    minutesPerDay: 480,
+    minutesPerWeek: 2400,
+    daysPerMonth: 20,
+    tasks,
+  })
 }

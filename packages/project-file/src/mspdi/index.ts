@@ -50,6 +50,8 @@ export {
   normalizeMspdiDate,
   isValidExceptionDate,
   mspdiTimeToMinutes,
+  DEFAULT_LAG_FACTORS,
+  type LagFactors,
 } from './conversions.js'
 export {
   INVALID_MSPDI,

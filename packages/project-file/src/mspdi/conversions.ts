@@ -24,12 +24,33 @@
  *     time — the canonical calendar is applied by the scheduling engine
  *     later).
  *
- * Documented lag convention: MSPDI `<LinkLag>` is stored in **tenths of a
- * minute** (the documented MS Project storage unit). `lagMinutes =
- * LinkLag / 10`. Non-multiple-of-10 lags are sub-minute → `invalid`.
- * Elapsed `LinkLagFormat` values (2/4/6/8/10) and percentage lags are
- * `unsupported` (elapsed/percentage lag has no faithful working-minute
- * representation at import time).
+ * Authoritative lag convention (PROJECT-015 correction round 1 — the
+ * authoritative table lives in `spec/project/requirements.md`):
+ *   - MSPDI `<LinkLag>` is stored in **tenths of the unit declared by
+ *     `<LinkLagFormat>`**, and every supported working unit applies its own
+ *     explicit conversion to integer `WorkingMinutes`:
+ *
+ *       code  unit            minutes = LinkLag × factor / 10
+ *       1     working minute  × 1        (LinkLag must be a multiple of 10;
+ *                                        a tenth of a minute is sub-minute)
+ *       3     working hour    × 60       (always whole minutes)
+ *       5     working day     × MinutesPerDay
+ *       7     working week    × MinutesPerWeek
+ *       9     working month   × DaysPerMonth × MinutesPerDay
+ *
+ *     The day/week/month factors are the project-level conversion settings
+ *     declared by the MSPDI itself (`<MinutesPerDay>`, `<MinutesPerWeek>`,
+ *     `<DaysPerMonth>` on the `<Project>` root). When the file declares no
+ *     factors, the MSPDI default settings apply (480 / 2400 / 20 — the
+ *     documented 8-hour-day, 40-hour-week, 20-day-month Microsoft Project
+ *     defaults). Any conversion that does not yield a whole minute is
+ *     `invalid` (never silently rounded).
+ *   - Elapsed `LinkLagFormat` values (2/4/6/8/10) are `unsupported`: elapsed
+ *     lag traverses calendar time including non-working time, which has no
+ *     faithful integer working-minute representation at import time.
+ *   - Percentage lags (35) are `unsupported`: a percentage lag is a fraction
+ *     of the predecessor's working duration, which is schedule state the
+ *     adapter does not compute at import time.
  */
 import { asISODateTime, asWorkingMinutes } from '@genoffice/project-contracts'
 import type { ISODateTime, WorkingMinutes } from '@genoffice/project-contracts'
@@ -37,9 +58,10 @@ import type { ISODateTime, WorkingMinutes } from '@genoffice/project-contracts'
 export type DurationResult =
   { ok: true; minutes: WorkingMinutes } | { ok: false; reason: 'invalid' | 'unsupported' }
 
-// TimeUnitType enum values (MSPDI `<LinkLagFormat>` / `<DurationFormat>`).
-// Working-time units → tenths-of-a-minute storage (odd values below).
-// Elapsed variants (even) and percentage (35) are unsupported for lag.
+// TimeUnitType enum values (MSPDI `<LinkLagFormat>` / `<DurationFormat>`) as
+// declared for PROJECT-015 (authoritative table in requirements.md):
+//   working units 1=minute, 3=hour, 5=day, 7=week, 9=month;
+//   elapsed variants (2/4/6/8/10) and percentage (35) are unsupported for lag.
 const LAG_FORMAT_MINUTE = 1
 const LAG_FORMAT_HOUR = 3
 const LAG_FORMAT_DAY = 5
@@ -54,6 +76,29 @@ const WORKING_LAG_FORMATS = new Set<number>([
 ])
 const ELAPSED_LAG_FORMATS = new Set<number>([2, 4, 6, 8, 10])
 const PERCENT_LAG_FORMAT = 35
+
+/**
+ * Project-level MSPDI lag conversion factors (the MSPDI day/week/month
+ * settings). These are import-time conversion parameters only — the
+ * canonical `ProjectDocument` stores the resulting integer `WorkingMinutes`,
+ * never the factors themselves.
+ */
+export interface LagFactors {
+  /** Working minutes in one MSPDI working day (`<MinutesPerDay>`). */
+  minutesPerDay: number
+  /** Working minutes in one MSPDI working week (`<MinutesPerWeek>`). */
+  minutesPerWeek: number
+  /** Working days in one MSPDI working month (`<DaysPerMonth>`). */
+  daysPerMonth: number
+}
+
+/** The MSPDI default conversion settings (8-hour day, 40-hour week,
+ * 20-day month) used when the file declares no explicit factors. */
+export const DEFAULT_LAG_FACTORS: LagFactors = {
+  minutesPerDay: 480,
+  minutesPerWeek: 2400,
+  daysPerMonth: 20,
+}
 
 const ISO_DURATION_RE =
   /^(-)?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/
@@ -111,26 +156,63 @@ export function isoDurationToMinutes(input: string): DurationResult {
 }
 
 /**
- * Convert an MSPDI `<LinkLag>` + `<LinkLagFormat>` pair to integer lag minutes.
+ * Convert an MSPDI `<LinkLag>` + `<LinkLagFormat>` pair to integer lag
+ * minutes, applying the declared unit's own conversion semantics.
  *
- * `LinkLag` is in tenths of a minute. `lagMinutes = LinkLag / 10`.
- *   - Non-multiple-of-10 `LinkLag` → `invalid` (sub-minute lag).
- *   - Elapsed `LinkLagFormat` (2/4/6/8/10) → `unsupported` (elapsed lag has no
- *     faithful working-minute representation).
- *   - Percentage `LinkLagFormat` (35) → `unsupported` (percentage lag requires
- *     the predecessor's working duration, which the adapter does not compute
- *     at import time).
- *   - Missing `LinkLagFormat` is treated as minutes (the most common case and
- *     the storage unit).
+ * `<LinkLag>` is in tenths of the unit declared by `<LinkLagFormat>`:
+ *   - minute (1): `LinkLag / 10` minutes. A non-multiple-of-10 `LinkLag` is
+ *     sub-minute → `invalid`.
+ *   - hour (3): `LinkLag / 10 × 60` minutes (always whole).
+ *   - day (5): `LinkLag / 10 × factors.minutesPerDay`.
+ *   - week (7): `LinkLag / 10 × factors.minutesPerWeek`.
+ *   - month (9): `LinkLag / 10 × factors.daysPerMonth × factors.minutesPerDay`.
+ *   - Any conversion that does not yield a whole minute → `invalid`
+ *     (canonical `WorkingMinutes` is integer; no silent rounding).
+ *   - Elapsed `LinkLagFormat` (2/4/6/8/10) → `unsupported` (elapsed lag
+ *     traverses non-working time; no faithful working-minute representation).
+ *   - Percentage `LinkLagFormat` (35) → `unsupported` (requires the
+ *     predecessor's working duration, which the adapter does not compute at
+ *     import time).
+ *   - Unknown format codes → `invalid`.
+ *   - Missing `LinkLagFormat` is treated as minutes (the storage unit).
+ *   - The factor(s) actually used by the declared unit must be positive
+ *     integers → otherwise `invalid` (defensive; the importer validates
+ *     declared factors and falls back to the MSPDI defaults). Minute and
+ *     hour conversions are factor-independent and never inspect them.
  */
-export function lagToMinutes(linkLag: number, linkLagFormat: number | undefined): DurationResult {
+export function lagToMinutes(
+  linkLag: number,
+  linkLagFormat: number | undefined,
+  factors: LagFactors = DEFAULT_LAG_FACTORS,
+): DurationResult {
   if (!Number.isInteger(linkLag)) return { ok: false, reason: 'invalid' }
   const fmt = linkLagFormat ?? LAG_FORMAT_MINUTE
   if (fmt === PERCENT_LAG_FORMAT) return { ok: false, reason: 'unsupported' }
   if (ELAPSED_LAG_FORMATS.has(fmt)) return { ok: false, reason: 'unsupported' }
   if (!WORKING_LAG_FORMATS.has(fmt)) return { ok: false, reason: 'invalid' }
-  if (linkLag % 10 !== 0) return { ok: false, reason: 'invalid' }
-  return { ok: true, minutes: asWorkingMinutes(linkLag / 10) }
+  const isPositiveInteger = (n: number): boolean => Number.isInteger(n) && n > 0
+  let minutesPerUnit: number
+  if (fmt === LAG_FORMAT_MINUTE) {
+    minutesPerUnit = 1
+  } else if (fmt === LAG_FORMAT_HOUR) {
+    minutesPerUnit = 60
+  } else if (fmt === LAG_FORMAT_DAY) {
+    if (!isPositiveInteger(factors.minutesPerDay)) return { ok: false, reason: 'invalid' }
+    minutesPerUnit = factors.minutesPerDay
+  } else if (fmt === LAG_FORMAT_WEEK) {
+    if (!isPositiveInteger(factors.minutesPerWeek)) return { ok: false, reason: 'invalid' }
+    minutesPerUnit = factors.minutesPerWeek
+  } else {
+    if (!isPositiveInteger(factors.daysPerMonth) || !isPositiveInteger(factors.minutesPerDay)) {
+      return { ok: false, reason: 'invalid' }
+    }
+    minutesPerUnit = factors.daysPerMonth * factors.minutesPerDay
+  }
+  // LinkLag is tenths of the declared unit: minutes = LinkLag × unit / 10.
+  // The product must stay exact — any sub-minute remainder is `invalid`.
+  const scaled = linkLag * minutesPerUnit
+  if (scaled % 10 !== 0) return { ok: false, reason: 'invalid' }
+  return { ok: true, minutes: asWorkingMinutes(scaled / 10) }
 }
 
 const DATE_RE =
@@ -211,7 +293,15 @@ export function isValidExceptionDate(raw: string): boolean {
   return check.getUTCFullYear() === y && check.getUTCMonth() + 1 === mo && check.getUTCDate() === d
 }
 
-/** MSPDI time-of-day string (`HH:MM:SS`) → minute offset from midnight. */
+/**
+ * Convert an MSPDI time-of-day string (`HH:MM:SS`) to a whole-minute offset
+ * from midnight.
+ *
+ * Canonical `CalendarPeriod` boundaries are integer minutes. Non-zero
+ * seconds would admit fractional working minutes, so such a time is
+ * rejected (`null`) — the importer emits `INVALID_MSPDI_CALENDAR` and drops
+ * the period rather than silently rounding (PROJECT-015 correction round 1).
+ */
 export function mspdiTimeToMinutes(raw: string): number | null {
   const m = /^(\d{2}):(\d{2}):(\d{2})$/.exec(raw.trim())
   if (m === null) return null
@@ -219,5 +309,6 @@ export function mspdiTimeToMinutes(raw: string): number | null {
   const mi = Number(m[2])
   const s = Number(m[3])
   if (h > 23 || mi > 59 || s > 59) return null
-  return h * 60 + mi + s / 60
+  if (s !== 0) return null // sub-minute boundary — rejected, never rounded
+  return h * 60 + mi
 }

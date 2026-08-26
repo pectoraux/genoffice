@@ -24,11 +24,15 @@ import {
   inspectMspdi,
   mspdiFileAdapter,
   MSPDI_FORMAT,
+  DEFAULT_LAG_FACTORS,
   INVALID_MSPDI,
+  INVALID_MSPDI_CALENDAR,
   INVALID_MSPDI_DATE,
   INVALID_MSPDI_DURATION,
   INVALID_MSPDI_REFERENCE,
+  lagToMinutes,
   MSPDI_READ,
+  mspdiTimeToMinutes,
   UNSUPPORTED_MSPDI_FEATURE,
   UNSUPPORTED_MSPDI_VERSION,
   parseXml,
@@ -56,8 +60,10 @@ import {
   m17Adversarial,
   m17bDeeplyNested,
   m17cMalformed,
+  m18LagUnits,
   projectXml,
   taskXml,
+  STANDARD_CALENDAR_XML,
 } from './mspdi-fixtures.js'
 import { encodeUtf8 } from '../src/utf8.js'
 
@@ -439,6 +445,292 @@ describe('PROJECT-015 — diagnostics', () => {
   })
 })
 
+// ---- correction round 1: LinkLagFormat conversion semantics -------------
+
+describe('PROJECT-015 — LinkLagFormat conversion semantics (pure)', () => {
+  it('minute format (1): LinkLag tenths of minutes → exact minutes', () => {
+    expect(lagToMinutes(2400, 1)).toEqual({ ok: true, minutes: 240 })
+    expect(lagToMinutes(10, 1)).toEqual({ ok: true, minutes: 1 })
+    expect(lagToMinutes(-1200, 1)).toEqual({ ok: true, minutes: -120 })
+    expect(lagToMinutes(0, 1)).toEqual({ ok: true, minutes: 0 })
+    // Sub-minute tenths are not representable as integer WorkingMinutes.
+    expect(lagToMinutes(15, 1)).toEqual({ ok: false, reason: 'invalid' })
+    expect(lagToMinutes(-7, 1)).toEqual({ ok: false, reason: 'invalid' })
+    // Missing format defaults to minutes.
+    expect(lagToMinutes(2400, undefined)).toEqual({ ok: true, minutes: 240 })
+  })
+
+  it('hour format (3): LinkLag tenths of hours → ×60 exact minutes', () => {
+    expect(lagToMinutes(30, 3)).toEqual({ ok: true, minutes: 180 }) // 3 h
+    expect(lagToMinutes(5, 3)).toEqual({ ok: true, minutes: 30 }) // 0.5 h
+    expect(lagToMinutes(1, 3)).toEqual({ ok: true, minutes: 6 }) // 0.1 h = 6 min
+    expect(lagToMinutes(-240, 3)).toEqual({ ok: true, minutes: -1440 }) // -24 h
+    expect(lagToMinutes(0, 3)).toEqual({ ok: true, minutes: 0 })
+  })
+
+  it('day format (5): LinkLag tenths of days → ×MinutesPerDay (default 480)', () => {
+    expect(lagToMinutes(10, 5)).toEqual({ ok: true, minutes: 480 }) // 1 d
+    expect(lagToMinutes(25, 5)).toEqual({ ok: true, minutes: 1200 }) // 2.5 d
+    expect(lagToMinutes(-5, 5)).toEqual({ ok: true, minutes: -240 }) // -0.5 d
+    expect(lagToMinutes(0, 5)).toEqual({ ok: true, minutes: 0 })
+    // Declared factors are honored (6-hour day).
+    expect(
+      lagToMinutes(10, 5, { minutesPerDay: 360, minutesPerWeek: 2400, daysPerMonth: 20 }),
+    ).toEqual({ ok: true, minutes: 360 })
+    // 475-minute days cannot represent 1.5 days as whole minutes → invalid.
+    expect(
+      lagToMinutes(15, 5, { minutesPerDay: 475, minutesPerWeek: 2400, daysPerMonth: 20 }),
+    ).toEqual({ ok: false, reason: 'invalid' })
+  })
+
+  it('week format (7): LinkLag tenths of weeks → ×MinutesPerWeek (default 2400)', () => {
+    expect(lagToMinutes(70, 7)).toEqual({ ok: true, minutes: 16800 }) // 7 w
+    expect(lagToMinutes(5, 7)).toEqual({ ok: true, minutes: 1200 }) // 0.5 w
+    expect(lagToMinutes(-5, 7)).toEqual({ ok: true, minutes: -1200 })
+    expect(lagToMinutes(0, 7)).toEqual({ ok: true, minutes: 0 })
+    expect(
+      lagToMinutes(10, 7, { minutesPerDay: 480, minutesPerWeek: 1800, daysPerMonth: 20 }),
+    ).toEqual(
+      { ok: true, minutes: 1800 }, // 4.5-day week
+    )
+  })
+
+  it('month format (9): LinkLag tenths of months → ×DaysPerMonth×MinutesPerDay (default 20×480)', () => {
+    expect(lagToMinutes(10, 9)).toEqual({ ok: true, minutes: 9600 }) // 1 mo
+    expect(lagToMinutes(25, 9)).toEqual({ ok: true, minutes: 24000 }) // 2.5 mo
+    expect(lagToMinutes(-5, 9)).toEqual({ ok: true, minutes: -4800 })
+    expect(lagToMinutes(0, 9)).toEqual({ ok: true, minutes: 0 })
+    // Declared 15-day month with default 480-minute day → 7200 min/month.
+    expect(
+      lagToMinutes(10, 9, { minutesPerDay: 480, minutesPerWeek: 2400, daysPerMonth: 15 }),
+    ).toEqual({ ok: true, minutes: 7200 })
+  })
+
+  it('every working unit converts zero lag to exactly 0 minutes', () => {
+    for (const fmt of [1, 3, 5, 7, 9]) {
+      expect(lagToMinutes(0, fmt)).toEqual({ ok: true, minutes: 0 })
+    }
+  })
+
+  it('each unit applies its OWN factor (a bare /10 for all units would differ)', () => {
+    // Regression lock for the correction-round defect: the old implementation
+    // divided LinkLag by 10 for every working format, so hour/day/week/month
+    // lags were all misread as minutes. These five assertions fail under that
+    // defect and prove per-unit semantics.
+    expect(lagToMinutes(10, 1)).toEqual({ ok: true, minutes: 1 })
+    expect(lagToMinutes(10, 3)).toEqual({ ok: true, minutes: 60 })
+    expect(lagToMinutes(10, 5)).toEqual({ ok: true, minutes: 480 })
+    expect(lagToMinutes(10, 7)).toEqual({ ok: true, minutes: 2400 })
+    expect(lagToMinutes(10, 9)).toEqual({ ok: true, minutes: 9600 })
+  })
+
+  it('elapsed formats (2/4/6/8/10) are unsupported', () => {
+    for (const fmt of [2, 4, 6, 8, 10]) {
+      expect(lagToMinutes(2400, fmt)).toEqual({ ok: false, reason: 'unsupported' })
+    }
+  })
+
+  it('percentage format (35) is unsupported', () => {
+    expect(lagToMinutes(500, 35)).toEqual({ ok: false, reason: 'unsupported' })
+  })
+
+  it('unknown format codes are invalid', () => {
+    for (const fmt of [-1, 0, 11, 36, 39, 99]) {
+      expect(lagToMinutes(100, fmt)).toEqual({ ok: false, reason: 'invalid' })
+    }
+  })
+
+  it('non-integer LinkLag is invalid', () => {
+    expect(lagToMinutes(24.5, 1)).toEqual({ ok: false, reason: 'invalid' })
+  })
+
+  it('malformed factors (non-positive / non-integer) are invalid for day/week/month', () => {
+    expect(
+      lagToMinutes(10, 5, { minutesPerDay: 0, minutesPerWeek: 2400, daysPerMonth: 20 }),
+    ).toEqual({
+      ok: false,
+      reason: 'invalid',
+    })
+    expect(
+      lagToMinutes(10, 7, { minutesPerDay: 480, minutesPerWeek: 4.5, daysPerMonth: 20 }),
+    ).toEqual({
+      ok: false,
+      reason: 'invalid',
+    })
+    expect(
+      lagToMinutes(10, 9, { minutesPerDay: 480, minutesPerWeek: 2400, daysPerMonth: -20 }),
+    ).toEqual({
+      ok: false,
+      reason: 'invalid',
+    })
+    // Minute/hour conversions are factor-independent.
+    expect(lagToMinutes(2400, 1, { minutesPerDay: 0, minutesPerWeek: 0, daysPerMonth: 0 })).toEqual(
+      {
+        ok: true,
+        minutes: 240,
+      },
+    )
+  })
+
+  it('DEFAULT_LAG_FACTORS are the documented MSPDI defaults (480/2400/20)', () => {
+    expect(DEFAULT_LAG_FACTORS).toEqual({
+      minutesPerDay: 480,
+      minutesPerWeek: 2400,
+      daysPerMonth: 20,
+    })
+  })
+})
+
+describe('PROJECT-015 — LinkLagFormat conversion semantics (import)', () => {
+  function lagFixture(
+    lag: number,
+    lagFormat: number,
+    factors?: {
+      minutesPerDay?: number
+      minutesPerWeek?: number
+      daysPerMonth?: number
+    },
+  ) {
+    const tasks = [
+      taskXml({ uid: 1, name: 'A', outlineNumber: '1' }),
+      taskXml({
+        uid: 2,
+        name: 'B',
+        outlineNumber: '2',
+        predecessorLinks: [{ predUid: 1, type: 0, lag, lagFormat }],
+      }),
+    ].join('\n')
+    return projectXml({ name: 'LagUnits', tasks, ...factors })
+  }
+
+  it('imports hour-format lag as ×60 minutes (30 tenths-hour → 180)', () => {
+    const r = importMspdi(lagFixture(30, 3))
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies[0].lagMinutes).toBe(180)
+  })
+
+  it('imports day-format lag as ×MinutesPerDay (10 tenths-day → 480)', () => {
+    const r = importMspdi(lagFixture(10, 5))
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies[0].lagMinutes).toBe(480)
+  })
+
+  it('imports week-format lag as ×MinutesPerWeek (35 tenths-week → 8400)', () => {
+    const r = importMspdi(lagFixture(35, 7))
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies[0].lagMinutes).toBe(8400)
+  })
+
+  it('imports month-format lag as ×DaysPerMonth×MinutesPerDay (10 tenths-month → 9600)', () => {
+    const r = importMspdi(lagFixture(10, 9))
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies[0].lagMinutes).toBe(9600)
+  })
+
+  it('imports negative day-format lead exactly (-25 tenths-day → -1200)', () => {
+    const r = importMspdi(lagFixture(-25, 5))
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies[0].lagMinutes).toBe(-1200)
+  })
+
+  it('honors declared project conversion factors (MinutesPerDay 360 → day lag 360)', () => {
+    const r = importMspdi(lagFixture(10, 5, { minutesPerDay: 360 }))
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies[0].lagMinutes).toBe(360)
+    // Week/month honor their own declared factors.
+    const w = importMspdi(lagFixture(10, 7, { minutesPerWeek: 1800 }))
+    expectNoErrors(w.diagnostics)
+    expect(w.document.dependencies[0].lagMinutes).toBe(1800)
+    const m = importMspdi(lagFixture(10, 9, { daysPerMonth: 15 }))
+    expectNoErrors(m.diagnostics)
+    expect(m.document.dependencies[0].lagMinutes).toBe(7200)
+  })
+
+  it('malformed declared factor emits INVALID_MSPDI and falls back to the MSPDI default', () => {
+    const r = importMspdi(lagFixture(10, 5, { minutesPerDay: 0 }))
+    expect(
+      r.diagnostics.some(
+        (d) =>
+          d.code === INVALID_MSPDI && d.severity === 'error' && d.message.includes('MinutesPerDay'),
+      ),
+    ).toBe(true)
+    // Fallback is the documented default 480 — never a silent approximation.
+    expect(r.document.dependencies[0].lagMinutes).toBe(480)
+  })
+
+  it('elapsed lag emits UNSUPPORTED_MSPDI_FEATURE and defaults to 0 (dependency kept)', () => {
+    const r = importMspdi(lagFixture(100, 4)) // elapsed days
+    expect(
+      r.diagnostics.some((d) => d.code === UNSUPPORTED_MSPDI_FEATURE && d.severity === 'warning'),
+    ).toBe(true)
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies).toHaveLength(1)
+    expect(r.document.dependencies[0].lagMinutes).toBe(0)
+  })
+
+  it('percentage lag emits UNSUPPORTED_MSPDI_FEATURE and defaults to 0 (dependency kept)', () => {
+    const r = importMspdi(lagFixture(500, 35)) // 50%
+    expect(
+      r.diagnostics.some((d) => d.code === UNSUPPORTED_MSPDI_FEATURE && d.severity === 'warning'),
+    ).toBe(true)
+    expectNoErrors(r.diagnostics)
+    expect(r.document.dependencies).toHaveLength(1)
+    expect(r.document.dependencies[0].lagMinutes).toBe(0)
+  })
+
+  it('sub-minute minute-format lag emits INVALID_MSPDI_DURATION and defaults to 0', () => {
+    const r = importMspdi(lagFixture(15, 1)) // 1.5 minutes
+    expect(
+      r.diagnostics.some((d) => d.code === INVALID_MSPDI_DURATION && d.severity === 'error'),
+    ).toBe(true)
+    expect(r.document.dependencies).toHaveLength(1)
+    expect(r.document.dependencies[0].lagMinutes).toBe(0)
+  })
+})
+
+describe('PROJECT-015 — whole-minute calendar boundaries', () => {
+  it('mspdiTimeToMinutes returns whole minutes for whole-minute times', () => {
+    expect(mspdiTimeToMinutes('09:00:00')).toBe(540)
+    expect(mspdiTimeToMinutes('17:00:00')).toBe(1020)
+    expect(mspdiTimeToMinutes('00:00:00')).toBe(0)
+    expect(mspdiTimeToMinutes('12:30:00')).toBe(750)
+  })
+
+  it('mspdiTimeToMinutes rejects non-zero seconds (no fractional minutes)', () => {
+    expect(mspdiTimeToMinutes('09:00:30')).toBeNull()
+    expect(mspdiTimeToMinutes('08:30:45')).toBeNull()
+    expect(mspdiTimeToMinutes('16:59:59')).toBeNull()
+  })
+
+  it('mspdiTimeToMinutes rejects malformed times', () => {
+    expect(mspdiTimeToMinutes('9:00')).toBeNull()
+    expect(mspdiTimeToMinutes('24:00:00')).toBeNull()
+    expect(mspdiTimeToMinutes('09:60:00')).toBeNull()
+    expect(mspdiTimeToMinutes('')).toBeNull()
+  })
+
+  it('importer drops a sub-minute WorkingTime with INVALID_MSPDI_CALENDAR (never rounded)', () => {
+    // Monday's period starts at 09:00:30 — fractional; must be rejected with
+    // a diagnostic, and the other weekdays must remain intact.
+    const calendars = STANDARD_CALENDAR_XML.replace(
+      '09:00:00</FromTime><ToTime>17:00:00',
+      '09:00:30</FromTime><ToTime>17:00:00',
+    )
+    const tasks = taskXml({ uid: 1, outlineNumber: '1' })
+    const r = importMspdi(projectXml({ name: 'FractionalBoundary', calendars, tasks }))
+    const drop = r.diagnostics.find(
+      (d) => d.code === INVALID_MSPDI_CALENDAR && d.severity === 'error',
+    )
+    expect(drop).toBeDefined()
+    expect(drop?.message).toContain('whole-minute')
+    const cal = r.document.calendars[0]
+    // Canonical week keys are 0=Sunday..6=Saturday; MSPDI DayType 2 (Monday)
+    // maps to key 1, DayType 3 (Tuesday) to key 2.
+    expect(cal.workingWeek[1]).toEqual([]) // Monday period dropped
+    expect(cal.workingWeek[2]).toEqual([{ startMinute: 540, endMinute: 1020 }]) // Tuesday intact
+  })
+})
+
 // ---- 36-38: canonical validation + scheduling ---------------------------
 
 describe('PROJECT-015 — canonical validation + scheduling', () => {
@@ -458,6 +750,7 @@ describe('PROJECT-015 — canonical validation + scheduling', () => {
       m12MultipleBaseline,
       m13CustomFields,
       m16Large,
+      m18LagUnits,
     ]
     for (const build of valids) {
       const r = importMspdi(build())
@@ -485,15 +778,15 @@ describe('PROJECT-015 — canonical validation + scheduling', () => {
   })
 })
 
-// ---- golden fixtures M01–M17 -------------------------------------------
+// ---- golden fixtures M01–M18 -------------------------------------------
 
-describe('PROJECT-015 — golden fixtures M01–M17', () => {
-  describe('valid goldens (M01–M13, M16)', () => {
+describe('PROJECT-015 — golden fixtures M01–M18', () => {
+  describe('valid goldens (M01–M13, M16, M18)', () => {
     const valids: Array<{ id: string; build: () => Uint8Array; note: string }> = [
       { id: 'M01', build: m01Minimal, note: 'minimal' },
       { id: 'M02', build: m02Wbs, note: 'WBS' },
       { id: 'M03', build: m03Dependencies, note: 'dependencies' },
-      { id: 'M04', build: m04LagLead, note: 'lag/lead' },
+      { id: 'M04', build: m04LagLead, note: 'lag/lead (minute format)' },
       { id: 'M05', build: m05Calendars, note: 'calendars' },
       { id: 'M06', build: m06Exceptions, note: 'exceptions' },
       { id: 'M07', build: m07Resources, note: 'resources' },
@@ -504,6 +797,7 @@ describe('PROJECT-015 — golden fixtures M01–M17', () => {
       { id: 'M12', build: m12MultipleBaseline, note: 'multiple baseline' },
       { id: 'M13', build: m13CustomFields, note: 'custom fields' },
       { id: 'M16', build: m16Large, note: 'large project' },
+      { id: 'M18', build: m18LagUnits, note: 'lag units (minute/hour/day/week/month + day lead)' },
     ]
     for (const { id, build, note } of valids) {
       it(`${id} (${note}) imports deterministically with zero errors`, () => {
@@ -515,6 +809,123 @@ describe('PROJECT-015 — golden fixtures M01–M17', () => {
         expect(Array.from(a)).toEqual(Array.from(b))
       })
     }
+  })
+
+  describe('M18 exact lag-unit conversion proof (correction round 1)', () => {
+    it('converts every working lag unit to the exact canonical lagMinutes', () => {
+      const r = importMspdi(m18LagUnits())
+      expectNoErrors(r.diagnostics)
+      const lagOf = (taskId: string) =>
+        r.document.dependencies.find((d) => String(d.successorId) === taskId)!.lagMinutes
+      // minute: 1500 tenths → 150 min; hour: 30 tenths → 180 min;
+      // day: 25 tenths → 1200 min; week: 76 tenths → 18240 min;
+      // month: 25 tenths → 24000 min; day lead: −5 tenths → −240 min.
+      expect(lagOf('t2')).toBe(150)
+      expect(lagOf('t3')).toBe(180)
+      expect(lagOf('t4')).toBe(1200)
+      expect(lagOf('t5')).toBe(18240)
+      expect(lagOf('t6')).toBe(24000)
+      expect(lagOf('t7')).toBe(-240)
+      // All six are FS dependencies of the anchor.
+      expect(
+        r.document.dependencies.every((d) => d.type === 'FS' && String(d.predecessorId) === 't1'),
+      ).toBe(true)
+    })
+
+    it('passes canonical validation and schedules with exact DerivedSchedule values', () => {
+      const r = importMspdi(m18LagUnits())
+      const v = validateProjectDocument(r.document)
+      expect(v.diagnostics).toEqual([])
+      expect(v.accepted).toBe(true)
+      const s = schedule(r.document)
+      expect(s.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
+      expect(s.projectFinish).toBe('2026-10-12T14:00:00.000Z')
+
+      // Anchor: PT4H from project start Mon 2026-08-03 09:00 → 13:00.
+      // Each successor is a 1-hour FS task; its earlyStart is
+      // addWorkingTime(anchor.finish, lagMinutes) in the standard calendar
+      // (Mon–Fri 09:00–17:00, 480 min/day), normalized to the next working
+      // instant when the lag lands on a period-end boundary.
+      // Independently hand-computed from the documented working-time
+      // primitives:
+      //   t2 +150 min  → Mon 08-03 15:30
+      //   t3 +180 min  → Mon 08-03 16:00
+      //   t4 +1200 min → Wed 17:00 (2.5 working days) → start-normalized Thu 08-06 09:00
+      //   t5 +18240 min→ Thu 09-24 13:00 (7.6 working weeks)
+      //   t6 +24000 min→ Mon 10-12 13:00 (2.5 working months)
+      //   t7 −240 min  → Mon 08-03 09:00 (0.5-day lead)
+      const expected: Record<
+        string,
+        { es: string; ef: string; ls: string; lf: string; slack: number; critical: boolean }
+      > = {
+        t1: {
+          es: '2026-08-03T09:00:00.000Z',
+          ef: '2026-08-03T13:00:00.000Z',
+          ls: '2026-08-03T09:00:00.000Z',
+          lf: '2026-08-03T13:00:00.000Z',
+          slack: 0,
+          critical: true,
+        },
+        t2: {
+          es: '2026-08-03T15:30:00.000Z',
+          ef: '2026-08-03T16:30:00.000Z',
+          ls: '2026-10-12T13:00:00.000Z',
+          lf: '2026-10-12T14:00:00.000Z',
+          slack: 23850,
+          critical: false,
+        },
+        t3: {
+          es: '2026-08-03T16:00:00.000Z',
+          ef: '2026-08-03T17:00:00.000Z',
+          ls: '2026-10-12T13:00:00.000Z',
+          lf: '2026-10-12T14:00:00.000Z',
+          slack: 23820,
+          critical: false,
+        },
+        t4: {
+          es: '2026-08-06T09:00:00.000Z',
+          ef: '2026-08-06T10:00:00.000Z',
+          ls: '2026-10-12T13:00:00.000Z',
+          lf: '2026-10-12T14:00:00.000Z',
+          slack: 22800,
+          critical: false,
+        },
+        t5: {
+          es: '2026-09-24T13:00:00.000Z',
+          ef: '2026-09-24T14:00:00.000Z',
+          ls: '2026-10-12T13:00:00.000Z',
+          lf: '2026-10-12T14:00:00.000Z',
+          slack: 5760,
+          critical: false,
+        },
+        t6: {
+          es: '2026-10-12T13:00:00.000Z',
+          ef: '2026-10-12T14:00:00.000Z',
+          ls: '2026-10-12T13:00:00.000Z',
+          lf: '2026-10-12T14:00:00.000Z',
+          slack: 0,
+          critical: true,
+        },
+        t7: {
+          es: '2026-08-03T09:00:00.000Z',
+          ef: '2026-08-03T10:00:00.000Z',
+          ls: '2026-10-12T13:00:00.000Z',
+          lf: '2026-10-12T14:00:00.000Z',
+          slack: 24240,
+          critical: false,
+        },
+      }
+      for (const [taskId, e] of Object.entries(expected)) {
+        const ts = s.taskSchedules[taskId as keyof typeof s.taskSchedules]
+        expect(ts, `taskSchedules[${taskId}]`).toBeDefined()
+        expect(ts.earlyStart).toBe(e.es)
+        expect(ts.earlyFinish).toBe(e.ef)
+        expect(ts.lateStart).toBe(e.ls)
+        expect(ts.lateFinish).toBe(e.lf)
+        expect(ts.totalSlack).toBe(e.slack)
+        expect(ts.critical).toBe(e.critical)
+      }
+    })
   })
 
   describe('invalid / diagnostic goldens (M14, M15, M17)', () => {

@@ -738,7 +738,7 @@ MSPDI `<PredecessorLink>` (stored on the successor) maps to `Dependency`: `prede
 
 ### Calendars
 
-MSPDI `<Calendar>` maps to the accepted `Calendar`: `id`, `name`, `baseCalendarId` (inheritance link preserved — NOT flattened), `workingWeek` (`<WeekDay>` `<DayType>` 1=Sunday..7=Saturday → canonical key `DayType-1`; `<WorkingTimes>` → `CalendarPeriod` via `HH:MM:SS` → minutes), `exceptions` (`<Exception>` `<Start>` date → single-date exception; recurring/yearly `<Type>` and multi-day `Start≠Finish` map to a single-date exception with an `UNSUPPORTED_MSPDI_FEATURE` warning — the canonical model has no recurring-exception representation). Resource calendars and task calendars remain distinct. Malformed calendars produce `INVALID_MSPDI_CALENDAR` and never silently become the default calendar.
+MSPDI `<Calendar>` maps to the accepted `Calendar`: `id`, `name`, `baseCalendarId` (inheritance link preserved — NOT flattened), `workingWeek` (`<WeekDay>` `<DayType>` 1=Sunday..7=Saturday → canonical key `DayType-1`; `<WorkingTimes>` → `CalendarPeriod` via `HH:MM:SS` → whole-minute offsets — see Date / duration semantics), `exceptions` (`<Exception>` `<Start>` date → single-date exception; recurring/yearly `<Type>` and multi-day `Start≠Finish` map to a single-date exception with an `UNSUPPORTED_MSPDI_FEATURE` warning — the canonical model has no recurring-exception representation). Resource calendars and task calendars remain distinct. Malformed calendars produce `INVALID_MSPDI_CALENDAR` and never silently become the default calendar.
 
 ### Resources / assignments
 
@@ -754,7 +754,25 @@ MSPDI `<ConstraintType>` (0–7) maps to the eight canonical constraint types: 0
 
 ### Date / duration semantics
 
-MSPDI `<Duration>`/`<Work>` are ISO-8601 durations (`PT8H0M0S`); the time-part (H/M/S) is converted to integer `WorkingMinutes` (hours×60 + minutes + seconds/60). Sub-minute seconds emit `INVALID_MSPDI_DURATION` (no silent rounding). Date-part components (`P1D`/`P1W`/`P1M`/`P1Y`) represent elapsed/calendar time with no faithful working-minute conversion at import time and emit `UNSUPPORTED_MSPDI_FEATURE`. MSPDI `<LinkLag>` is stored in tenths of a minute; `lagMinutes = LinkLag/10`. Non-multiple-of-10 lags emit `INVALID_MSPDI_DURATION`; elapsed `LinkLagFormat` (2/4/6/8/10) and percentage lags emit `UNSUPPORTED_MSPDI_FEATURE`. MSPDI date-times are normalized to canonical UTC `ISODateTime` (`YYYY-MM-DDTHH:MM:SS.000Z`): naive dates are interpreted as UTC (never the system timezone), `Z` is preserved, explicit `±HH:MM` offsets are converted to UTC. Malformed dates emit `INVALID_MSPDI_DATE`. No host locale, no system timezone as a semantic input.
+MSPDI `<Duration>`/`<Work>` are ISO-8601 durations (`PT8H0M0S`); the time-part (H/M/S) is converted to integer `WorkingMinutes` (hours×60 + minutes); any non-zero sub-minute seconds remainder emits `INVALID_MSPDI_DURATION` (no silent rounding — canonical `WorkingMinutes` is integer). Date-part components (`P1D`/`P1W`/`P1M`/`P1Y`) represent elapsed/calendar time with no faithful working-minute conversion at import time and emit `UNSUPPORTED_MSPDI_FEATURE`.
+
+MSPDI `<LinkLag>` is stored in **tenths of the unit declared by `<LinkLagFormat>`**, and every supported working lag unit applies its own explicit conversion to integer `lagMinutes` (PROJECT-015 correction round 1 — this table is authoritative):
+
+| `LinkLagFormat` | unit           | conversion to `lagMinutes`                     |
+|-----------------|----------------|------------------------------------------------|
+| 1               | working minute | `LinkLag / 10` (non-multiple-of-10 → `INVALID_MSPDI_DURATION`) |
+| 3               | working hour   | `LinkLag / 10 × 60` (always whole minutes)     |
+| 5               | working day    | `LinkLag / 10 × MinutesPerDay`                 |
+| 7               | working week   | `LinkLag / 10 × MinutesPerWeek`                |
+| 9               | working month  | `LinkLag / 10 × DaysPerMonth × MinutesPerDay`  |
+
+The day/week/month factors are the project-level conversion settings declared by the MSPDI itself (`<MinutesPerDay>`, `<MinutesPerWeek>`, `<DaysPerMonth>` on the `<Project>` root). When the file declares no factor, the MSPDI default settings apply (480 / 2400 / 20 — the documented 8-hour-day, 40-hour-week, 20-day-month Microsoft Project defaults); using the format default is the MSPDI-defined semantics, not an approximation, so no diagnostic is emitted for an absent declaration. A declared-but-malformed factor (non-positive or non-integer) emits `INVALID_MSPDI` and falls back to the documented default — a declared value is never silently approximated. Any conversion that does not yield a whole minute emits `INVALID_MSPDI_DURATION` and defaults the lag to 0 (dependency retained — never silently rounded, never silently dropped). Minute and hour conversions are factor-independent. The factors are import-time conversion parameters only — the canonical `ProjectDocument` stores the resulting integer `WorkingMinutes`, never the factors themselves.
+
+Elapsed `LinkLagFormat` values (2/4/6/8/10) emit `UNSUPPORTED_MSPDI_FEATURE` (elapsed lag traverses calendar time including non-working time — no faithful working-minute representation at import time) and default the lag to 0 with the dependency retained. Percentage lags (`LinkLagFormat` 35) emit `UNSUPPORTED_MSPDI_FEATURE` (a percentage lag is a fraction of the predecessor's working duration, which is schedule state the adapter does not compute at import time) and default the lag to 0 with the dependency retained. Unknown format codes emit `INVALID_MSPDI_DURATION`.
+
+Calendar working-time boundaries are whole-minute: MSPDI `<FromTime>`/`<ToTime>` (`HH:MM:SS`) must resolve to integer minute offsets; a time carrying non-zero seconds emits `INVALID_MSPDI_CALENDAR` and the `WorkingTime` period is dropped (never silently rounded). Missing `<FromTime>`/`<ToTime>` and empty/inverted periods likewise emit `INVALID_MSPDI_CALENDAR` and are dropped — a malformed period is never silently skipped.
+
+MSPDI date-times are normalized to canonical UTC `ISODateTime` (`YYYY-MM-DDTHH:MM:SS.000Z`): naive dates are interpreted as UTC (never the system timezone), `Z` is preserved, explicit `±HH:MM` offsets are converted to UTC. Malformed dates emit `INVALID_MSPDI_DATE`. No host locale, no system timezone as a semantic input.
 
 ### XML parsing
 
