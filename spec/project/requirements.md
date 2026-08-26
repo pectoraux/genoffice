@@ -873,3 +873,17 @@ PROJECT-016 establishes (1) internal round-trip correctness (export → accepted
 ### Determinism proof
 
 (1) The same document exports to byte-identical XML across repeated calls (asserted three times and across all valid goldens). (2) Reordered semantically-equivalent non-identity collections produce identical bytes. (3) Representative goldens (E01 full document, E04 lag encoding) are asserted against hand-embedded canonical XML so the writer cannot drift silently. (4) The exporter/writer source carries no clock, no randomness, and no locale-aware comparison (static source guard).
+
+## PROJECT-017 — MPP adapter feasibility (investigation)
+
+PROJECT-017 is an investigation, not a feature increment: the deliverable is the 20-section feasibility report `spec/project/mpp-feasibility.md` (mandated section set, one-of-four decision line) plus the discipline suite `packages/project-file/tests/mpp-feasibility.test.ts`. NO production MPP parser/writer code, NO new runtime dependency, NO adapter/scheduling behavior change was introduced; the grounding spike ran entirely outside the repository (disposable `/tmp` workspace — MPXJ 16.7.0 + OpenJDK 21, 7 real corpus files from the MPXJ LGPL test distribution covering MPP8/MPP9/MPP14), and its commands/outputs are recorded in the PROJECT-017 worklog entry (report [S17]).
+
+Feasibility decision (the report's authoritative closing line): **FEASIBLE — MSPDI/INTERMEDIARY ADAPTER** — MPP import only, via an externalized MPXJ (LGPL) sidecar process feeding the accepted PROJECT-015 importer, with five mechanical adapter-owned normalizations (N1–N5: strip `-1` sentinel references; filter the hidden `UID 0`/`OutlineLevel 0` placeholder task (and the analogous placeholder resource); rewrite midnight-wrapping `WorkingTime` periods to `endMinute 1440`; pre-filter `-65535` "unassigned" assignments with an expected-loss diagnostic). MPP export is NOT feasible under the current architecture, licensing constraints, and ecosystem: no open-source MPP writer exists; the only programmatic writers are commercial Aspose.Tasks (US$1,797+/yr/developer OEM) or installed-Microsoft-Project COM automation — both rejected. PROJECT-016's MSPDI export remains the sanctioned Microsoft interchange output.
+
+Constraints the report locks for any future PROJECT-018/019 (nothing in PROJECT-017 authorizes either):
+
+- `architecture-lock.md` is untouched and stays satisfied by construction: foundation packages would carry only the adapter contract + pure-TypeScript MSPDI normalization layer; the MPXJ conversion process is a host-level sidecar outside all foundation packages (§14 of the report).
+- Fidelity is tiered A–D per canonical feature (§9); known intermediary losses are exactly the accepted MSPDI boundary losses plus the diagnosed N1–N5 normalizations — no new silent loss.
+- Determinism: repeat-run re-conversion of the corpus is data-byte stable except the non-semantic `<CurrentDate>` save timestamp (ignored by the accepted importer); PROJECT-018 must prove repeat-run byte-equality at the canonical-document level (§12).
+- Security posture: MPP is untrusted binary input; the sidecar process boundary (no network, `-Xmx` cap, hard timeout, single-file I/O) is a precondition for any PROJECT-018 authorization (§8).
+- Corpus model: pinned external download of the MPXJ LGPL test corpus at test time; no wholesale copy into the repository (§11).
