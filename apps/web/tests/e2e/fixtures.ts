@@ -2075,3 +2075,172 @@ export async function buildWordMarksFixture(): Promise<Buffer> {
 
   return toBytes(zip)
 }
+
+// ── Excel Remove Duplicates fixture (EXCEL-018 E2E) ─────────────────────────
+
+/**
+ * Deterministic XLSX for the EXCEL-018 Remove Duplicates save/reopen
+ * verification matrix. Proves the canonical cell-edit round-trip:
+ *   - basic duplicate rows (header preserved when hasHeader=true)
+ *   - multiple selected columns act as the comparison key
+ *   - duplicate rows with styles (header is bold+filled; data rows have
+ *     per-column styles that must survive the rewrite)
+ *   - duplicate rows with formulas (a formula row that gets overwritten
+ *     by a moved row's computed value — the formula is replaced with
+ *     the literal; an unchanged row's formula survives)
+ *   - save/reopen yields the exact expected rows
+ *
+ * Sheet "Dedupe" (visible):
+ *   Row 1 — header: A1="Name" (s=1 bold+fill), B1="Qty" (s=1)
+ *   Row 2 — A2="Apple"  (s=2 italic),  B2=10
+ *   Row 3 — A3="Apple"  (s=2 italic),  B3=10   ← full duplicate of row 2
+ *   Row 4 — A4="Banana" (s=4 bold),    B4=20
+ *   Row 5 — A5="Apple"  (s=2 italic),  B5=10   ← full duplicate of row 2
+ *   Row 6 — A6="Cherry" (s=0 default), B6=30
+ *   Row 7 — A7="Apple"  (s=2 italic),  B7==B6  (formula, cached v=30)
+ *                                          ← NOT a duplicate (B7 result is 30, B2 result is 10)
+ *
+ * Dedupe with hasHeader=true on A1:B7 must keep rows 1, 2, 4, 6, 7
+ * and blank rows 3, 5. Total of 2 rows removed. The header at row 1
+ * is preserved verbatim. The style on A1/B1 (xf 1) survives because
+ * the rewrite does not touch styles.
+ */
+export async function buildExcelDedupeFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Dedupe" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  // Shared strings: header labels + fruit names.
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="8" uniqueCount="5">
+  <si><t>Name</t></si>
+  <si><t>Qty</t></si>
+  <si><t>Apple</t></si>
+  <si><t>Banana</t></si>
+  <si><t>Cherry</t></si>
+</sst>`,
+  )
+
+  // Styles:
+  //   xf 0 — default
+  //   xf 1 — header (bold font 1 + light-yellow fill 2)
+  //   xf 2 — italic (font 2 italic)
+  //   xf 4 — bold (font 1 bold)  [matches the sort fixture's xf 4]
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="3">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><color rgb="FF9C3B00"/><name val="Calibri"/></font>
+    <font><i/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="5">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`,
+  )
+
+  // Worksheet: 7 rows. The dedupe A1:B7 with hasHeader=true must keep
+  // rows 1,2,4,6,7 and blank rows 3,5. Row 7 carries a formula
+  // =B6 with cached value 30 — its B-column RESULT (30) differs from
+  // row 2's B-column value (10), so row 7 is NOT a duplicate of row 2.
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s" s="1"><v>0</v></c>
+      <c r="B1" t="s" s="1"><v>1</v></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s" s="2"><v>2</v></c>
+      <c r="B2"><v>10</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="s" s="2"><v>2</v></c>
+      <c r="B3"><v>10</v></c>
+    </row>
+    <row r="4">
+      <c r="A4" t="s" s="4"><v>3</v></c>
+      <c r="B4"><v>20</v></c>
+    </row>
+    <row r="5">
+      <c r="A5" t="s" s="2"><v>2</v></c>
+      <c r="B5"><v>10</v></c>
+    </row>
+    <row r="6">
+      <c r="A6" t="s"><v>4</v></c>
+      <c r="B6"><v>30</v></c>
+    </row>
+    <row r="7">
+      <c r="A7" t="s" s="2"><v>2</v></c>
+      <c r="B7"><f>B6</f><v>30</v></c>
+    </row>
+  </sheetData>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}

@@ -30,6 +30,13 @@ import { ILayoutService } from '@univerjs/ui'
 import '@univerjs/sheets-sort/facade'
 import type { BrowserUniverRuntime } from '../../office/create-browser-univer'
 import { parseAddress, parseRange } from '../../office/cell-address'
+// EXCEL-018 — Remove Duplicates. The pure dedupe algorithm lives in
+// `apps/web/src/office/dedupe.ts`; this hook wires it through the live
+// Univer facade. The dedupe result is written back per-row via
+// FWorksheet.getRange(row, col, 1, width).setValues(...), which fires
+// sheet.mutation.set-range-values — the SAME mutation channel Sort uses,
+// journaled by ExcelEditor's existing subscription as CellEdits.
+import { dedupeRows } from '../../office/dedupe'
 
 /** Selection format the ribbon echoes — a trimmed view of IStyleData. */
 export interface SelectionFormat {
@@ -230,7 +237,52 @@ export interface ExcelRuntimeApi {
    * LIVE note model is snapshotted as canonical SheetNoteState.
    */
   addNote(): void
+  /**
+   * EXCEL-018 — Remove Duplicates.
+   *
+   * Reads the live Univer active range's COMPUTED values, dedupes them
+   * (case-insensitive text, type-strict, header preserved when
+   * `hasHeader === true`), and writes the result back per-row through
+   * `FWorksheet.getRange(row, col, 1, width).setValues([[...row]])` —
+   * which fires `sheet.mutation.set-range-values`, the SAME mutation
+   * channel Sort uses. ExcelEditor's existing subscription captures
+   * each write as a CellEdit via `cellEditFromMutation`, and on save
+   * the canonical `applyCellEditsToXlsx` writes the deduped values
+   * into the XLSX — the cell-edit family is the canonical authority.
+   *
+   * Rows that DIDN'T change (same value at the same offset) are NOT
+   * rewritten — their formulas/styles survive (mirrors the desktop's
+   * reference algorithm in apps/sheets/src/renderer/dedupe.ts +
+   * ribbon-actions.ts:1267-1309 verbatim). Rows that moved (their
+   * content was at a higher offset, now at a lower offset because
+   * duplicates were removed before them) ARE rewritten with the
+   * source row's COMPUTED value — the destination's formula is
+   * replaced with a literal value (this is the desktop's documented
+   * trade-off: "moved rows land as their computed values"). Padding
+   * rows at the bottom (where dedupe shrank the range) are written
+   * with nulls (cell clear).
+   *
+   * @param hasHeader When true, the first row of the selection is
+   *   preserved verbatim and is excluded from the seen-set / removal
+   *   check (matching Excel's "My data has headers" option).
+   * @returns A status code:
+   *   - `{ kind: 'noop', message: 'No duplicate rows found in the selection.' }`
+   *     when the dedupe removed 0 rows (no-op — no mutation fired).
+   *   - `{ kind: 'done', removed: N }` when N rows were removed.
+   *   - `{ kind: 'select' }` when there's no active range or the range
+   *     has fewer than 2 rows (fail-closed — no mutation fired).
+   *   - `{ kind: 'error', message: string }` on an unexpected throw
+   *     (fail-closed — the grid stays canonical).
+   */
+  removeDuplicates(hasHeader: boolean): RemoveDuplicatesResult
 }
+
+/** Result of `api.removeDuplicates(hasHeader)`. */
+export type RemoveDuplicatesResult =
+  | { readonly kind: 'noop'; readonly message: string }
+  | { readonly kind: 'done'; readonly removed: number }
+  | { readonly kind: 'select' }
+  | { readonly kind: 'error'; readonly message: string }
 
 export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeApi | null {
   const [state, setState] = useState<ExcelRuntimeState>(() =>
@@ -666,6 +718,96 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     }
   }, [])
 
+  const removeDuplicates = useCallback(
+    (hasHeader: boolean): RemoveDuplicatesResult => {
+      const r = rtRef.current
+      if (!r) return { kind: 'select' }
+      const wb = r.univerAPI.getActiveWorkbook()
+      const ws = wb?.getActiveSheet()
+      const range = ws?.getActiveRange()
+      if (!wb || !ws || !range) return { kind: 'select' }
+      // Fail-closed: a single-row selection can't contain duplicates. The
+      // desktop's ribbon action emits `appDedupeSelectRows` ("Select the
+      // rows to check for duplicates first.") on `range.getHeight() < 2`.
+      const height = range.getHeight()
+      const width = range.getWidth()
+      if (height < 2) return { kind: 'select' }
+      // Read the computed values — `FRange.getValues()` returns the
+      // resolved result for formula cells (Univer's documented facade
+      // contract, same call the desktop's `ribbon-actions.ts:1285`
+      // makes). The `?? null` normalization mirrors the desktop's
+      // `.map((row) => row.map((value) => value ?? null))`.
+      let values: (string | number | boolean | null)[][]
+      try {
+        const raw = range.getValues() as unknown[][]
+        values = raw.map((row) =>
+          row.map((v) =>
+            v === null || v === undefined
+              ? null
+              : typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
+                ? v
+                : null,
+          ),
+        )
+      } catch (error: unknown) {
+        const detail = error instanceof Error ? error.message : ''
+        return { kind: 'error', message: detail === '' ? 'Read failed' : `Read failed: ${detail}` }
+      }
+      const { rows: deduped, removed } = dedupeRows(values, hasHeader)
+      // No-op fail-closed: when nothing was removed, no mutation is fired
+      // and a status message surfaces (matches desktop's `appNoDuplicates`).
+      if (removed === 0) {
+        return { kind: 'noop', message: 'No duplicate rows found in the selection.' }
+      }
+      // Pad the deduped matrix with null rows back to the original selection
+      // height — the in-place rewrite leaves blank rows at the bottom of
+      // the selection where duplicates were removed (matches the desktop's
+      // `while (rows.length < values.length) rows.push(null)` step).
+      const padded: (string | number | boolean | null)[][] = deduped.map((row) => [...row])
+      while (padded.length < values.length) {
+        padded.push(Array.from({ length: width }, () => null))
+      }
+      const startRow = range.getRow()
+      const startColumn = range.getColumn()
+      try {
+        // Only rewrite rows whose content actually changed. This is the
+        // formula-fidelity preservation step: unchanged rows keep their
+        // formulas/styles intact (no set-range-values mutation fires for
+        // them, so the existing journal has no CellEdit at that offset).
+        // Rows that DID change are written via setValues — the existing
+        // subscription captures them as writeValue CellEdits.
+        for (let offset = 0; offset < padded.length; offset++) {
+          const newRow = padded[offset]
+          const oldRow = values[offset]
+          let same = oldRow !== undefined && oldRow.length === newRow.length
+          if (same) {
+            for (let i = 0; i < newRow.length; i++) {
+              if (newRow[i] !== oldRow[i]) {
+                same = false
+                break
+              }
+            }
+          }
+          if (same) continue
+          // FWorksheet.getRange(row, col, numRows, numCols).setValues(matrix)
+          // — the canonical Univer facade for in-place range writes. Fires
+          // sheet.mutation.set-range-values per cell, captured by the
+          // existing subscription. A `null` value clears the cell (the
+          // facade's documented behavior; same as Clear All).
+          ws.getRange(startRow + offset, startColumn, 1, width).setValues(
+            [[...newRow]] as unknown as never,
+          )
+        }
+        refresh()
+        return { kind: 'done', removed }
+      } catch (error: unknown) {
+        const detail = error instanceof Error ? error.message : ''
+        return { kind: 'error', message: detail === '' ? 'Write failed' : `Write failed: ${detail}` }
+      }
+    },
+    [refresh],
+  )
+
   if (!rt) return null
   return {
     state,
@@ -696,5 +838,6 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     toggleFilter,
     openDataValidation,
     addNote,
+    removeDuplicates,
   }
 }

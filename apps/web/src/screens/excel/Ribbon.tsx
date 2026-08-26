@@ -30,24 +30,38 @@
  *            tableAdditions / visualAdditions / chartEdits families
  *            (applyCellEditsToXlsx accepts them but routeOffice does not
  *            pass them through).
- *   Data → Filter / Remove Duplicates / Data Validation — the wire save
- *          plan does not expose filterStates / dvStates families.
+ *   Data → Filter / Data Validation — the wire save plan does not expose
+ *          filterStates / dvStates families. (Filter was later enabled
+ *          via Phase 4 Inc. 4; Data Validation was enabled via Inc. 5.)
  *   Formulas → Show formulas / Name Manager — needs pageSetupStates.
  *             showFormulas (a page-setup field) and definedNamesState,
  *             neither wired through the web save plan.
- *   Review → New Comment / Protect Sheet — the wire save plan does not
- *            expose noteStates / sheetProtections families.
+ *   Review → Protect Sheet — the wire save plan does not expose
+ *            sheetProtections families. (New Comment was enabled via
+ *            Phase 4 Inc. 6.)
  *   Page Layout → all commands — pageSetupStates exists in the wire but
  *            only frozenRows/frozenColumns are wired by the web shell;
  *            orientation/margins/print area remain disabled until the
  *            web shell emits them.
+ *
+ * EXCEL-018 (Data → Remove Duplicates): ENABLED. The command opens a
+ * small inline dialog with a "My data has headers" checkbox (default
+ * checked — Excel's own default), then calls
+ * `api.removeDuplicates(hasHeader)`. The dedupe runs through the pure
+ * `apps/web/src/office/dedupe.ts` algorithm (mirrors the frozen desktop
+ * reference at apps/sheets/src/renderer/dedupe.ts verbatim), writes the
+ * result back per-row via `FWorksheet.getRange(...).setValues(...)`,
+ * which fires `sheet.mutation.set-range-values` — the SAME canonical
+ * channel Sort uses, journaled by ExcelEditor's existing subscription
+ * as CellEdits and persisted by `applyCellEditsToXlsx`. No new save-plan
+ * family, no wire change, no gateway change.
  *
  * The desktop's ExcelShell.tsx ribbon (3286 lines) is a frozen surface and
  * is NOT imported; this is a fresh web implementation using the desktop
  * only as the visual/interaction reference.
  */
 import { useState, type ReactNode } from 'react'
-import type { ExcelRuntimeApi, ExcelRuntimeState } from './useExcelRuntime'
+import type { ExcelRuntimeApi, ExcelRuntimeState, RemoveDuplicatesResult } from './useExcelRuntime'
 import {
   UndoIcon,
   RedoIcon,
@@ -175,8 +189,42 @@ const NULL_STATE: ExcelRuntimeState = {
 
 export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
   const [tab, setTab] = useState<TabId>('home')
+  // EXCEL-018 — Remove Duplicates dialog state. Mirrors the desktop's
+  // `setShowDedupeDialog(true)` flow: the Data → Remove Duplicates
+  // button opens a small inline dialog with a "My data has headers"
+  // checkbox (Excel's own default is checked). OK runs the dedupe and
+  // surfaces the result as a transient message below the ribbon.
+  const [dedupeOpen, setDedupeOpen] = useState(false)
+  const [dedupeHasHeader, setDedupeHasHeader] = useState(true)
+  const [dedupeMessage, setDedupeMessage] = useState<string | null>(null)
   const s = api?.state ?? NULL_STATE
   const disabled = !s.ready
+
+  const runRemoveDuplicates = (hasHeader: boolean) => {
+    if (!api) return
+    const result: RemoveDuplicatesResult = api.removeDuplicates(hasHeader)
+    let msg: string
+    switch (result.kind) {
+      case 'done':
+        msg = `Removed ${result.removed} duplicate row(s).`
+        break
+      case 'noop':
+        msg = result.message
+        break
+      case 'select':
+        msg = 'Select the rows to check for duplicates first.'
+        break
+      case 'error':
+        msg = result.message
+        break
+    }
+    setDedupeMessage(msg)
+    // Auto-clear the message after 5s — matches the desktop's transient
+    // status bar behavior.
+    window.setTimeout(() => {
+      setDedupeMessage((cur) => (cur === msg ? null : cur))
+    }, 5000)
+  }
 
   return (
     <div className="excel-ribbon" data-testid="excel-ribbon">
@@ -529,12 +577,29 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
               />
             </Group>
             <Group label="Data Tools">
+              {/* EXCEL-018 — Remove Duplicates (ENABLED). Opens a small
+                  inline dialog with a "My data has headers" checkbox,
+                  then runs `api.removeDuplicates(hasHeader)`. The dedupe
+                  result is written back per-row through
+                  FWorksheet.getRange().setValues(...) — the SAME
+                  canonical mutation channel Sort uses — journaled by
+                  ExcelEditor's existing subscription as CellEdits, and
+                  persisted by the canonical applyCellEditsToXlsx on save.
+                  The dedupe algorithm mirrors the frozen desktop
+                  reference at apps/sheets/src/renderer/dedupe.ts
+                  verbatim (case-insensitive text, type-strict, header
+                  preserved, unchanged rows untouched so formulas/styles
+                  survive). */}
               <RibbonButton
                 label="Remove Duplicates"
-                title="Remove Duplicates — disabled: not yet implemented in the web shell"
-                disabled
+                title="Remove duplicate rows from the selected range (Data → Remove Duplicates)"
+                disabled={disabled}
+                onClick={() => {
+                  setDedupeHasHeader(true)
+                  setDedupeMessage(null)
+                  setDedupeOpen(true)
+                }}
               />
-              {/* Disabled: the wire save plan does not expose dvStates. */}
               <RibbonButton
                 label="Data Validation"
                 title="Open the Data Validation panel for the active sheet (Data → Data Validation)"
@@ -634,6 +699,73 @@ export function Ribbon({ api }: { api: ExcelRuntimeApi | null }) {
           </>
         )}
       </div>
+      {/* EXCEL-018 — Remove Duplicates inline dialog. Rendered at the
+          ribbon level (not in the Data tab panel) so it stays mounted
+          regardless of which tab the user switched to after opening it.
+          Mirrors the desktop's `setShowDedupeDialog(true)` modal: a
+          checkbox for "My data has headers" (default checked — Excel's
+          own default) plus OK/Cancel. OK runs `api.removeDuplicates(...)`
+          and surfaces the result as a transient message. */}
+      {dedupeOpen && (
+        <div
+          className="rb-dialog-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dedupe-title"
+          data-testid="dedupe-dialog"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setDedupeOpen(false)
+          }}
+        >
+          <div className="rb-dialog">
+            <h3 id="dedupe-title" className="rb-dialog-title">
+              Remove Duplicates
+            </h3>
+            <p className="rb-dialog-body">
+              Remove duplicate rows from the selected range. The first
+              occurrence of each unique row is kept; later matches are
+              cleared. Rows outside the selection are untouched.
+            </p>
+            <label className="rb-dialog-check">
+              <input
+                type="checkbox"
+                checked={dedupeHasHeader}
+                onChange={(e) => setDedupeHasHeader(e.target.checked)}
+              />
+              <span>My data has headers</span>
+            </label>
+            <div className="rb-dialog-actions">
+              <button
+                type="button"
+                className="rb-dialog-cancel"
+                onClick={() => setDedupeOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rb-dialog-ok"
+                data-testid="dedupe-ok"
+                onClick={() => {
+                  runRemoveDuplicates(dedupeHasHeader)
+                  setDedupeOpen(false)
+                }}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Transient status message — surfaces the dedupe result (or
+          "select rows first" / "no duplicates found" / error) for a
+          few seconds. Mirrors the desktop's `appDuplicatesRemoved` /
+          `appNoDuplicates` / `appDedupeSelectRows` status strings. */}
+      {dedupeMessage && (
+        <div className="rb-toast" role="status" data-testid="dedupe-message">
+          {dedupeMessage}
+        </div>
+      )}
     </div>
   )
 }

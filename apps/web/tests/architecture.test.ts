@@ -270,3 +270,165 @@ describe('architecture: regression patterns', () => {
     ).toBe(true)
   })
 })
+
+// ── EXCEL-018: Remove Duplicates canonical-path guards ─────────────────────
+//
+// Remove Duplicates is implemented as a value-level rewrite through the
+// EXISTING cell-edit mutation family (sheet.mutation.set-range-values →
+// cellEditFromMutation → savePlan.edits → applyCellEditsToXlsx). The
+// guards below enforce that no future "shortcut" introduces:
+//   - a parallel XLSX engine in the browser (jszip / OOXML construction
+//     inside the dedupe path),
+//   - a new save-plan family or wire field for "dedupe ops",
+//   - a non-canonical write path that bypasses FWorksheet.setValues /
+//     FRange.setValue (which would skip the set-range-values journal
+//     subscription and lose save/reopen fidelity).
+//
+// The dedupe module is a PURE function — it must not import Univer, the
+// gateway, the save plan, or any host API. The wiring happens in
+// useExcelRuntime, which calls the dedupe with the values it read from
+// the live Univer range.
+
+describe('architecture: EXCEL-018 Remove Duplicates uses the canonical cell-edit path', () => {
+  const dedupePath = join(WEB_ROOT, 'src', 'office', 'dedupe.ts')
+  const runtimePath = join(WEB_ROOT, 'src', 'screens', 'excel', 'useExcelRuntime.ts')
+  const ribbonPath = join(WEB_ROOT, 'src', 'screens', 'excel', 'Ribbon.tsx')
+
+  it('apps/web/src/office/dedupe.ts exists', () => {
+    expect(existsSync(dedupePath), `${dedupePath} should exist`).toBe(true)
+  })
+
+  it('dedupe.ts is a PURE module — no Univer, gateway, save-plan, or host imports', () => {
+    expect(existsSync(dedupePath), `${dedupePath} should exist`).toBe(true)
+    const content = readFileSync(dedupePath, 'utf8')
+    const lines = nonCommentLines(content)
+    // The dedupe module must not import anything that would make it
+    // non-browser-safe or that would let it bypass the canonical
+    // cell-edit channel. It's a pure value-transformation function.
+    const forbidden = [
+      /from\s+['"]@univerjs/,
+      /from\s+['"]@genoffice\/xlsx-gateway['"]/,
+      /from\s+['"]@genoffice\/docx-engine['"]/,
+      /from\s+['"]electron['"]/,
+      /from\s+['"]node:/,
+      /from\s+['"]jszip['"]/,
+      /from\s+['"]fs['"]/,
+    ]
+    const violations = lines.filter((line) => forbidden.some((re) => re.test(line)))
+    expect(
+      violations,
+      'dedupe.ts must be a pure module — no Univer/gateway/electron/node imports',
+    ).toEqual([])
+  })
+
+  it('dedupe.ts exports the dedupeRows function', () => {
+    expect(existsSync(dedupePath), `${dedupePath} should exist`).toBe(true)
+    const content = readFileSync(dedupePath, 'utf8')
+    expect(content).toMatch(/export\s+function\s+dedupeRows\b/)
+  })
+
+  it('useExcelRuntime.ts wires removeDuplicates through FWorksheet.getRange().setValues', () => {
+    // The canonical write path is FWorksheet.getRange(row, col, numRows,
+    // numCols).setValues(matrix) — the SAME facade Sort uses, firing
+    // sheet.mutation.set-range-values which is journaled by the existing
+    // subscription. A shortcut that writes via setValueForCell per cell
+    // would still be canonical (same mutation id), but a shortcut that
+    // writes via a private worksheet cellDataMatrix bypass would NOT.
+    // The guard below catches the latter.
+    expect(existsSync(runtimePath), `${runtimePath} should exist`).toBe(true)
+    const content = readFileSync(runtimePath, 'utf8')
+    expect(content).toMatch(/removeDuplicates/)
+    expect(content).toMatch(/\.setValues\(/)
+    // The dedupe algorithm is delegated to the pure module — no inline
+    // reimplementation of the comparison key.
+    expect(content).toMatch(/from\s+['"][^'"]*office\/dedupe['"]/)
+  })
+
+  it('useExcelRuntime.removeDuplicates reads computed values via getValues()', () => {
+    expect(existsSync(runtimePath), `${runtimePath} should exist`).toBe(true)
+    const content = readFileSync(runtimePath, 'utf8')
+    // The dedupe MUST read computed values (the result of formulas) —
+    // matching the desktop's `range.getValues()` call. Reading raw
+    // cell data would compare formula TEXT instead of results, which
+    // is a different semantic.
+    expect(content).toMatch(/\.getValues\(\)/)
+  })
+
+  it('Ribbon.tsx enables the Remove Duplicates button (no longer disabled)', () => {
+    expect(existsSync(ribbonPath), `${ribbonPath} should exist`).toBe(true)
+    const content = readFileSync(ribbonPath, 'utf8')
+    // The button must NOT carry a `disabled` attribute that depends on
+    // a missing feature. It must call `api.removeDuplicates(...)` (or
+    // open the dedupe dialog that does).
+    // Find the Remove Duplicates button block — it must NOT contain
+    // a top-level `disabled` prop (without a value).
+    const buttonBlockMatch = content.match(
+      /label="Remove Duplicates"[\s\S]*?\/>/,
+    )
+    expect(buttonBlockMatch, 'Remove Duplicates button block present').not.toBeNull()
+    const buttonBlock = buttonBlockMatch![0]
+    // The button block must NOT contain a bare `disabled` prop (the
+    // pattern that the previous placeholder used: `<RibbonButton ...
+    // disabled\n/>`). A conditional `disabled={disabled}` is fine —
+    // that just disables while the runtime is booting.
+    expect(buttonBlock).not.toMatch(/^\s*disabled\s*$/m)
+    expect(buttonBlock).not.toMatch(/\sdisabled\s+onClick/)
+    // The button must call removeDuplicates somewhere in its handler —
+    // either `api.removeDuplicates(...)` (after a null guard) or
+    // `api?.removeDuplicates(...)` (optional-chained).
+    expect(
+      /api\??\.removeDuplicates\(/.test(content),
+      'Ribbon must call api.removeDuplicates(...) or api?.removeDuplicates(...)',
+    ).toBe(true)
+  })
+
+  it('apps/web/src has NO raw OOXML or JSZip construction for dedupe', () => {
+    // The dedupe path must not introduce any OOXML / JSZip / XML
+    // construction in the browser. The browser only exchanges typed
+    // CellEdit payloads with the canonical gateway.
+    const webFiles = readFiles(join(WEB_ROOT, 'src'))
+    const ooxmlPatterns = [
+      /new\s+DOMParser\s*\(\s*\)\s*\.\s*parseFromString\s*\([^)]*['"](?:application|text)\/xml['"]/,
+      /\bXMLSerializer\b/,
+      /from\s+['"]jszip['"]/,
+      /<sheetData\b/,
+      /<worksheet\b/,
+      /<row\s+r=/,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => ooxmlPatterns.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('ExcelEditor save plan does NOT introduce a "dedupeOps" or "removeDuplicates" family', () => {
+    // The canonical save plan (BrowserWorkbookSavePlan) exposes the
+    // families: edits, structuralOps, pageSetupStates, filterStates,
+    // dvStates, noteStates. Remove Duplicates must NOT add a new
+    // family — it emits CellEdits through the EXISTING edits channel.
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    expect(existsSync(editorPath), `${editorPath} should exist`).toBe(true)
+    const content = readFileSync(editorPath, 'utf8')
+    const lines = nonCommentLines(content)
+    // A new save-plan family would appear as `dedupeOps: ...` or
+    // `removeDuplicates: ...` in the savePlan object literal. The guard
+    // catches that pattern.
+    const newFamilyPatterns = [
+      /\bdedupeOps\b/,
+      /\bremoveDuplicatesState\b/,
+      /\bdedupeStates\b/,
+      // The save plan assembles these fields; a removeDuplicates
+      // family would be a new top-level key. Match a `removeDuplicates:`
+      // or `dedupe:` key inside a savePlan literal — but NOT inside
+      // the runtime API surface (api.removeDuplicates(...)).
+      /savePlan\s*:\s*\{[^}]*\bremoveDuplicates:/s,
+      /savePlan\s*:\s*\{[^}]*\bdedupe:/s,
+    ]
+    const violations = lines.filter((line) => newFamilyPatterns.some((re) => re.test(line)))
+    expect(
+      violations,
+      'ExcelEditor save plan must NOT introduce a new dedupe family — emit CellEdits through the existing edits channel',
+    ).toEqual([])
+  })
+})

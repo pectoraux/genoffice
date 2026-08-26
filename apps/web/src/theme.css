@@ -283,6 +283,102 @@ body {
   cursor: pointer;
 }
 
+/* ── Remove Duplicates dialog + transient message (EXCEL-018) ─────── */
+
+.rb-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+
+.rb-dialog {
+  min-width: 360px;
+  max-width: 440px;
+  padding: 18px 20px 16px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.rb-dialog-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.rb-dialog-body {
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.rb-dialog-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.rb-dialog-check input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.rb-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rb-dialog-actions button {
+  min-width: 72px;
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.rb-dialog-actions button:hover {
+  border-color: var(--accent);
+}
+
+.rb-dialog-actions .rb-dialog-ok {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.rb-toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 28px;
+  padding: 8px 16px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+  font-size: 12px;
+  z-index: 70;
+  pointer-events: none;
+}
+
 /* ── Name box + formula bar row ─────────────────────────────────────── */
 
 .excel-formula-row {
