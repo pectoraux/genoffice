@@ -126,3 +126,15 @@ Static package dependencies remain exactly as accepted since PROJECT-018:
 ```
 
 The work-item chain `014 → 015 → 016 → 017 → 018 → 019` completes with 019A as a DECISION RECORD: MPP export is deferred (outcome E — `.gproj` + MSPDI are the supported write formats; MPP stays import-only). The `019 → 047` edge survives unchanged in shape: PROJECT-047's golden-file compatibility suite charters import/export regression-blocking over the SUPPORTED formats. A hypothetical future 019B (commercial-SDK export sidecar) would add a NEW host-level package beside `project-mpp-host` — a proposed architecture addition documented in the report §14, NOT implemented, and requiring Principal Architect authorization plus host network-isolation hardening beyond Linux before any code exists.
+
+## Package dependency edges (PROJECT-020)
+
+PROJECT-020 (import compatibility diagnostics) adds NO new package and NO new package edge — the compatibility layer lives inside `@genoffice/project-file` (`src/compatibility/**`) and consumes only the accepted packages:
+
+```text
+@genoffice/project-file → @genoffice/project-engine → @genoffice/project-contracts
+@genoffice/project-file → @genoffice/project-contracts (direct, for types + brand helpers)
+@genoffice/project-mpp-host → @genoffice/project-file (+ engine, contracts, scheduling — host-side import pipeline)
+```
+
+`@genoffice/project-file` STILL does not statically depend on `@genoffice/project-scheduling`: the compatibility pipelines take the scheduler as an INJECTED, structurally-typed runner (`CompatibilityScheduleRunner` — `schedule` from the scheduling package is assignable without importing it), preserving the accepted edge and its static guards (a discipline test asserts the compatibility sources contain no scheduling-package reference, no `node:`/React/Electron imports, no `localeCompare`, and no clock/randomness). The host package's `importMppFromFileWithCompatibility` composes the full production pipeline with `buildCompatibilityReport` (host → foundation direction only). The work-item edge `015 + 018 → 020` completes; `020 → 047` carries forward with PROJECT-047's golden-file suite building on the canonical compatibility contract this increment defines.

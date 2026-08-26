@@ -108,6 +108,8 @@ import {
   INVALID_MSPDI_REFERENCE,
   INVALID_MSPDI_RESOURCE,
   MISSING_MSPDI_FIELD,
+  MSPDI_BASELINE_CAPTURED_AT_APPROXIMATED,
+  MSPDI_PHYSICAL_PERCENT_COMPLETE_DROPPED,
   MSPDI_READ,
   UNSUPPORTED_MSPDI_FEATURE,
   UNSUPPORTED_MSPDI_VERSION,
@@ -620,6 +622,20 @@ function parseTask(
   const actualCost = optionalNumber(node, 'ActualCost') ?? 0
   const remainingCost = optionalNumber(node, 'RemainingCost') ?? 0
   const percentComplete = optionalNumber(node, 'PercentComplete') ?? 0
+  // PROJECT-020 provenance: MSPDI <PhysicalPercentComplete> has no canonical
+  // reconstruction on import (the accepted importer never read it). A
+  // non-zero value is a real, diagnosed drop — never silent. Zero loses
+  // nothing (the canonical default) and is not diagnosed.
+  const physicalPercentComplete = optionalNumber(node, 'PhysicalPercentComplete')
+  if (physicalPercentComplete !== undefined && physicalPercentComplete !== 0) {
+    diag(
+      sink,
+      MSPDI_PHYSICAL_PERCENT_COMPLETE_DROPPED,
+      'warning',
+      `<Task uid=${uidRaw}> carries <PhysicalPercentComplete> ${physicalPercentComplete} which the canonical import does not reconstruct (documented round-trip limitation); value dropped`,
+      String(id),
+    )
+  }
   const priority = optionalNumber(node, 'Priority') ?? 500
   const start = optionalDate(node, 'Start', sink, String(id))
   const finish = optionalDate(node, 'Finish', sink, String(id))
@@ -986,6 +1002,7 @@ function parseBaselines(
   root: XmlNode,
   taskUidMap: ReadonlyMap<number, TaskId>,
   capturedAtFallback: ISODateTime,
+  capturedAtSource: string,
   sink: Sink,
 ): Baseline[] {
   const tasksNode = firstChild(root, 'Tasks')
@@ -1027,6 +1044,16 @@ function parseBaselines(
   }
   const baselines: Baseline[] = []
   for (const [slot, entry] of [...slots.entries()].sort((a, b) => a[0] - b[0])) {
+    // PROJECT-020 provenance: MSPDI carries no per-baseline captured date;
+    // the canonical `capturedAt` is the documented deterministic fallback —
+    // an approximation, diagnosed per created baseline slot.
+    diag(
+      sink,
+      MSPDI_BASELINE_CAPTURED_AT_APPROXIMATED,
+      'warning',
+      `MSPDI carries no per-baseline captured date; baseline slot ${slot} capturedAt approximated from ${capturedAtSource} (${capturedAtFallback})`,
+      `b${slot}`,
+    )
     baselines.push({
       id: baselineIndexToId(slot),
       name: entry.name,
@@ -1283,17 +1310,22 @@ export function importMspdi(input: Uint8Array, metadata?: ProjectFileMetadata): 
   const creationDate = optionalDate(root, 'CreationDate', sink)
   const startDateText = childText(root, 'StartDate')
   let capturedAtFallback: ISODateTime
+  let capturedAtSource: string
   if (lastSaved !== undefined) {
     capturedAtFallback = lastSaved
+    capturedAtSource = '<LastSaved>'
   } else if (creationDate !== undefined) {
     capturedAtFallback = creationDate
+    capturedAtSource = '<CreationDate>'
   } else if (startDateText !== undefined) {
     const r = normalizeMspdiDate(startDateText)
     capturedAtFallback = 'iso' in r ? r.iso : asISODateTime('1970-01-01T00:00:00.000Z')
+    capturedAtSource = '<StartDate>'
   } else {
     capturedAtFallback = asISODateTime('1970-01-01T00:00:00.000Z')
+    capturedAtSource = 'the epoch default'
   }
-  const baselines = parseBaselines(root, taskUidMap, capturedAtFallback, sink)
+  const baselines = parseBaselines(root, taskUidMap, capturedAtFallback, capturedAtSource, sink)
 
   // Properties.
   const properties = parseProperties(root, defaultCalendarIdFallback, sink)

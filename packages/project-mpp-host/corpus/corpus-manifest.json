@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "PROJECT-018 real-MPP corpus manifest. The files are NEVER committed to this repository (redistribution is governed by the MPXJ LGPL distribution, not by us): scripts/fetch-sidecar-deps.mjs downloads each file from the PINNED commit below and verifies its SHA-256 before any test runs. Provenance: the MPXJ test corpus (joniles/mpxj, junit/data) — machine-generated test artifacts maintained by the MPXJ author under GNU LGPL.",
+  "description": "PROJECT-018 real-MPP corpus manifest. The files are NEVER committed to this repository (redistribution is governed by the MPXJ LGPL distribution, not by us): scripts/fetch-sidecar-deps.mjs downloads each file from the PINNED commit below and verifies its SHA-256 before any test runs. Provenance: the MPXJ test corpus (joniles/mpxj, junit/data) — machine-generated test artifacts maintained by the MPXJ author under GNU LGPL. The \"format\" field records filename/provenance labels; \"detectedFormat\" (PROJECT-020) records the byte-true MPP container generation the sidecar detects via MPXJ — e.g. SubprojectA-9.mpp is an MPP9-era name but an MPP14 container (re-saved by a newer Project), which is exactly why the compatibility report carries the detected value, not the label.",
   "source": {
     "repository": "https://github.com/joniles/mpxj",
     "pinnedCommit": "abdbf6ef85654e3eff35c11c5e76cf08da842dce",
@@ -20,7 +20,13 @@
       "sha256": "1e9e0ada53dbb17192acea0f60abe52acbcc7c7b266e9618ab0d08ce4ea456ed",
       "sourcePath": "junit/data/DurationTest8.mpp",
       "provenance": "MPXJ test corpus — Project 98 (MPP8) duration-conversion fixture",
-      "expectedNormalizations": { "N1": 8, "N2": 1, "N3": 0, "N4": 0, "N5": 0 },
+      "expectedNormalizations": {
+        "N1": 8,
+        "N2": 1,
+        "N3": 0,
+        "N4": 0,
+        "N5": 0
+      },
       "expectedErrors": 0,
       "canonical": {
         "tasks": 8,
@@ -32,7 +38,8 @@
         "customFields": 0,
         "projectFinish": "2006-04-10T17:00:00.000Z"
       },
-      "coverage": ["tasks", "durations", "milestones", "calendars", "baseline"]
+      "coverage": ["tasks", "durations", "milestones", "calendars", "baseline"],
+      "detectedFormat": "MPP8"
     },
     {
       "filename": "SubprojectA-9.mpp",
@@ -40,7 +47,13 @@
       "sha256": "1c7871038e3c71e01c154604fd83801c20dd59aa2826ae74f129ef06f15b4345",
       "sourcePath": "junit/data/SubprojectA-9.mpp",
       "provenance": "MPXJ test corpus — Project 2000/2002 (MPP9) subproject fixture (local tasks only; cross-file expansion is out of canonical model)",
-      "expectedNormalizations": { "N1": 3, "N2": 1, "N3": 2, "N4": 0, "N5": 2 },
+      "expectedNormalizations": {
+        "N1": 3,
+        "N2": 1,
+        "N3": 2,
+        "N4": 0,
+        "N5": 2
+      },
       "expectedErrors": 0,
       "canonical": {
         "tasks": 3,
@@ -52,7 +65,8 @@
         "customFields": 0,
         "projectFinish": "2006-08-29T17:00:00.000Z"
       },
-      "coverage": ["tasks", "hierarchy", "dependencies", "calendars"]
+      "coverage": ["tasks", "hierarchy", "dependencies", "calendars"],
+      "detectedFormat": "MPP14"
     },
     {
       "filename": "task-baselines-project2003-mpp9.mpp",
@@ -60,7 +74,13 @@
       "sha256": "2668e2f4cde639c302d74d380f02ee159ed1d2102b0fb6b7c50aaf7268b18ba7",
       "sourcePath": "junit/data/generated/task-baselines/task-baselines-project2003-mpp9.mpp",
       "provenance": "MPXJ test corpus — Project 2003 saving MPP9 down-level; task-baseline fixture",
-      "expectedNormalizations": { "N1": 55, "N2": 1, "N3": 2, "N4": 0, "N5": 55 },
+      "expectedNormalizations": {
+        "N1": 55,
+        "N2": 1,
+        "N3": 2,
+        "N4": 0,
+        "N5": 55
+      },
       "expectedErrors": 0,
       "canonical": {
         "tasks": 55,
@@ -72,7 +92,8 @@
         "customFields": 0,
         "projectFinish": "2015-02-09T17:00:00.000Z"
       },
-      "coverage": ["tasks", "hierarchy", "calendars", "baselines"]
+      "coverage": ["tasks", "hierarchy", "calendars", "baselines"],
+      "detectedFormat": "MPP9"
     },
     {
       "filename": "mpp14relations.mpp",
@@ -80,7 +101,13 @@
       "sha256": "8f33cdb774aa090b664d90145879acc8a289057ca45a6575884eb0da9fd91f30",
       "sourcePath": "junit/data/mpp14relations.mpp",
       "provenance": "MPXJ test corpus — Project 2010+ (MPP14) predecessor-link fixture",
-      "expectedNormalizations": { "N1": 5, "N2": 1, "N3": 2, "N4": 0, "N5": 5 },
+      "expectedNormalizations": {
+        "N1": 5,
+        "N2": 1,
+        "N3": 2,
+        "N4": 0,
+        "N5": 5
+      },
       "expectedErrors": 0,
       "canonical": {
         "tasks": 5,
@@ -92,7 +119,8 @@
         "customFields": 0,
         "projectFinish": "2006-09-26T17:00:00.000Z"
       },
-      "coverage": ["tasks", "dependencies", "calendars"]
+      "coverage": ["tasks", "dependencies", "calendars"],
+      "detectedFormat": "MPP14"
     },
     {
       "filename": "mpp14assignmentcustom.mpp",
@@ -100,7 +128,13 @@
       "sha256": "0e4d59ca154d096b57276214827b77e012612c527b0384cf5cc05e28531478a0",
       "sourcePath": "junit/data/mpp14assignmentcustom.mpp",
       "provenance": "MPXJ test corpus — Project 2010+ (MPP14) assignment + custom-field fixture",
-      "expectedNormalizations": { "N1": 1, "N2": 1, "N3": 1, "N4": 0, "N5": 0 },
+      "expectedNormalizations": {
+        "N1": 1,
+        "N2": 1,
+        "N3": 1,
+        "N4": 0,
+        "N5": 0
+      },
       "expectedErrors": 4,
       "expectedErrorCodes": ["INVALID_MSPDI_DURATION"],
       "expectedErrorCodesNote": "Four MPP durations in this fixture are not whole working minutes (fractional-minute boundaries) — the accepted PROJECT-015 whole-minute rule diagnoses them (error, value dropped); this is the documented MSPDI-boundary behavior, not an MPP-layer defect.",
@@ -114,7 +148,8 @@
         "customFields": 120,
         "projectFinish": "2011-08-05T17:00:00.000Z"
       },
-      "coverage": ["tasks", "resources", "assignments", "customFields", "calendars"]
+      "coverage": ["tasks", "resources", "assignments", "customFields", "calendars"],
+      "detectedFormat": "MPP14"
     },
     {
       "filename": "sample.mpp",
@@ -122,7 +157,13 @@
       "sha256": "f908aa396a840a471fb77a32050ec24efae6a91f7d1e68015821fa6da1f2d960",
       "sourcePath": "junit/data/legacy/sample.mpp",
       "provenance": "MPXJ test corpus — legacy comprehensive sample (the PROJECT-017 spike's richest file)",
-      "expectedNormalizations": { "N1": 22, "N2": 2, "N3": 1, "N4": 5, "N5": 15 },
+      "expectedNormalizations": {
+        "N1": 22,
+        "N2": 2,
+        "N3": 1,
+        "N4": 5,
+        "N5": 15
+      },
       "expectedErrors": 0,
       "canonical": {
         "tasks": 22,
@@ -143,7 +184,8 @@
         "midnightWorkingPeriods",
         "resources",
         "assignments"
-      ]
+      ],
+      "detectedFormat": "MPP9"
     },
     {
       "filename": "ResourceIdAndUniqueId-project2010-mpp14.mpp",
@@ -151,7 +193,13 @@
       "sha256": "4ca8dc82aa9373447eb6b6c573767aa75bfb989aee8cd0d4389dc5c762a59046",
       "sourcePath": "junit/data/ResourceIdAndUniqueId-project2010-mpp14.mpp",
       "provenance": "MPXJ test corpus — Project 2010 resource-id mapping fixture (single placeholder-only task list, resource/calendar-heavy)",
-      "expectedNormalizations": { "N1": 0, "N2": 1, "N3": 2, "N4": 0, "N5": 0 },
+      "expectedNormalizations": {
+        "N1": 0,
+        "N2": 1,
+        "N3": 2,
+        "N4": 0,
+        "N5": 0
+      },
       "expectedErrors": 0,
       "canonical": {
         "tasks": 0,
@@ -163,7 +211,8 @@
         "customFields": 0,
         "projectFinish": null
       },
-      "coverage": ["resources", "calendars", "calendarInheritance"]
+      "coverage": ["resources", "calendars", "calendarInheritance"],
+      "detectedFormat": "MPP14"
     },
     {
       "filename": "mpp12relations.mpp",
@@ -171,7 +220,13 @@
       "sha256": "e73f7686da477d24a2eac39ff7e0834521b43e7433c5d15b6d8405eeb977684d",
       "sourcePath": "junit/data/mpp12relations.mpp",
       "provenance": "MPXJ test corpus — Project 2003/2007 (MPP12) predecessor-link fixture",
-      "expectedNormalizations": { "N1": 5, "N2": 1, "N3": 2, "N4": 0, "N5": 5 },
+      "expectedNormalizations": {
+        "N1": 5,
+        "N2": 1,
+        "N3": 2,
+        "N4": 0,
+        "N5": 5
+      },
       "expectedErrors": 0,
       "canonical": {
         "tasks": 5,
@@ -183,7 +238,8 @@
         "customFields": 0,
         "projectFinish": "2006-09-26T17:00:00.000Z"
       },
-      "coverage": ["tasks", "dependencies", "calendars"]
+      "coverage": ["tasks", "dependencies", "calendars"],
+      "detectedFormat": "MPP12"
     }
   ]
 }
