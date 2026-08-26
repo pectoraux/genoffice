@@ -34,6 +34,7 @@ import {
   type SheetPageSetupState,
   type SheetProtectionState,
   type SheetStructuralOps,
+  type SheetTableAddition,
   type StructuralOp,
   type WorkbookSnapshot,
   type WorkbookStyleEdit,
@@ -128,6 +129,16 @@ export interface BrowserWorkbookSavePlan {
    * `<workbookProtection>` alone.
    */
   readonly workbookProtectionState?: { readonly lockStructure: boolean } | null
+  /**
+   * Session-created tables (Insert → Table, EXCEL-021). Each entry carries
+   * the journaled creation for one table — the engine writes a brand-new
+   * xl/tables/tableN.xml part, the worksheet's `<tableParts>` element, the
+   * relationship, and the [Content_Types] override, failing closed on name
+   * collisions, overlaps, and bad column names. Mirrors the desktop's
+   * tableAdditions journal semantics (deleting a session table drops its
+   * entry, so it is never persisted — convert-to-range).
+   */
+  readonly tableAdditions?: readonly SheetTableAddition[]
   // Extensibility seam — future mutation families land here as optional
   // readonly fields (chartEdits?, hyperlinkEdits?, …).
   // The route handler ignores unknown keys, so adding a field is a
@@ -2406,6 +2417,121 @@ function expectDvRule(value: Record<string, unknown>, field: string): Record<str
 
 /** Caps mirroring the desktop's workbookSheetProtectionSchema. */
 const MAX_SHEET_PROTECTIONS = 1_000
+const MAX_TABLE_ADDITIONS = 50
+const TABLE_STYLE_PATTERN = /^TableStyle(?:Light|Medium|Dark)[1-9][0-9]?$/
+
+/**
+ * Validate one table addition from the wire (EXCEL-021). Mirrors the
+ * desktop preload's workbookTableAddSchema exactly — sheetName, a 0-based
+ * ordered integer area, a 1-255 name, 1-1000 column names of at most 255
+ * chars, an optional built-in style name, and the bandedRows flag. Unknown
+ * fields are rejected with a 400 rather than reaching the engine.
+ */
+function expectSheetTableAddition(value: unknown, index: number): SheetTableAddition {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `tableAdditions[${index}] must be an object`)
+  }
+  const sheetName = expectString(value.sheetName, `tableAdditions[${index}].sheetName`)
+  const name = expectString(value.name, `tableAdditions[${index}].name`)
+  if (name.length > 255) {
+    throw new OfficeValidationError(
+      'validation',
+      `tableAdditions[${index}].name exceeds 255 characters`,
+    )
+  }
+  const columnNames = expectArray(
+    value.columnNames,
+    `tableAdditions[${index}].columnNames`,
+    (column, columnNumber) => {
+      const text = expectString(column, `tableAdditions[${index}].columnNames[${columnNumber}]`)
+      if (text.length > 255) {
+        throw new OfficeValidationError(
+          'validation',
+          `tableAdditions[${index}].columnNames[${columnNumber}] exceeds 255 characters`,
+        )
+      }
+      return text
+    },
+  )
+  if (columnNames.length === 0) {
+    throw new OfficeValidationError(
+      'validation',
+      `tableAdditions[${index}].columnNames must not be empty`,
+    )
+  }
+  if (columnNames.length > 1_000) {
+    throw new OfficeValidationError(
+      'validation',
+      `tableAdditions[${index}].columnNames exceeds 1000 entries`,
+    )
+  }
+  const bandedRows = expectBoolean(value.bandedRows, `tableAdditions[${index}].bandedRows`)
+  let style: string | undefined
+  if (value.style !== undefined) {
+    style = expectString(value.style, `tableAdditions[${index}].style`)
+    if (!TABLE_STYLE_PATTERN.test(style)) {
+      throw new OfficeValidationError(
+        'validation',
+        `tableAdditions[${index}].style must be a built-in TableStyle name`,
+      )
+    }
+  }
+  const area = expectTableArea(value.area, `tableAdditions[${index}].area`)
+  for (const key of Object.keys(value)) {
+    if (!['sheetName', 'area', 'name', 'columnNames', 'style', 'bandedRows'].includes(key)) {
+      throw new OfficeValidationError(
+        'validation',
+        `tableAdditions[${index}] carries an unknown field "${key}"`,
+      )
+    }
+  }
+  return {
+    sheetName,
+    area,
+    name,
+    columnNames,
+    ...(style !== undefined ? { style } : {}),
+    bandedRows,
+  }
+}
+
+/**
+ * 0-based ordered integer area — the desktop preload's parseCellArea.
+ */
+function expectTableArea(
+  value: unknown,
+  field: string,
+): {
+  readonly startRow: number
+  readonly startColumn: number
+  readonly endRow: number
+  readonly endColumn: number
+} {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const startRow = expectNumber(value.startRow, `${field}.startRow`)
+  const startColumn = expectNumber(value.startColumn, `${field}.startColumn`)
+  const endRow = expectNumber(value.endRow, `${field}.endRow`)
+  const endColumn = expectNumber(value.endColumn, `${field}.endColumn`)
+  for (const [key, number] of [
+    ['startRow', startRow],
+    ['startColumn', startColumn],
+    ['endRow', endRow],
+    ['endColumn', endColumn],
+  ] as const) {
+    if (!Number.isInteger(number) || number < 0) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.${key} must be a non-negative integer`,
+      )
+    }
+  }
+  if (endRow < startRow || endColumn < startColumn) {
+    throw new OfficeValidationError('validation', `${field} is not an ordered area`)
+  }
+  return { startRow, startColumn, endRow, endColumn }
+}
 
 /**
  * Validate one per-sheet protection state from the wire (EXCEL-020). The
@@ -2619,6 +2745,22 @@ function parseSaveWorkbookRequest(
       body.savePlan.workbookProtectionState !== null
         ? expectWorkbookProtectionState(body.savePlan.workbookProtectionState)
         : null
+    // EXCEL-021: session-created tables (Insert → Table). Strictly
+    // validated — nothing unvalidated reaches the engine.
+    const tableAdditions =
+      body.savePlan.tableAdditions !== undefined && body.savePlan.tableAdditions !== null
+        ? expectArray(
+            body.savePlan.tableAdditions,
+            'savePlan.tableAdditions',
+            expectSheetTableAddition,
+          )
+        : undefined
+    if (tableAdditions !== undefined && tableAdditions.length > MAX_TABLE_ADDITIONS) {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.tableAdditions exceeds ${MAX_TABLE_ADDITIONS} entries`,
+      )
+    }
     return {
       fileName,
       fileBytes,
@@ -2631,6 +2773,7 @@ function parseSaveWorkbookRequest(
         ...(noteStates ? { noteStates } : {}),
         ...(sheetProtections ? { sheetProtections } : {}),
         ...(workbookProtectionState !== null ? { workbookProtectionState } : {}),
+        ...(tableAdditions && tableAdditions.length > 0 ? { tableAdditions } : {}),
       },
     }
   }
@@ -2706,6 +2849,7 @@ async function handleSaveWorkbook(
   const noteStates = req.savePlan.noteStates ?? []
   const sheetProtections = req.savePlan.sheetProtections ?? []
   const workbookProtectionState = req.savePlan.workbookProtectionState ?? null
+  const tableAdditions = req.savePlan.tableAdditions ?? []
   let mutation
   try {
     // filterStates is argument 6 (after chartEdits/sheetPlan): the canonical
@@ -2716,9 +2860,12 @@ async function handleSaveWorkbook(
     // noteStates is argument 13 (after pageSetupStates): note snapshots run
     // after the worksheet flush so the legacyDrawing element lands on the
     // final sheet XML. sheetProtections is argument 10 (after dvStates) and
-    // workbookProtectionState is the trailing argument — both write their
-    // OOXML protection elements after the content flush. See
-    // planCellEditsToXlsx in @genoffice/xlsx-gateway.
+    // workbookProtectionState is the next-to-trailing argument — both write
+    // their OOXML protection elements after the content flush.
+    // tableAdditions is the trailing argument (EXCEL-021): new tables run
+    // on the flushed worksheet XML — the <tableParts> element and overlap
+    // checks see the final sheet content. See planCellEditsToXlsx in
+    // @genoffice/xlsx-gateway.
     mutation = await applyCellEditsToXlsx(
       buf,
       edits,
@@ -2735,6 +2882,7 @@ async function handleSaveWorkbook(
       noteStates,
       [],
       workbookProtectionState,
+      tableAdditions,
     )
   } catch (e) {
     throw new OfficeValidationError(

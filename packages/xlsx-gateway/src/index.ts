@@ -95,6 +95,10 @@ export {
   parseWorkbookProtectionState,
 } from './gateway/xlsx-protection.js'
 
+// ── Tables (EXCEL-021) ──
+export type { SheetTableInfo } from './gateway/xlsx-table-read.js'
+export { TableReadError } from './gateway/xlsx-table-read.js'
+
 // ── Defined names ──
 export type { DefinedNamesState } from './gateway/xlsx-defined-names.js'
 export { DefinedNameError } from './gateway/xlsx-defined-names.js'

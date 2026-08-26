@@ -86,6 +86,13 @@ import {
 } from './xlsx-protection'
 import { applyThemeState, type WorkbookThemeState } from './xlsx-theme'
 import { applySheetNotes, NoteReadError, parseCommentsPart, type SheetNote } from './xlsx-notes'
+import {
+  parseSheetTables,
+  readCustomTableStyles,
+  readTableThemePalette,
+  TableReadError,
+  type SheetTableInfo,
+} from './xlsx-table-read'
 
 const COMMENTS_REL_TYPE =
   'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments'
@@ -391,6 +398,11 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
   const zip = await createBufferEntrySource(buffer)
   const workbookXml = await zip.readText('xl/workbook.xml')
   const sharedStrings = await readSharedStrings(zip)
+  // Table style context (EXCEL-021): the theme palette + custom
+  // <tableStyle> dxfs are parsed ONCE for the whole workbook — every
+  // sheet's banding colors resolve against the same accents.
+  const tableTheme = await readTableThemePalette(zip)
+  const customTableStyles = await readCustomTableStyles(zip, tableTheme)
   // Presentation reader: resolves cellXfs indexes to the editable format
   // subset so the browser grid renders existing styling (bold, fills,
   // alignment, …). Unmodeled properties stay in the file's own XML.
@@ -457,6 +469,23 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     // a password guards it (the toggle must refuse up front — the gateway
     // fails closed on unprotecting password-bearing elements).
     const sheetProtection = parseSheetProtectionState(worksheetXml)
+    // Table read (EXCEL-021): resolve <tableParts> through the worksheet
+    // rels and parse each table part into the canonical SheetTableInfo
+    // (metadata + pre-resolved banding colors). Fail closed PER SHEET —
+    // unreadable table wiring surfaces no tables, the workbook still
+    // opens, and a no-op save preserves the file's parts byte-for-byte.
+    // Individual parts without a readable ref are skipped (desktop
+    // read_sheet_tables parity).
+    let sheetTables: readonly SheetTableInfo[] | undefined
+    try {
+      const parsed = await parseSheetTables(zip, worksheetPath, worksheetXml, {
+        theme: tableTheme,
+        customStyles: customTableStyles,
+      })
+      if (parsed.length > 0) sheetTables = parsed
+    } catch (error) {
+      if (!(error instanceof TableReadError)) throw error
+    }
     sheets.push({
       id,
       name: decodedName,
@@ -475,6 +504,7 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
       ...(filterState ? { filterState } : {}),
       ...(dvRules ? { dvRules } : {}),
       ...(sheetNotes ? { notes: sheetNotes } : {}),
+      ...(sheetTables ? { tables: sheetTables } : {}),
       ...(sheetProtection ? { sheetProtection } : {}),
     })
     sheetNamesById[id] = decodedName
@@ -674,6 +704,7 @@ export async function applyCellEditsToXlsx(
   noteStates: readonly SheetNoteState[] = [],
   formulaValues: readonly SheetFormulaValues[] = [],
   workbookProtectionState: { readonly lockStructure: boolean } | null = null,
+  tableAdditions: readonly SheetTableAddition[] = [],
 ): Promise<XlsxMutation> {
   const plan = await planCellEditsToXlsx(
     await createBufferEntrySource(source),
@@ -690,7 +721,7 @@ export async function applyCellEditsToXlsx(
     [],
     pageSetupStates,
     noteStates,
-    [],
+    tableAdditions,
     [],
     [],
     [],

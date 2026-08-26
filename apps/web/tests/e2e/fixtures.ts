@@ -2589,3 +2589,162 @@ async function buildProtectionLedgerFixture(options: {
 
   return toBytes(zip)
 }
+
+/**
+ * EXCEL-021 — table fixtures.
+ *
+ *   buildExcelTableFixture():        one existing table (SalesTable,
+ *                                    TableStyleMedium2, header + 3 data
+ *                                    rows, autoFilter INSIDE the table part
+ *                                    so the worksheet carries none — the
+ *                                    sheet's filter origin IS the table).
+ *   buildExcelTableCreateFixture():  the same ledger WITHOUT any table —
+ *                                    the create-from-scratch cases.
+ */
+export async function buildExcelTableFixture(): Promise<Buffer> {
+  return buildTableLedgerFixture({ withTable: true })
+}
+
+export async function buildExcelTableCreateFixture(): Promise<Buffer> {
+  return buildTableLedgerFixture({ withTable: false })
+}
+
+async function buildTableLedgerFixture(options: { readonly withTable: boolean }): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+  ${options.withTable ? '<Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>' : ''}
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Ledger" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="6" uniqueCount="6">
+  <si><t>Item</t></si>
+  <si><t>Amount</t></si>
+  <si><t>Fee</t></si>
+  <si><t>Tax</t></si>
+  <si><t>Tip</t></si>
+  <si><t>Total</t></si>
+</sst>`,
+  )
+
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="2">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="2"><xf/><xf fontId="1" applyFont="1"/></cellXfs>
+</styleSheet>`,
+  )
+
+  if (options.withTable) {
+    addFile(
+      zip,
+      'xl/worksheets/_rels/sheet1.xml.rels',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdTable1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/>
+</Relationships>`,
+    )
+    addFile(
+      zip,
+      'xl/tables/table1.xml',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="SalesTable" displayName="SalesTable" ref="A1:B4" totalsRowCount="0" totalsRowShown="0">
+  <autoFilter ref="A1:B4"/>
+  <tableColumns count="2">
+    <tableColumn id="1" name="Item"/>
+    <tableColumn id="2" name="Amount"/>
+  </tableColumns>
+  <tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>
+</table>`,
+    )
+  }
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s" s="1"><v>0</v></c>
+      <c r="B1" t="s" s="1"><v>1</v></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s"><v>2</v></c>
+      <c r="B2"><v>10</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="s"><v>3</v></c>
+      <c r="B3"><v>5</v></c>
+    </row>
+    <row r="4">
+      <c r="A4" t="s"><v>4</v></c>
+      <c r="B4"><v>2</v></c>
+    </row>
+    <row r="5">
+      <c r="A5" t="s"><v>5</v></c>
+      <c r="B5"><v>17</v></c>
+    </row>
+  </sheetData>
+  ${options.withTable ? '<tableParts count="1"><tablePart r:id="rIdTable1"/></tableParts>' : ''}
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}
