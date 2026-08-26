@@ -17,7 +17,14 @@ import type {
   TaskId,
 } from '@genoffice/project-contracts'
 import { asISODateTime, asTaskId } from '@genoffice/project-contracts'
-import { CalendarBook, addWorkingTime, nextWorkingInstant, resolveCalendar } from './calendar.js'
+import {
+  CalendarBook,
+  addWorkingTime,
+  isWorking,
+  nextWorkingInstant,
+  resolveCalendar,
+  workingIntervals,
+} from './calendar.js'
 import { resolveResourceCalendarId, schedule, type SchedulingOptions } from './schedule.js'
 
 // ===========================================================================
@@ -257,28 +264,47 @@ const assignmentIntervalsForResource = (
  * Detects over-allocation conflicts for a single work resource using a
  * segment-based sweep. A conflict exists on a maximal window where combined
  * assignment `units` exceed the resource's effective max-units (considering
- * availability windows), with the conflicting assignments active during each
- * window.
+ * availability windows) AND the resource is actually available to perform
+ * work (per its resolved calendar), with the conflicting assignments active
+ * during each window.
  *
  * SEGMENTATION (correctness-critical): the sweep collects EVERY boundary
- * timestamp at which either demand or effective capacity can change —
- * assignment start/finish endpoints AND availability-window start/finish
- * endpoints. Between two consecutive boundaries the active assignment set and
- * the effective capacity are both constant, so one evaluation per segment is
- * both sufficient and complete. Omitting availability-window boundaries would
- * miss over-allocations that arise ONLY from a mid-assignment capacity drop
- * (the assignment endpoints alone do not bracket the conflict). Capacity is
- * evaluated at the segment midpoint (any point strictly inside the open
- * segment reflects the window coverage for that segment, independent of event
- * ordering).
+ * timestamp at which either demand, effective capacity, OR resource working
+ * status can change — assignment start/finish endpoints, availability-window
+ * start/finish endpoints, AND resource-calendar working-period start/finish
+ * endpoints (bounded to the assignment span). Between two consecutive
+ * boundaries the active assignment set, the effective capacity, AND the
+ * resource's working status are all constant, so one evaluation per segment is
+ * both sufficient and complete.
+ *
+ * RESOURCE-CALENDAR-AWARE DEMAND (correctness-critical): over-allocation is
+ * evaluated only where the resource can actually supply work capacity. During
+ * a segment where the resource's calendar says it is NOT working, the resource
+ * supplies no work capacity, so the demand against capacity on that segment is
+ * zero — there is no over-allocation there (the resource is not being asked to
+ * work above capacity; it is not working at all). Zeroing demand on
+ * non-working segments clips conflict windows to the resource's working
+ * periods: any open conflict is closed at the working→non-working transition,
+ * so a reported conflict window never spans a non-working interval. Omitting
+ * the resource calendar from detection would report a FALSE over-allocation
+ * whenever two task-calendar windows overlap on a day the resource does not
+ * work, even though the resource supplies no work that day.
+ *
+ * Capacity is evaluated at the segment midpoint (any point strictly inside
+ * the open segment reflects the window coverage for that segment, independent
+ * of event ordering). Omitting availability-window boundaries would miss
+ * over-allocations that arise ONLY from a mid-assignment capacity drop (the
+ * assignment endpoints alone do not bracket the conflict).
  */
 const detectConflictsForResource = (
   resource: Resource,
+  resourceCal: Calendar,
   intervals: AssignmentInterval[],
 ): Conflict[] => {
   if (intervals.length === 0 || resource.maxUnits <= 0) return []
-  // Bound the sweep to the assignment span. Availability windows outside this
-  // span cannot bracket a conflict (no assignment is active there).
+  // Bound the sweep to the assignment span. Availability windows and resource
+  // working periods outside this span cannot bracket a conflict (no
+  // assignment is active there).
   const startMs = intervals.reduce(
     (min, iv) => Math.min(min, new Date(iv.start).getTime()),
     Number.POSITIVE_INFINITY,
@@ -299,6 +325,15 @@ const detectConflictsForResource = (
       const f = new Date(slot.finish).getTime()
       if (f >= startMs && f <= finishMs) boundaries.add(f)
     }
+  }
+  // Resource-calendar working-period boundaries: each segment then lies
+  // wholly inside or wholly outside a working period, so the working-status
+  // check at the segment midpoint is representative of the whole segment.
+  const spanStartIso = asISODateTime(new Date(startMs).toISOString())
+  const spanFinishIso = asISODateTime(new Date(finishMs).toISOString())
+  for (const wi of workingIntervals(resourceCal, spanStartIso, spanFinishIso)) {
+    boundaries.add(new Date(wi.start).getTime())
+    boundaries.add(new Date(wi.finish).getTime())
   }
   const sorted = [...boundaries].sort((a, b) => a - b)
   if (sorted.length < 2) return []
@@ -341,9 +376,16 @@ const detectConflictsForResource = (
       const f = new Date(iv.finish).getTime()
       return s <= t0 && f >= t1
     })
-    const demand = active.reduce((sum, i) => sum + i.units, 0)
-    // Capacity is constant on (t0, t1); evaluate at the midpoint.
-    const capacity = effectiveMaxUnits(resource, isoAt(t0 + (t1 - t0) / 2))
+    const midpoint = isoAt(t0 + (t1 - t0) / 2)
+    const working = isWorking(resourceCal, midpoint)
+    // During non-working segments the resource supplies no work capacity, so
+    // demand against capacity is zero — there is no over-allocation there.
+    // This clips conflict windows to the resource's working periods: any
+    // open conflict is closed at the working→non-working transition.
+    const demand = working ? active.reduce((sum, i) => sum + i.units, 0) : 0
+    // Capacity is constant on (t0, t1); evaluate at the midpoint. On
+    // non-working segments capacity is irrelevant (demand is already zero).
+    const capacity = effectiveMaxUnits(resource, midpoint)
     if (demand > capacity) {
       if (!inConflict) {
         inConflict = true
@@ -376,6 +418,8 @@ const detectConflictsForResource = (
  */
 const detectAllConflicts = (
   document: ProjectDocument,
+  book: CalendarBook,
+  cache: Map<string, Calendar>,
   schedule: DerivedSchedule,
   options: ReturnType<typeof normalizeOptions>,
 ): Conflict[] => {
@@ -383,7 +427,10 @@ const detectAllConflicts = (
   for (const resource of document.resources) {
     if (resource.kind !== 'work') continue
     const intervals = assignmentIntervalsForResource(document, schedule, resource, options)
-    const conflicts = detectConflictsForResource(resource, intervals)
+    // Resolve the resource's calendar so detection intersects assignment
+    // demand with the resource's actual working periods (Finding 1).
+    const resourceCal = resourceCalendarFor(document, book, cache, resource)
+    const conflicts = detectConflictsForResource(resource, resourceCal, intervals)
     all.push(...conflicts)
   }
   all.sort((a, b) => {
@@ -821,7 +868,7 @@ export function levelResources(
       unresolvedRemaining = true
       break
     }
-    const conflicts = detectAllConflicts(workingDocument, result, opts)
+    const conflicts = detectAllConflicts(workingDocument, book, calendarCache, result, opts)
     if (conflicts.length === 0) break
     // Pick the first conflict (already sorted deterministically).
     const conflict = conflicts[0]
@@ -897,7 +944,7 @@ export function levelResources(
   // Final pass: detect any remaining conflicts in the final working copy.
   const finalResult = schedule(workingDocument, schedulingOptions ?? {})
   if (finalResult.diagnostics.length === 0) {
-    const remaining = detectAllConflicts(workingDocument, finalResult, opts)
+    const remaining = detectAllConflicts(workingDocument, book, calendarCache, finalResult, opts)
     for (const conflict of remaining) {
       const sig = conflictSignature(conflict)
       if (reportedSignatures.has(sig)) {

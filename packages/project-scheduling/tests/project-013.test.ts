@@ -35,6 +35,10 @@ const day = (minutes: number) => wm(minutes)
 const MONDAY_TEN_AM = '2026-08-03T10:00:00.000Z'
 const MONDAY_NOON = '2026-08-03T12:00:00.000Z'
 const MONDAY_ONE_PM = '2026-08-03T13:00:00.000Z'
+const MONDAY_ELEVEN_AM = '2026-08-03T11:00:00.000Z'
+const MONDAY_TWO_PM = '2026-08-03T14:00:00.000Z'
+const MONDAY_THREE_PM = '2026-08-03T15:00:00.000Z'
+const TUESDAY_TEN_AM = '2026-08-04T10:00:00.000Z'
 
 const resultOf = (document: ProjectDocument): DerivedSchedule => {
   const result = schedule(document)
@@ -69,7 +73,7 @@ const documentJson = (document: ProjectDocument): string => JSON.stringify(docum
 const resultJson = (result: LevelingResult): string => JSON.stringify(result)
 
 // ===========================================================================
-// Golden fixtures L01–L24
+// Golden fixtures L01–L29
 // ===========================================================================
 
 describe('PROJECT-013 golden L01 — simple two-task overload', () => {
@@ -505,12 +509,18 @@ describe('PROJECT-013 golden L16 — deadline interaction', () => {
 })
 
 describe('PROJECT-013 golden L17 — resource calendar restriction', () => {
-  it('advances the delayed start to the next RESOURCE-working instant', () => {
-    // resourceCal: Mon-Tue OFF, Wed-Fri working 09:00-17:00.
+  it('detects the conflict on a resource-WORKING day and advances the delayed start past a non-working day', () => {
+    // resourceCal: Mon working 09:00-17:00, Tue OFF, Wed-Fri working 09:00-17:00.
+    // The conflict is genuine because the resource WORKS Monday (the day both
+    // task-calendar windows overlap). The delayed start then advances past the
+    // non-working Tuesday to the next resource-working instant (Wednesday).
+    // This is the resource-calendar-aware detection contract: an over-allocation
+    // is reported only where the resource can actually supply work capacity, so
+    // a conflict is never fabricated on a non-working resource day.
     const resourceCal = makeCalendar('resourceCal', {
       workingWeek: {
         0: [],
-        1: [],
+        1: [{ startMinute: 540, endMinute: 1020 }],
         2: [],
         3: [{ startMinute: 540, endMinute: 1020 }],
         4: [{ startMinute: 540, endMinute: 1020 }],
@@ -535,9 +545,10 @@ describe('PROJECT-013 golden L17 — resource calendar restriction', () => {
       ],
     })
     const { result, schedule } = applyLeveling(document)
-    // a (kept) runs Monday (task calendar standard, Mon working). b delayed
-    // to the next RESOURCE-working instant after a finishes (Mon 17:00). The
-    // resource calendar has Mon-Tue off, so b starts Wednesday.
+    // a (kept) runs Monday (task calendar standard, Mon working) and the
+    // resource ALSO works Monday, so the Monday conflict is genuine. b is
+    // delayed to the next RESOURCE-working instant after a finishes (Mon
+    // 17:00): the resource is off Tuesday, so b starts Wednesday.
     expect(result.proposedCommands).toEqual([
       { type: 'SetTaskStart', taskId: asTaskId('b'), start: WEDNESDAY },
     ])
@@ -848,6 +859,218 @@ describe('PROJECT-013 golden L25 — mid-assignment capacity drop', () => {
     expect(result.overallocations[0].window).toEqual({
       start: iso(MONDAY_NOON),
       finish: iso(MONDAY_ONE_PM),
+    })
+    expect(result.overallocations[0].peakDemand).toBe(1)
+    expect(result.overallocations[0].maxUnits).toBe(0.5)
+    expect(result.overallocations[0].resolved).toBe(true)
+  })
+})
+
+describe('PROJECT-013 golden L26 — resource unavailable, no false over-allocation', () => {
+  it('reports no over-allocation when two task windows overlap on a non-working resource day', () => {
+    // resourceCal: Monday OFF, Tue-Fri working 09:00-17:00. Both tasks are
+    // scheduled Monday by the TASK calendar (standard, Mon working), so their
+    // task-calendar windows overlap all day with combined demand 2.0 against
+    // maxUnits 1.0. But the resource does not work Monday at all, so it
+    // supplies no work capacity that day and is NOT over-allocated — it is not
+    // being asked to work above capacity, it is not working. A sweep that
+    // ignored the resource calendar would report a FALSE Monday over-allocation
+    // and delay b; the calendar-aware sweep reports no over-allocation.
+    const resourceCal = makeCalendar('resourceCal', {
+      workingWeek: {
+        0: [],
+        1: [],
+        2: [{ startMinute: 540, endMinute: 1020 }],
+        3: [{ startMinute: 540, endMinute: 1020 }],
+        4: [{ startMinute: 540, endMinute: 1020 }],
+        5: [{ startMinute: 540, endMinute: 1020 }],
+        6: [],
+      },
+    })
+    const document = makeDocument({
+      tasks: [makeTask({ id: 'a', duration: day(480) }), makeTask({ id: 'b', duration: day(480) })],
+      calendars: [makeCalendar('standard'), resourceCal],
+      resources: [
+        makeResource({
+          id: 'r1',
+          kind: 'work',
+          maxUnits: 1,
+          calendarId: asCalendarId('resourceCal'),
+        }),
+      ],
+      assignments: [
+        makeAssignment('as1', 'a', 'r1', { units: 1 }),
+        makeAssignment('as2', 'b', 'r1', { units: 1 }),
+      ],
+    })
+    const { result, schedule } = applyLeveling(document)
+    expect(result.proposedCommands).toEqual([])
+    expect(result.overallocations).toEqual([])
+    expect(result.diagnostics.some((d) => d.code === 'LEVELING_NO_OVERALLOCATION')).toBe(true)
+    // Both tasks remain on Monday (no delay): the resource is not over-allocated.
+    expect(scheduleOf(schedule, 'a').scheduledStart).toBe(MONDAY)
+    expect(scheduleOf(schedule, 'b').scheduledStart).toBe(MONDAY)
+  })
+})
+
+describe('PROJECT-013 golden L27 — partial calendar overlap, conflict only in the intersection', () => {
+  it('clips the conflict window to the resource-working intersection of the assignment', () => {
+    // resourceCal: Mon-Fri mornings only 09:00-12:00. Task calendar standard
+    // Mon-Fri 09:00-17:00. Both tasks run Monday 09:00-17:00 (task calendar).
+    // The assignment interval spans 09:00-17:00 but the resource only works
+    // 09:00-12:00, so the conflict exists ONLY in the 09:00-12:00
+    // intersection (demand 1.0 > capacity 0.5 during the morning). The
+    // 12:00-17:00 afternoon is non-working for the resource → no conflict
+    // there. The reported window is exactly [09:00, 12:00).
+    const resourceCal = makeCalendar('resourceCal', {
+      workingWeek: {
+        0: [],
+        1: [{ startMinute: 540, endMinute: 720 }],
+        2: [{ startMinute: 540, endMinute: 720 }],
+        3: [{ startMinute: 540, endMinute: 720 }],
+        4: [{ startMinute: 540, endMinute: 720 }],
+        5: [{ startMinute: 540, endMinute: 720 }],
+        6: [],
+      },
+    })
+    const document = makeDocument({
+      tasks: [makeTask({ id: 'a', duration: day(480) }), makeTask({ id: 'b', duration: day(480) })],
+      calendars: [makeCalendar('standard'), resourceCal],
+      resources: [
+        makeResource({
+          id: 'r1',
+          kind: 'work',
+          maxUnits: 0.5,
+          calendarId: asCalendarId('resourceCal'),
+        }),
+      ],
+      assignments: [
+        makeAssignment('as1', 'a', 'r1', { units: 0.5 }),
+        makeAssignment('as2', 'b', 'r1', { units: 0.5 }),
+      ],
+    })
+    const { result, schedule } = applyLeveling(document)
+    expect(result.proposedCommands).toEqual([
+      { type: 'SetTaskStart', taskId: asTaskId('b'), start: TUESDAY },
+    ])
+    expect(scheduleOf(schedule, 'a').scheduledStart).toBe(MONDAY)
+    expect(scheduleOf(schedule, 'b').scheduledStart).toBe(TUESDAY)
+    expect(result.overallocations).toHaveLength(1)
+    expect(result.overallocations[0].window).toEqual({
+      start: iso(MONDAY),
+      finish: iso(MONDAY_NOON),
+    })
+    expect(result.overallocations[0].peakDemand).toBe(1)
+    expect(result.overallocations[0].maxUnits).toBe(0.5)
+    expect(result.overallocations[0].resolved).toBe(true)
+  })
+})
+
+describe('PROJECT-013 golden L28 — task-calendar overlap removed by resource calendar', () => {
+  it('reports no over-allocation when the resource working periods do not overlap both tasks', () => {
+    // resourceCal: Monday has TWO disjoint working periods 09:00-10:00 and
+    // 12:00-15:00; no other day works. Task calendar standard Mon-Fri.
+    // Task a starts Monday 09:00 duration 180 → scheduled 09:00-12:00.
+    // Task b starts Monday 10:00 duration 300 → scheduled 10:00-15:00.
+    // The TASK-CALENDAR windows overlap (10:00-12:00). But the resource only
+    // works 09:00-10:00 (covered only by a) and 12:00-15:00 (covered only by
+    // b): the resource-working demand periods are DISJOINT, so there is no
+    // over-allocation even though the task-calendar windows overlap.
+    const resourceCal = makeCalendar('resourceCal', {
+      workingWeek: {
+        0: [],
+        1: [
+          { startMinute: 540, endMinute: 600 },
+          { startMinute: 720, endMinute: 900 },
+        ],
+        2: [],
+        3: [],
+        4: [],
+        5: [],
+        6: [],
+      },
+    })
+    const document = makeDocument({
+      tasks: [
+        makeTask({ id: 'a', duration: day(180), start: iso(MONDAY) }),
+        makeTask({ id: 'b', duration: day(300), start: iso(MONDAY_TEN_AM) }),
+      ],
+      calendars: [makeCalendar('standard'), resourceCal],
+      resources: [
+        makeResource({
+          id: 'r1',
+          kind: 'work',
+          maxUnits: 1,
+          calendarId: asCalendarId('resourceCal'),
+        }),
+      ],
+      assignments: [
+        makeAssignment('as1', 'a', 'r1', { units: 1 }),
+        makeAssignment('as2', 'b', 'r1', { units: 1 }),
+      ],
+    })
+    const { result, schedule } = applyLeveling(document)
+    expect(result.proposedCommands).toEqual([])
+    expect(result.overallocations).toEqual([])
+    expect(result.diagnostics.some((d) => d.code === 'LEVELING_NO_OVERALLOCATION')).toBe(true)
+    expect(scheduleOf(schedule, 'a').scheduledStart).toBe(MONDAY)
+    expect(scheduleOf(schedule, 'b').scheduledStart).toBe(MONDAY_TEN_AM)
+  })
+})
+
+describe('PROJECT-013 golden L29 — resource calendar and availability window simultaneously', () => {
+  it('clips the conflict window at the resource working boundary even when an availability window extends past it', () => {
+    // resourceCal: Mon-Fri 10:00-14:00 (4h shifted). Availability window
+    // Monday 11:00-15:00 units 0.5 (capacity reduction that EXTENDS PAST the
+    // resource's working end at 14:00). maxUnits 1.0. Task calendar standard
+    // Mon-Fri 09:00-17:00. Both tasks run Monday 09:00-17:00 (task calendar),
+    // combined demand 1.0. The over-allocation exists where demand 1.0 exceeds
+    // the 0.5 availability-window capacity AND the resource is working — i.e.
+    // the intersection of [11:00, 15:00) (availability) with [10:00, 14:00)
+    // (resource working) = [11:00, 14:00). A sweep that ignored the resource
+    // calendar would report [11:00, 15:00) (the full availability window),
+    // over-reporting the conflict into the non-working 14:00-15:00 stretch;
+    // the calendar-aware sweep clips it to [11:00, 14:00).
+    const resourceCal = makeCalendar('resourceCal', {
+      workingWeek: {
+        0: [],
+        1: [{ startMinute: 600, endMinute: 840 }],
+        2: [{ startMinute: 600, endMinute: 840 }],
+        3: [{ startMinute: 600, endMinute: 840 }],
+        4: [{ startMinute: 600, endMinute: 840 }],
+        5: [{ startMinute: 600, endMinute: 840 }],
+        6: [],
+      },
+    })
+    const document = makeDocument({
+      tasks: [makeTask({ id: 'a', duration: day(480) }), makeTask({ id: 'b', duration: day(480) })],
+      calendars: [makeCalendar('standard'), resourceCal],
+      resources: [
+        makeResource({
+          id: 'r1',
+          kind: 'work',
+          maxUnits: 1,
+          availability: [
+            { start: iso(MONDAY_ELEVEN_AM), finish: iso(MONDAY_THREE_PM), units: 0.5 },
+          ],
+          calendarId: asCalendarId('resourceCal'),
+        }),
+      ],
+      assignments: [
+        makeAssignment('as1', 'a', 'r1', { units: 0.5 }),
+        makeAssignment('as2', 'b', 'r1', { units: 0.5 }),
+      ],
+    })
+    const { result, schedule } = applyLeveling(document)
+    expect(result.proposedCommands).toEqual([
+      { type: 'SetTaskStart', taskId: asTaskId('b'), start: TUESDAY_TEN_AM },
+    ])
+    expect(scheduleOf(schedule, 'a').scheduledStart).toBe(MONDAY)
+    expect(scheduleOf(schedule, 'b').scheduledStart).toBe(TUESDAY_TEN_AM)
+    expect(result.overallocations).toHaveLength(1)
+    expect(result.overallocations[0].window).toEqual({
+      start: iso(MONDAY_ELEVEN_AM),
+      finish: iso(MONDAY_TWO_PM),
     })
     expect(result.overallocations[0].peakDemand).toBe(1)
     expect(result.overallocations[0].maxUnits).toBe(0.5)

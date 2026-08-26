@@ -1,7 +1,6 @@
 import type {
   Assignment,
   ConstraintType,
-  ISODateTime,
   LevelingDiagnostic,
   LevelingOptions,
   ProjectCommand,
@@ -11,7 +10,6 @@ import type {
   TaskId,
 } from '@genoffice/project-contracts'
 import { asTaskId } from '@genoffice/project-contracts'
-import { asISODateTime } from '@genoffice/project-contracts'
 import { validateProjectDocument, type ValidationDiagnostic } from './document.js'
 import {
   HierarchyError,
@@ -978,23 +976,32 @@ function mutateForLevelResources(
       },
     }
   }
-  // Apply the proposed SetTaskStart commands as a batch. Each proposed
-  // command is a SetTaskStart the leveler emitted; applying them all at once
-  // produces the leveled document. We apply directly (not via nested
-  // applyProjectCommand) to keep this O(tasks) and to produce a single
-  // accepted mutation. The scheduler recomputes derived dates afterwards.
-  const startsByTask = new Map<TaskId, ISODateTime>()
+  // Apply the proposed SetTaskStart commands through the SAME canonical
+  // mutation primitive used by the individual `SetTaskStart` command path
+  // (`mutateForSetTaskStart`). This guarantees there is exactly ONE
+  // authoritative task-start mutation implementation in the engine;
+  // `LevelResources` cannot develop semantics different from `SetTaskStart`
+  // (task-existence validation, date parsing, the `withOptionalDate` field
+  // update, and inverse computation are all shared). The leveler emits one
+  // SetTaskStart per delayed task (deduplicated, sorted by TaskId), so the
+  // batch is small and the per-command copy is negligible. The per-command
+  // inverses are intentionally discarded: `LevelResources` has no batch-undo
+  // (the frozen `ProjectCommand` union has no batch-inverse command); undo
+  // requires a host snapshot, mirroring the CreateBaseline precedent.
+  let tasks = document.tasks
   for (const proposed of result.proposedCommands) {
-    if (proposed.type === 'SetTaskStart') {
-      // The frozen SetTaskStart command shape types `start` as `string`
-      // (interop-friendly); the engine brands it back to ISODateTime when
-      // applying it to the canonical task.start field.
-      startsByTask.set(proposed.taskId, asISODateTime(proposed.start))
+    if (proposed.type !== 'SetTaskStart') continue
+    const mutation = mutateForSetTaskStart({ ...document, tasks }, proposed)
+    if (mutation.kind === 'rejected') {
+      // The leveler only emits SetTaskStart for existing tasks with valid
+      // dates, so a rejection here indicates a leveler/scheduler divergence.
+      // Surface it as a diagnostic and continue applying the remaining
+      // commands rather than silently dropping the task.
+      diagnostics.push(...mutation.diagnostics)
+      continue
     }
+    tasks = mutation.outcome.tasks
   }
-  const tasks = document.tasks.map((task) =>
-    startsByTask.has(task.id) ? withOptionalDate(task, 'start', startsByTask.get(task.id)!) : task,
-  )
   return {
     kind: 'accepted',
     outcome: {

@@ -275,6 +275,47 @@ export function subtractWorkingTime(
   return toISODateTime(cursor)
 }
 
+/**
+ * Working sub-intervals of the half-open span `[startIso, finishIso)`, each
+ * clipped to the span. Returns one interval per (calendar period ∩ span) that
+ * has positive length, in chronological order. Empty when the span contains no
+ * working time. Used by the leveler to intersect assignment demand with the
+ * resource's actual working periods so over-allocation is evaluated only where
+ * the resource can supply work capacity (PROJECT-013).
+ */
+export function workingIntervals(
+  calendar: Calendar,
+  startIso: ISODateTime,
+  finishIso: ISODateTime,
+): { start: ISODateTime; finish: ISODateTime }[] {
+  const from = new Date(startIso)
+  const to = new Date(finishIso)
+  if (to.getTime() <= from.getTime()) return []
+  const firstDay = dayStart(from)
+  const lastDay = dayStart(to)
+  const firstMinute = minuteOfDay(from)
+  const lastMinute = minuteOfDay(to)
+  const intervals: { start: ISODateTime; finish: ISODateTime }[] = []
+  let day = firstDay
+  for (let guard = 0; guard < SEARCH_GUARD && day.getTime() <= lastDay.getTime(); guard += 1) {
+    const periods = periodsFor(calendar, day)
+    const startMinute = day.getTime() === firstDay.getTime() ? firstMinute : 0
+    const endMinute = day.getTime() === lastDay.getTime() ? lastMinute : 1440
+    for (const period of periods) {
+      const a = Math.max(startMinute, period.startMinute)
+      const b = Math.min(period.endMinute, endMinute)
+      if (b > a) {
+        intervals.push({
+          start: toISODateTime(new Date(day.getTime() + a * MINUTE_MS)),
+          finish: toISODateTime(new Date(day.getTime() + b * MINUTE_MS)),
+        })
+      }
+    }
+    day = new Date(day.getTime() + DAY_MS)
+  }
+  return intervals
+}
+
 /** Working minutes inside the half-open interval [startIso, finishIso). */
 export function workingDuration(
   calendar: Calendar,
