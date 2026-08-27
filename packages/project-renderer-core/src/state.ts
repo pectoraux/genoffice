@@ -1,24 +1,27 @@
 /**
- * PROJECT-021 — shared renderer view state.
+ * PROJECT-021/023 — shared renderer view state.
  *
  * The view state is the host-independent INTERACTION state of the Project
  * renderer: what is selected, which summary tasks are collapsed, which part
- * of the timeline is visible, and which canonical view/table/filter/group
- * definitions are active. Desktop (Electron) and web hosts drive the exact
- * same state shape through the same intent reducer (`./reduce.js`), so the
- * two hosts cannot drift apart (R-009). The collapsed set carries the
- * invariant `collapsed ⊆ summary TaskIds` (collapse is a summary-tree
- * operation), enforced by the reducer and by `reconcileViewState`.
+ * of the timeline is visible, which canonical view/table/filter/group
+ * definitions are active, and (PROJECT-023) the active cell edit. Desktop
+ * (Electron) and web hosts drive the exact same state shape through the
+ * same intent reducer (`./reduce.js`), so the two hosts cannot drift apart
+ * (R-009). The collapsed set carries the invariant `collapsed ⊆ summary
+ * TaskIds` (collapse is a summary-tree operation), enforced by the reducer
+ * and by `reconcileViewState`.
  *
  * Architecture-lock §11 (renderer rule): renderer state may cache projections
  * of canonical state but may NOT own authoritative task dates, dependencies,
  * critical path, float, leveling results, or persisted Project semantics.
  * Enforced structurally: every field below is either an entity-ID reference
  * (validated against the live document by `reconcileViewState`), a canonical
- * view-definition reference, or a timeline viewport instant. No scheduling
- * value is ever stored here — schedule values are joined at projection time
- * (`./projection.js`) from the `DerivedSchedule` the scheduling authority
- * produced.
+ * view-definition reference, a timeline viewport instant, or the active
+ * cell edit (`./editing.js` — a task-ID + field reference plus the user's
+ * draft text on its way to becoming a semantic command; nothing scheduling-
+ * derived is cached there). No scheduling value is ever stored here —
+ * schedule values are joined at projection time (`./projection.js`) from
+ * the `DerivedSchedule` the scheduling authority produced.
  *
  * The state is plain JSON data by construction (hosts may persist it in their
  * own workspace preferences; it is never written into `.gproj` — the
@@ -35,6 +38,7 @@ import type {
   ProjectDocument,
   DerivedSchedule,
 } from '@genoffice/project-contracts'
+import type { TaskEditing } from './editing.js'
 
 /**
  * Task selection. `taskIds` is the ordered selection (first-occurrence order
@@ -89,6 +93,13 @@ export interface ProjectViewState {
   readonly collapsed: readonly TaskId[]
   /** The visible timeline window. */
   readonly viewport: TimelineViewport
+  /** The active cell edit (PROJECT-023): the edited (task, field) plus the
+   * canonical draft text. Absent when nothing is being edited. At most one
+   * edit is active (beginning a new edit replaces an active one). The
+   * reducer activates it only for editable (task, field) pairs; the commit
+   * flow (`./edit-flow.js`) always ends it; `reconcileViewState` drops it
+   * when the edited task no longer exists. */
+  readonly editing?: TaskEditing
   /** Active canonical view definition (document-declared `ProjectView`). */
   readonly activeViewId?: ProjectViewId
   /** Active canonical table definition (document-declared `ProjectTable`). */
@@ -170,8 +181,11 @@ function initialViewport(document: ProjectDocument, schedule?: DerivedSchedule):
  * document is not enough — a live-but-unselected anchor/focus, e.g. from a
  * malformed externally restored state, is dropped, keeping the documented
  * `TaskSelection` invariant that both are selection members when present);
- * active view-definition references that vanished are cleared. The viewport
- * is time, not an entity reference, and is left untouched.
+ * the active cell edit is dropped when its task no longer exists (the
+ * commit translation would be a deterministic `missingTask` invalid —
+ * ending the edit here keeps the state self-consistent); active
+ * view-definition references that vanished are cleared. The viewport is
+ * time, not an entity reference, and is left untouched.
  *
  * Hosts call this after ANY document replacement (session command, undo,
  * redo, file load) so the cached projections never reference dead entities —
@@ -214,6 +228,9 @@ export function reconcileViewState(
     resources: state.resources.filter((id) => resourceIds.has(id)),
     collapsed: state.collapsed.filter((id) => summaryIds.has(id)),
     viewport: state.viewport,
+    ...(state.editing !== undefined && taskIds.has(state.editing.taskId)
+      ? { editing: state.editing }
+      : {}),
     ...(state.activeViewId !== undefined &&
     document.views.some((view) => view.id === state.activeViewId)
       ? { activeViewId: state.activeViewId }

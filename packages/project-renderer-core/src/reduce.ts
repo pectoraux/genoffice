@@ -1,5 +1,5 @@
 /**
- * PROJECT-021 — the view-state intent reducer.
+ * PROJECT-021/023 — the view-state intent reducer.
  *
  * Pure and deterministic: the same `(state, intent, context)` triple always
  * produces the same next state. Hosts dispatch `ProjectViewIntent` values;
@@ -12,8 +12,9 @@
  * only live entity ids, the task-selection `anchorId`/`focusId` are members
  * of the surviving `taskIds` when present (validated against the selection,
  * not mere document existence), the collapsed set contains only live SUMMARY
- * ids, active view references point at live definitions, and the viewport is
- * a well-formed window.
+ * ids, the active cell edit targets a live task and an editable field,
+ * active view references point at live definitions, and the viewport is a
+ * well-formed window.
  */
 import type {
   DependencyId,
@@ -22,13 +23,14 @@ import type {
   ResourceId,
   TaskId,
 } from '@genoffice/project-contracts'
-import type { ProjectViewIntent, SelectMode } from './intents.js'
+import type { MoveFocusDirection, ProjectViewIntent, SelectMode } from './intents.js'
 import {
   type ProjectViewState,
   type TaskSelection,
   parseInstant,
   reconcileViewState,
 } from './state.js'
+import { type TaskEditing, initialTaskEditDraft, isTaskFieldEditable } from './editing.js'
 /** Viewport span guards and fit padding are defined once in `./timeline.js`
  * (the module that owns the viewport math) and re-exported here for reducer
  * consumers. */
@@ -106,6 +108,58 @@ function outlineRange(document: ProjectDocument, from: TaskId, to: TaskId): read
   return order.slice(lo, hi + 1)
 }
 
+/** The VISIBLE row order for keyboard focus movement: the canonical outline
+ * order minus every row hidden inside a collapsed summary's subtree (the
+ * same visibility rule the projection applies — a task is hidden iff an
+ * ancestor is collapsed). Pure document + collapsed-set arithmetic; the
+ * tasks array is canonical outline order by the engine's invariant. */
+function visibleTaskOrder(
+  document: ProjectDocument,
+  collapsed: readonly TaskId[],
+): readonly TaskId[] {
+  const collapsedSet = new Set(collapsed)
+  const visible: TaskId[] = []
+  // The outline level of the collapsed summary whose subtree we are inside;
+  // undefined when every task so far is visible.
+  let hideBelowLevel: number | undefined
+  for (const task of document.tasks) {
+    if (hideBelowLevel !== undefined && task.outlineLevel > hideBelowLevel) continue
+    hideBelowLevel = undefined
+    visible.push(task.id)
+    if (task.summary && collapsedSet.has(task.id)) hideBelowLevel = task.outlineLevel
+  }
+  return visible
+}
+
+/** Moves the task focus one step through the visible row order. Pure helper
+ * returning the next focus id, or `undefined` when the move is a clamped
+ * no-op (past the first/last visible row or already at the target) or there
+ * is nothing visible. */
+function nextVisibleFocus(
+  visible: readonly TaskId[],
+  currentId: TaskId | undefined,
+  direction: MoveFocusDirection,
+): TaskId | undefined {
+  if (visible.length === 0) return undefined
+  const currentIndex = currentId !== undefined ? visible.indexOf(currentId) : -1
+  if (currentIndex < 0) {
+    // Bootstrap: nothing focused yet — any direction focuses the first
+    // visible row (the arrow-key-selects-first-row behavior).
+    return visible[0]
+  }
+  const nextIndex =
+    direction === 'up'
+      ? currentIndex - 1
+      : direction === 'down'
+        ? currentIndex + 1
+        : direction === 'first'
+          ? 0
+          : visible.length - 1
+  if (nextIndex === currentIndex) return undefined
+  if (nextIndex < 0 || nextIndex >= visible.length) return undefined
+  return visible[nextIndex]
+}
+
 /**
  * PROJECT-021 — reduce one view intent against a live document context.
  *
@@ -146,6 +200,66 @@ export function reduceViewState(
     }
     case 'clearSelection': {
       next = { ...state, tasks: { taskIds: [] }, dependencies: [], resources: [] }
+      break
+    }
+    case 'moveTaskFocus': {
+      const visible = visibleTaskOrder(document, state.collapsed)
+      const targetId = nextVisibleFocus(visible, state.tasks.focusId, intent.direction)
+      // Deterministic no-op: no visible rows, the move runs past the
+      // first/last visible row, or the focus is already at the target.
+      if (targetId === undefined || targetId === state.tasks.focusId) return state
+      if (intent.extend) {
+        // The accepted shift-extend rule: the canonical outline-order range
+        // from the anchor (or the current focus when no anchor exists) to
+        // the target — the same `outlineRange` semantics shift-click uses.
+        const anchorId = state.tasks.anchorId ?? state.tasks.focusId ?? targetId
+        next = withTaskSelection(state, {
+          taskIds: outlineRange(document, anchorId, targetId),
+          anchorId,
+          focusId: targetId,
+        })
+      } else {
+        next = withTaskSelection(
+          state,
+          withoutKeys({
+            taskIds: [targetId],
+            anchorId: targetId,
+            focusId: targetId,
+          }),
+        )
+      }
+      break
+    }
+    case 'beginTaskEdit': {
+      const task = document.tasks.find((candidate) => candidate.id === intent.taskId)
+      // Deterministic no-op for an unknown task or a non-editable field
+      // (summary scheduling values are derived roll-ups — the editability
+      // rule lives in `./editing.js`, the single home of that fact).
+      if (task === undefined || !isTaskFieldEditable(task, intent.field)) return state
+      const editing: TaskEditing = {
+        taskId: intent.taskId,
+        field: intent.field,
+        draft: initialTaskEditDraft(document, context.schedule, intent.taskId, intent.field),
+      }
+      // Activating a cell edit selects the edited row (the Microsoft Project
+      // cell-edit gesture): the selection becomes exactly that row. An
+      // already-active edit is replaced — at most one editor is live.
+      next = {
+        ...state,
+        tasks: { taskIds: [intent.taskId], anchorId: intent.taskId, focusId: intent.taskId },
+        editing,
+      }
+      break
+    }
+    case 'updateTaskEditDraft': {
+      if (state.editing === undefined) return state
+      next = { ...state, editing: { ...state.editing, draft: intent.draft } }
+      break
+    }
+    case 'endTaskEdit': {
+      if (state.editing === undefined) return state
+      const { editing: _ended, ...rest } = state
+      next = rest
       break
     }
     case 'selectDependency': {

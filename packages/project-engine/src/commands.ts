@@ -895,6 +895,151 @@ function mutateForSetTaskStart(
 }
 
 /**
+ * PROJECT-023 SetTaskDuration.
+ *
+ * Sets the working `duration` on a LEAF task — one of the scheduler's two
+ * leaf inputs (the derived finish is `start + duration` in working time).
+ * The mutator rejects a missing task, a SUMMARY task (the summary duration
+ * is a derived roll-up of the subtree — the `SetPercentComplete` precedent:
+ * accepting the edit would store a value every derivation overwrites, an
+ * invisible edit), and a value outside the canonical working-minute domain
+ * (non-negative INTEGER minutes — the domain the MSPDI interchange round-trip
+ * documents; fractional or negative values are diagnosed as
+ * UNREPRESENTABLE at the file boundary, so the engine never admits them into
+ * the document). Zero is valid (milestones are zero-duration).
+ *
+ * The scheduler is the sole scheduling authority — this command stores the
+ * semantic input field and never computes dates. The inverse always exists
+ * (duration is a required Task field), so command-level undo is total; the
+ * renderer session's snapshot undo restores the exact prior document anyway.
+ */
+function mutateForSetTaskDuration(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'SetTaskDuration' },
+): Mutation {
+  const task = findTask(document, command.taskId)
+  if (!task) {
+    return {
+      kind: 'rejected',
+      diagnostics: [{ code: 'MISSING_TASK', message: `Task ${command.taskId} does not exist` }],
+    }
+  }
+  if (task.summary) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'SUMMARY_DURATION_NOT_SETTABLE',
+          message: `Task ${command.taskId} is a summary; its duration is derived from children`,
+        },
+      ],
+    }
+  }
+  const duration = command.duration as number
+  if (!Number.isFinite(duration) || !Number.isInteger(duration) || duration < 0) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'INVALID_DURATION',
+          message: `Task ${command.taskId} duration ${command.duration} is not a non-negative integer working-minute value`,
+        },
+      ],
+    }
+  }
+  const updated: Task = { ...task, duration: command.duration }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks.map((candidate) =>
+        candidate.id === command.taskId ? updated : candidate,
+      ),
+      affectedTaskIds: [command.taskId],
+      inverse: {
+        type: 'SetTaskDuration',
+        taskId: command.taskId,
+        duration: task.duration,
+      },
+    },
+  }
+}
+
+/**
+ * PROJECT-023 SetTaskFinish.
+ *
+ * Sets the STORED `finish` field on a LEAF task. Honest semantics: the
+ * stored `finish` is an interchange echo (the MSPDI importer/exporter
+ * round-trips it verbatim), NOT a scheduling input — the scheduler derives
+ * the authoritative finish from the leaf's `start` + `duration` and never
+ * reads this field. Editing the SCHEDULED finish therefore goes through
+ * start/duration edits (or the constraint commands); this command pins the
+ * stored field exactly like `SetTaskStart` pins the stored start, and the
+ * engine performs no working-time arithmetic (the scheduler is the sole
+ * scheduling authority — computing duration from a finish would require the
+ * task's resolved calendar).
+ *
+ * Rejections: a missing task, a SUMMARY task (the summary finish is a
+ * roll-up of the children's finishes — the `SetPercentComplete` precedent),
+ * and a malformed ISO date (the `SetTaskStart` validation). The inverse is
+ * emitted only when a previous finish existed — the frozen command shape
+ * requires a string payload, so there is no command that CLEARS the field;
+ * undo of a first-ever pin requires a host snapshot (the `SetTaskStart`
+ * precedent, satisfied by the renderer session's snapshot undo).
+ */
+function mutateForSetTaskFinish(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'SetTaskFinish' },
+): Mutation {
+  const task = findTask(document, command.taskId)
+  if (!task) {
+    return {
+      kind: 'rejected',
+      diagnostics: [{ code: 'MISSING_TASK', message: `Task ${command.taskId} does not exist` }],
+    }
+  }
+  if (task.summary) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'SUMMARY_FINISH_NOT_SETTABLE',
+          message: `Task ${command.taskId} is a summary; its finish is derived from children`,
+        },
+      ],
+    }
+  }
+  const finish = command.finish
+  if (!Number.isFinite(new Date(finish).getTime())) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'INVALID_DATE',
+          message: `Task ${command.taskId} finish ${finish} is not a valid ISO date`,
+        },
+      ],
+    }
+  }
+  const previousFinish = task.finish
+  const updated = withOptionalDate(task, 'finish', finish)
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks.map((candidate) =>
+        candidate.id === command.taskId ? updated : candidate,
+      ),
+      affectedTaskIds: [command.taskId],
+      // Restore the previous finish. When the task had no stored finish,
+      // there is no SetTaskFinish payload that clears the field — undo
+      // requires a host snapshot (the SetTaskStart precedent).
+      inverse: previousFinish
+        ? { type: 'SetTaskFinish', taskId: command.taskId, finish: previousFinish }
+        : undefined,
+    },
+  }
+}
+
+/**
  * PROJECT-013 LevelResources.
  *
  * The canonical resource-leveling command. The engine delegates to the pure
@@ -1080,6 +1225,12 @@ export function applyProjectCommand(
         break
       case 'SetTaskStart':
         mutation = mutateForSetTaskStart(document, command)
+        break
+      case 'SetTaskDuration':
+        mutation = mutateForSetTaskDuration(document, command)
+        break
+      case 'SetTaskFinish':
+        mutation = mutateForSetTaskFinish(document, command)
         break
       case 'LevelResources':
         mutation = mutateForLevelResources(document, command)

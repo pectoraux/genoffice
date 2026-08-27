@@ -77,7 +77,9 @@ describe('PROJECT-021 architecture — package boundaries', () => {
   it('keeps the view state free of scheduling-derived values (lock §11)', () => {
     const stateSource = srcModules['../src/state.ts'] ?? ''
     const intentsSource = srcModules['../src/intents.ts'] ?? ''
-    for (const source of [stateSource, intentsSource]) {
+    const editingSource = srcModules['../src/editing.ts'] ?? ''
+    const editFlowSource = srcModules['../src/edit-flow.ts'] ?? ''
+    for (const source of [stateSource, intentsSource, editingSource, editFlowSource]) {
       // No scheduling-derived types or field declarations anywhere in the
       // interaction-state modules (comment prose quoting the lock is fine;
       // declarations are not).
@@ -90,6 +92,12 @@ describe('PROJECT-021 architecture — package boundaries', () => {
     // The view state's only time values are the viewport window instants.
     expect(stateSource).toContain('readonly start: string')
     expect(stateSource).toContain('readonly finish: string')
+    // The editing state carries an entity reference + field + draft text
+    // only — the draft is user input en route to a command, never a cached
+    // scheduling value.
+    expect(editingSource).toContain('readonly taskId: TaskId')
+    expect(editingSource).toContain('readonly field: EditableTaskField')
+    expect(editingSource).toContain('readonly draft: string')
   })
 
   it('exposes the public surface from the index (projection, control, state, timeline)', () => {
@@ -156,6 +164,41 @@ describe('PROJECT-021 architecture — package boundaries', () => {
     }
   })
 
+  it('exposes the PROJECT-023 selection/editing surface from the index (editing model, commit flow, navigation)', () => {
+    const index = srcModules['../src/index.ts'] ?? ''
+    for (const symbol of [
+      'type EditableTaskField',
+      'type TaskEditing',
+      'type TaskEditCommit',
+      'type TaskEditInvalidReason',
+      'type TaskEditFlowOutcome',
+      'type MoveFocusDirection',
+      'EDITABLE_TASK_FIELDS',
+      'editableTaskFields',
+      'isTaskFieldEditable',
+      'initialTaskEditDraft',
+      'commitTaskEdit',
+      'commitTaskEditThroughSession',
+    ]) {
+      expect(index).toContain(symbol)
+    }
+    // The editing intents and the keyboard-navigation intent exist on the
+    // frozen intent union (the selection intents were PROJECT-021).
+    const intents = srcModules['../src/intents.ts'] ?? ''
+    for (const intent of [
+      "type: 'beginTaskEdit'",
+      "type: 'updateTaskEditDraft'",
+      "type: 'endTaskEdit'",
+      "type: 'moveTaskFocus'",
+    ]) {
+      expect(intents).toContain(intent)
+    }
+    // The editing state slice is an additive optional field of the view
+    // state, reconciled when its task dies.
+    const state = srcModules['../src/state.ts'] ?? ''
+    expect(state).toContain('readonly editing?: TaskEditing')
+  })
+
   it('keeps the view models free of pixel/DOM APIs (fraction space only)', () => {
     const viewFiles = Object.entries(srcModules).filter(([file]) =>
       file.startsWith('../src/views/'),
@@ -206,6 +249,14 @@ describe('PROJECT-021 architecture — CI and spec lockstep', () => {
     expect(workItems).toContain('ProjectGanttView')
     expect(dependencyGraph).toContain('Package dependency edges (PROJECT-022)')
     expect(verificationMatrix).toContain('PROJECT-022 evidence requirements')
+  })
+
+  it('the spec set carries the PROJECT-023 sections in lockstep', () => {
+    expect(requirements).toContain('PROJECT-023 — Selection / editing')
+    expect(workItems).toMatch(/\|\s*PROJECT-023\s*\|/)
+    expect(workItems).toContain('commitTaskEditThroughSession')
+    expect(dependencyGraph).toContain('Package dependency edges (PROJECT-023)')
+    expect(verificationMatrix).toContain('PROJECT-023 evidence requirements')
   })
 
   it('leaves the frozen architecture lock untouched (renderer boundary already sanctioned)', () => {
