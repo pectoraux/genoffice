@@ -1346,3 +1346,29 @@ Stage Summary:
 - Workflow state: IMPLEMENTING → READY for push/PR (blocked ONLY by missing GitHub credentials in this environment). NOT PR_OPEN, NOT VERIFIED — the architect owns those transitions. DEPLOYED evidence pending post-merge.
 
 Addendum (same task, post-commit): main had advanced to 3b8b2a4 (PROJECT-025, zero overlap with the EXCEL-024 file set) — branch rebased onto it with ZERO conflicts (head c9e0771f243b870f2fd482b5eb691b7b3745b998); `git diff` across the rebase on every EXCEL-024 file is EMPTY (byte-identical replay). Post-rebase gates re-run on the rebased tree: typecheck ×3 clean, unit 668/668 + 458+4sk + 229/229, FORMAT_BASE_REF=origin/main format:check clean, CF browser E2E 10/10. Push re-attempted and still blocked (no credentials); the branch + evidence sit ready for push/PR the moment credentials are restored.
+
+---
+
+Task ID: EXCEL-024-push-pr-ci
+Agent: Z.ai (Implementation / Verification Operator)
+Task: EXCEL-024 (Conditional Formatting) — credentials restored; rebase to current main, independent gate re-run, push branch, open PR, attribute CI.
+
+Work Log:
+
+- Credentials: architect-supplied PAT persisted as GITHUB_TOKEN in ~/.bashrc + git credential store (repo scope verified; fetch/push confirmed). This unblocked the exact point where the prior session stalled ("push + PR + CI + DEPLOYED evidence resume the moment credentials are restored").
+- Repository truth gate: origin/main advanced 3b8b2a4 → edcd2ae (PROJECT-026 via PR #28: project-scheduling allocation kernel + project-renderer-core views + spec/project; ZERO overlap with the EXCEL-024 file set — verified by file-level comm). Branch excel-024-cf carried the completed implementation commit 3f0423a on 3b8b2a4, unpushed, no PR (ls-remote empty).
+- Rebase: excel-024-cf onto edcd2ae — zero conflicts; head 6121f2e; git diff across the rebase on every EXCEL-024 file EMPTY (byte-identical replay).
+- Independent gate re-run on 6121f2e (nothing trusted from prior reports): typecheck ×3 clean (xlsx-gateway, contractor-core, web); unit — xlsx-gateway 668/668, contractor-core 458 passed + 4 skipped, web 229/229; ESLint clean on all 15 changed source files; FORMAT_BASE_REF=origin/main format:check clean; production build green (19.16s); FULL browser E2E 122/122 in 9 chunks through the real stack (CF 10/10, core 13/13, nested 2/2, shell+insert 16/16, charts+DV+data 20/20, images+filter 18/18, persistence+protection+dedupe 13/13, notes+table+view 14/14, word 16/16 — 106 Excel + 16 Word).
+- Push: excel-024-cf @ 6121f2e pushed to origin (new branch, tracking set).
+- PR #29 opened via the API (head 6121f2e, base main): "EXCEL-024: Conditional Formatting — gateway CF reader, cfStates wire, browser CF surface (10-scenario E2E)" with the full house-style body (architecture transport diagram, fail-closed classification, §8 resolution, gate evidence, evidence-class table). https://github.com/pectoraux/genoffice/pull/29
+- CI attribution on 6121f2e (all five checks driven to conclusion):
+  - web: SUCCESS — the canonical Excel gate, green on the PR head.
+  - test: failure ONLY at the Lint step (formatting + theme-color steps before it green). All 20 annotations fetched via the check-run annotations API: file-for-file IDENTICAL to merged PR #25's set — 2x .github, 2x apps/docs/docs-migrated-handlers.ts, 1x apps/docs/docs-runtime.ts, 6x apps/docs/file-dialog-ownership.test.ts, 1x apps/sheets/sheets-ai-handlers.ts, 3x apps/sheets/renderer/App.tsx, 1x apps/sheets/InsertFunctionDialog.tsx, 2x apps/slides/renderer/App.tsx, 1x apps/slides/TextEditOverlay.tsx, 1x apps/web/BOQ.tsx (pre-existing file, NOT in the EXCEL-024 diff — verified). ZERO annotations in EXCEL-024 files.
+  - e2e: failure ONLY at the frozen Electron shell step (Build apps + Generate sheets fixtures green before it) — the standing pre-existing pattern.
+  - foundation: failure at "Verify branch isolation" — the project-foundation workflow (.github/workflows/project-foundation.yml, triggers on every PR to main) diffs vs origin/main and rejects ANY change under apps/sheets/, apps/web/src/screens/ExcelEditor*, apps/web/src/screens/excel/, packages/xlsx-gateway/, packages/docx-engine/. It exists to keep PROJECT branches off Excel surfaces but structurally fires on every Excel PR: identical failure on merged PR #23 (EXCEL-023, later VERIFIED) and merged PR #25 (verification debt closure). Not an EXCEL-024 defect; documented for the architect's review.
+  - Vercel Preview Comments: success.
+- Spec ledger updated in lockstep AFTER evidence: work-items.md EXCEL-024 status → PR_OPEN (PR #29, head 6121f2e, rebase lineage, gate results, CI attribution, NOT VERIFIED); verification-matrix.md EXCEL-024 evidence block → rebased-head intro, BROWSER re-run note (9 chunks on 6121f2e), new CI evidence line, DEPLOYED line updated (push done, PR open, production E2E pending post-merge with deployed SHA = merged main).
+
+Stage Summary:
+
+- EXCEL-024 workflow state: PR_OPEN — PR #29 (https://github.com/pectoraux/genoffice/pull/29), head 6121f2e, canonical web gate GREEN, test/e2e/foundation failures fully attributed pre-existing with API-level evidence (annotations byte-identical to a merged+verified PR's set; frozen Electron shell; structural cross-domain isolation guard). All local gates green on the exact pushed head. DEPLOYED evidence remains pending post-merge; ARCHITECT_REVIEW → APPROVED → MERGED → VERIFIED are the architect's transitions.

@@ -272,7 +272,7 @@ Verification debt closure evidence (2026-08-27, independent rerun on main):
 Objective: Import supported CF rules, render them, edit/create/delete rules, and persist `cfStates`.
 Dependencies: EXCEL-021.
 Required verification: expression rules, cell-value rules, color scales/icon sets/data bars where canonical support exists, fail-closed for unsupported extensions.
-Status: IMPLEMENTING → PR_OPEN / ARCHITECT_REVIEW (branch excel-024-cf from 4d2ec337; PR submission blocked on missing GitHub credentials in the reset environment — see worklog). NOT VERIFIED — the architect owns that transition.
+Status: PR_OPEN — PR #29, branch excel-024-cf head 6121f2e (rebased onto main @ edcd2ae after the PROJECT-026 merge — zero file overlap, byte-identical replay verified; original base 4d2ec337 → 3b8b2a4 → edcd2ae). Post-rebase gates re-run independently: typecheck ×3, unit 668/668 + 458+4sk + 229/229, format:check vs origin/main, ESLint, production build, full browser E2E 122/122. CI on 6121f2e: web gate GREEN (the canonical Excel gate); test/e2e/foundation failures fully attributed pre-existing — Lint annotations (20) all in frozen/non-Excel files, file-for-file identical to merged PR #25's set; e2e fails only at the frozen Electron shell step; foundation is the project-foundation isolation guard that fires on every Excel PR by construction (identical on merged PRs #23 and #25). NOT VERIFIED — the architect owns ARCHITECT_REVIEW → APPROVED → MERGED → VERIFIED.
 
 Implementation evidence (2026-08-28, branch excel-024-cf):
 
