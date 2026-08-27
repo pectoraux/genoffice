@@ -21,9 +21,11 @@ import type {
   CalendarPeriod,
   Dependency,
   DependencyType,
+  DerivedSchedule,
   ProjectDocument,
   Resource,
   Task,
+  TaskSchedule,
 } from '@genoffice/project-contracts'
 
 const standardDay = (): CalendarPeriod[] => [{ startMinute: 540, endMinute: 1020 }]
@@ -219,4 +221,150 @@ export function multiSiblingDocument(): ProjectDocument {
       makeTask({ id: 'root2', outlineLevel: 1, wbs: '2' }),
     ],
   })
+}
+
+// ---------------------------------------------------------------------------
+// PROJECT-022 — Gantt view fixtures.
+// ---------------------------------------------------------------------------
+
+/** A hand-authored schedule entry (exact dates under the test's control —
+ * the scheduling authority itself is exercised for real in the session and
+ * gantt-view integration tests). */
+export function makeScheduleEntry(
+  taskId: string,
+  start: string,
+  finish: string,
+  overrides: Partial<TaskSchedule> = {},
+): TaskSchedule {
+  const { taskId: _ignored, ...rest } = overrides
+  return {
+    duration: asWorkingMinutes(480),
+    totalSlack: 0,
+    freeSlack: 0,
+    critical: false,
+    ...rest,
+    taskId: asTaskId(taskId),
+    scheduledStart: asISODateTime(start),
+    scheduledFinish: asISODateTime(finish),
+  }
+}
+
+/** The PROJECT-022 Gantt document: root > (a > a1,a2, b, m), one flagged
+ * milestone, two dependencies (FS a1→a2, SS a2→b with lag). Document order
+ * is the canonical outline order; uids are explicit so grid cells are
+ * stable and readable. */
+export function ganttDocument(): ProjectDocument {
+  return makeDocument({
+    startDate: '2026-08-01T00:00:00.000Z',
+    finishDate: '2026-08-31T00:00:00.000Z',
+    tasks: [
+      makeTask({ id: 'root', uid: 1, outlineLevel: 1, summary: true, wbs: '1' }),
+      makeTask({
+        id: 'a',
+        uid: 2,
+        parentTaskId: asTaskId('root'),
+        outlineLevel: 2,
+        summary: true,
+        wbs: '1.1',
+      }),
+      makeTask({
+        id: 'a1',
+        uid: 3,
+        parentTaskId: asTaskId('a'),
+        outlineLevel: 3,
+        duration: asWorkingMinutes(480),
+        percentComplete: 50,
+        wbs: '1.1.1',
+      }),
+      makeTask({
+        id: 'a2',
+        uid: 4,
+        parentTaskId: asTaskId('a'),
+        outlineLevel: 3,
+        duration: asWorkingMinutes(960),
+        wbs: '1.1.2',
+      }),
+      makeTask({
+        id: 'b',
+        uid: 5,
+        parentTaskId: asTaskId('root'),
+        outlineLevel: 2,
+        duration: asWorkingMinutes(1440),
+        wbs: '1.2',
+      }),
+      makeTask({
+        id: 'm',
+        uid: 6,
+        parentTaskId: asTaskId('root'),
+        outlineLevel: 2,
+        milestone: true,
+        duration: asWorkingMinutes(0),
+        wbs: '1.3',
+      }),
+    ],
+    dependencies: [makeDependency('d1', 'a1', 'a2'), makeDependency('d2', 'a2', 'b', 'SS', 60)],
+  })
+}
+
+/** A hand-authored derived schedule for `ganttDocument()` (working-day
+ * shaped instants; roll-up windows on the summaries; 50% progress on a1).
+ * The milestone `m` carries a zero-span window (start === finish). */
+export function ganttSchedule(): DerivedSchedule {
+  return {
+    taskSchedules: {
+      [asTaskId('root')]: makeScheduleEntry(
+        'root',
+        '2026-08-03T09:00:00.000Z',
+        '2026-08-12T17:00:00.000Z',
+        {
+          duration: asWorkingMinutes(4800),
+          percentComplete: 25,
+        },
+      ),
+      [asTaskId('a')]: makeScheduleEntry(
+        'a',
+        '2026-08-03T09:00:00.000Z',
+        '2026-08-05T17:00:00.000Z',
+        {
+          duration: asWorkingMinutes(2400),
+          percentComplete: 25,
+        },
+      ),
+      [asTaskId('a1')]: makeScheduleEntry(
+        'a1',
+        '2026-08-03T09:00:00.000Z',
+        '2026-08-03T17:00:00.000Z',
+        {
+          percentComplete: 50,
+        },
+      ),
+      [asTaskId('a2')]: makeScheduleEntry(
+        'a2',
+        '2026-08-04T09:00:00.000Z',
+        '2026-08-05T17:00:00.000Z',
+        {
+          duration: asWorkingMinutes(960),
+        },
+      ),
+      [asTaskId('b')]: makeScheduleEntry(
+        'b',
+        '2026-08-10T09:00:00.000Z',
+        '2026-08-12T17:00:00.000Z',
+        {
+          duration: asWorkingMinutes(1440),
+        },
+      ),
+      [asTaskId('m')]: makeScheduleEntry(
+        'm',
+        '2026-08-07T09:00:00.000Z',
+        '2026-08-07T09:00:00.000Z',
+        {
+          duration: asWorkingMinutes(0),
+        },
+      ),
+    },
+    projectStart: asISODateTime('2026-08-03T09:00:00.000Z'),
+    projectFinish: asISODateTime('2026-08-12T17:00:00.000Z'),
+    diagnostics: [],
+  }
 }

@@ -8,7 +8,7 @@ import verificationMatrix from '../../../spec/project/verification-matrix.md?raw
 import architectureLock from '../../../spec/project/architecture-lock.md?raw'
 
 /**
- * PROJECT-021 — architecture discipline guards.
+ * PROJECT-021/022 — architecture discipline guards.
  *
  * Static source-level checks mirroring (and exceeding) the CI foundation
  * boundary grep: the renderer core imports ONLY the contracts and engine
@@ -20,7 +20,7 @@ import architectureLock from '../../../spec/project/architecture-lock.md?raw'
  * This suite itself uses ONLY vitest + `?raw` module sources — no `node:`
  * imports, satisfying the same CI boundary grep as every foundation package.
  */
-const srcModules = import.meta.glob('../src/*.ts', {
+const srcModules = import.meta.glob('../src/**/*.ts', {
   query: '?raw',
   import: 'default',
   eager: true,
@@ -123,6 +123,59 @@ describe('PROJECT-021 architecture — package boundaries', () => {
     }
   })
 
+  it('exposes the PROJECT-022 view-model surface from the index (grid, timeline, bars, dependencies, milestones, virtualization, hit testing)', () => {
+    const index = srcModules['../src/index.ts'] ?? ''
+    for (const symbol of [
+      'ProjectTaskGrid',
+      'buildTaskGrid',
+      'ProjectTimeline',
+      'buildTimeline',
+      'ProjectGanttBars',
+      'buildGanttBars',
+      'ProjectDependencies',
+      'buildDependencies',
+      'ProjectMilestones',
+      'buildMilestones',
+      'ProjectRowWindow',
+      'buildRowWindow',
+      'ProjectGanttView',
+      'buildGanttView',
+      'hitTestGantt',
+    ]) {
+      expect(index).toContain(symbol)
+    }
+    // The five architect-named surfaces exist as exported types:
+    for (const symbol of [
+      'type ProjectTaskGrid',
+      'type ProjectTimeline',
+      'type ProjectGanttBars',
+      'type ProjectDependencies',
+      'type ProjectMilestones',
+    ]) {
+      expect(index).toContain(symbol)
+    }
+  })
+
+  it('keeps the view models free of pixel/DOM APIs (fraction space only)', () => {
+    const viewFiles = Object.entries(srcModules).filter(([file]) =>
+      file.startsWith('../src/views/'),
+    )
+    expect(viewFiles.length).toBeGreaterThanOrEqual(7)
+    for (const [file, source] of viewFiles) {
+      expect(source, `${file} touches a pixel-layout API`).not.toMatch(
+        /clientWidth|offsetWidth|innerWidth|getBoundingClientRect|devicePixelRatio|scrollHeight/,
+      )
+      // DOM document APIs — the canonical `ProjectDocument` parameter (e.g.
+      // `document.dependencies`) is NOT a DOM reference:
+      expect(source, `${file} touches the DOM document`).not.toMatch(
+        /document\.(getElementById|createElement|querySelector|addEventListener|body)/,
+      )
+      expect(source, `${file} uses localeCompare`).not.toContain('localeCompare')
+      expect(source, `${file} uses Date.now`).not.toContain('Date.now(')
+      expect(source, `${file} uses Math.random`).not.toContain('Math.random(')
+    }
+  })
+
   it('documents the scheduling-authority injection on the session module', () => {
     const session = srcModules['../src/session.ts'] ?? ''
     expect(session).toContain('INJECTED')
@@ -145,6 +198,14 @@ describe('PROJECT-021 architecture — CI and spec lockstep', () => {
     expect(dependencyGraph).toContain('Package dependency edges (PROJECT-021)')
     expect(dependencyGraph).toContain('project-renderer-core')
     expect(verificationMatrix).toContain('PROJECT-021 evidence requirements')
+  })
+
+  it('the spec set carries the PROJECT-022 sections in lockstep', () => {
+    expect(requirements).toContain('PROJECT-022 — Gantt / task grid / timeline views')
+    expect(workItems).toMatch(/\|\s*PROJECT-022\s*\|/)
+    expect(workItems).toContain('ProjectGanttView')
+    expect(dependencyGraph).toContain('Package dependency edges (PROJECT-022)')
+    expect(verificationMatrix).toContain('PROJECT-022 evidence requirements')
   })
 
   it('leaves the frozen architecture lock untouched (renderer boundary already sanctioned)', () => {

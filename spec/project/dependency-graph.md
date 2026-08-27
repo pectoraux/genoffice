@@ -149,3 +149,14 @@ PROJECT-021 (shared renderer core) implements the reserved `@genoffice/project-r
 ```
 
 The work-item dependency `002 + 003 + 006 → 021` is honored exactly like the accepted project-file precedent: `DerivedSchedule` is a CONTRACTS type (the renderer core consumes schedule values typed by contracts), and the scheduling FUNCTION is injected as a structurally-typed `ScheduleRunner` — the package does NOT statically depend on `@genoffice/project-scheduling` (the strongest form of architecture-lock §3's "no scheduling authority": the package is structurally incapable of scheduling; every schedule value it holds was produced by the injected authority). Tests import `schedule` from the scheduling package at the TEST layer only, proving session/schedule integration with the real authority while the package dependency stays two-edged (asserted by the discipline suite's raw-source scan AND the extended CI foundation boundary grep, which now also covers `packages/project-renderer-core`). The renderer core equally never imports `@genoffice/project-file` / `@genoffice/project-mpp-host` (host-specific file/transport stays outside the renderer — R-009; documents arrive already-canonical). CI grows 19 → 21 steps (`Typecheck project-renderer-core`, `Test project-renderer-core`). The work-item chain `021 → 022 → 023 → 024` opens; complete views remain unauthorized until acceptance of this increment.
+
+## Package dependency edges (PROJECT-022)
+
+PROJECT-022 (Gantt / task grid / timeline views) adds NO new workspace package and NO new package edge — the view models live inside the accepted `@genoffice/project-renderer-core` (`src/views/**`, the PROJECT-020 `src/compatibility/**` in-package precedent), consuming only what the package already depends on:
+
+```text
+@genoffice/project-renderer-core → @genoffice/project-contracts (types + brand helpers)
+@genoffice/project-renderer-core → @genoffice/project-engine (applyProjectCommand, hierarchy utilities)
+```
+
+The views consume the package's OWN accepted layers (the `projectDocumentView` projection, the `TimelineViewport`/`buildTimeAxis` timeline math) plus the canonical contracts types (`ProjectDocument`, `TaskSchedule`, `Dependency`, `ProjectTable`); they never import the scheduling package (no scheduling authority — lock §3/§6), never the file/host packages (R-009), and never React/Electron/Node/DOM APIs (lock §13 — the discipline suite's raw-source scan now globs `src/**/*.ts`, covering the views subfolder, and additionally guards the views against pixel/DOM layout APIs). CI is unchanged: the 21-step foundation gate already typechecks/tests the package and its boundary grep covers the whole package recursively. The work-item edge `021 → 022` completes; `022 → 023`, `022 → 025`, `022 → 026`, `022 → 027`, `022 → 028` open on acceptance.
