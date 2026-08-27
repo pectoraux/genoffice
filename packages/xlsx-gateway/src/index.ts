@@ -99,6 +99,11 @@ export {
 export type { SheetTableInfo } from './gateway/xlsx-table-read.js'
 export { TableReadError } from './gateway/xlsx-table-read.js'
 
+// ── Worksheet images (EXCEL-022) ──
+export type { SheetImageInfo } from './gateway/xlsx-image-read.js'
+export { ImageReadError } from './gateway/xlsx-image-read.js'
+export type { AddedVisualLocator } from './gateway/xlsx-gateway.js'
+
 // ── Defined names ──
 export type { DefinedNamesState } from './gateway/xlsx-defined-names.js'
 export { DefinedNameError } from './gateway/xlsx-defined-names.js'

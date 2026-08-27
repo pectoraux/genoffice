@@ -106,13 +106,24 @@ const IMAGE_EXTENSIONS: Record<ImageAdd['mediaType'], string> = {
 const DRAWING_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.drawing+xml'
 const CHART_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml'
 
+/** Locator of an appended visual anchor (EXCEL-022 — lets callers merge
+ * a persisted session visual into their live state with the exact
+ * drawing index it landed at). */
+export interface VisualAdditionLocator {
+  readonly worksheetPath: string
+  readonly drawingPath: string
+  readonly drawingIndex: number
+}
+
 export async function applyVisualAdditions(
   pkg: MutablePackage,
   additions: readonly VisualAddition[],
   touchedEntries: Set<string>,
-): Promise<void> {
+): Promise<readonly VisualAdditionLocator[]> {
+  const locators: VisualAdditionLocator[] = []
   for (const addition of additions) {
     const drawing = await ensureSheetDrawing(pkg, addition.worksheetPath, touchedEntries)
+    let drawingIndex: number
     if (addition.chart) {
       const chartPath = await allocatePartPath(pkg, 'xl/charts/chart', '.xml')
       pkg.add(chartPath, buildChartXml(addition.chart))
@@ -125,12 +136,14 @@ export async function applyVisualAdditions(
         relativeTarget(drawing.path, chartPath),
       )
       touchedEntries.add(relsPathFor(drawing.path))
-      await appendAnchor(pkg, drawing.path, addition.anchor, (shapeId) =>
+      drawingIndex = await appendAnchor(pkg, drawing.path, addition.anchor, (shapeId) =>
         chartFrameXml(shapeId, chartRelId),
       )
     } else if (addition.shape) {
       const shape = addition.shape
-      await appendAnchor(pkg, drawing.path, addition.anchor, (shapeId) => shapeXml(shapeId, shape))
+      drawingIndex = await appendAnchor(pkg, drawing.path, addition.anchor, (shapeId) =>
+        shapeXml(shapeId, shape),
+      )
     } else if (addition.image) {
       const image = addition.image
       const extension = IMAGE_EXTENSIONS[image.mediaType]
@@ -145,14 +158,20 @@ export async function applyVisualAdditions(
         relativeTarget(drawing.path, mediaPath),
       )
       touchedEntries.add(relsPathFor(drawing.path))
-      await appendAnchor(pkg, drawing.path, addition.anchor, (shapeId) =>
+      drawingIndex = await appendAnchor(pkg, drawing.path, addition.anchor, (shapeId) =>
         pictureXml(shapeId, imageRelId),
       )
     } else {
       throw new VisualAddError('A visual addition carries exactly one of chart, shape, or image.')
     }
     touchedEntries.add(drawing.path)
+    locators.push({
+      worksheetPath: addition.worksheetPath,
+      drawingPath: drawing.path,
+      drawingIndex,
+    })
   }
+  return locators
 }
 
 /// Finds the sheet's drawing part, creating (and wiring) one if absent.
@@ -234,7 +253,7 @@ async function appendAnchor(
   drawingPath: string,
   anchor: DrawingAnchor,
   buildInner: (shapeId: number) => string,
-): Promise<void> {
+): Promise<number> {
   let xml = await pkg.readText(drawingPath)
   // Other producers write the wsDr root with any prefix and self-close it
   // when the drawing is empty (Google Sheets exports do); normalize before
@@ -266,6 +285,14 @@ async function appendAnchor(
     '<xdr:clientData/>' +
     '</xdr:twoCellAnchor>'
   pkg.write(drawingPath, xml.slice(0, closeAt) + element + xml.slice(closeAt))
+  // The appended anchor is the last in document order; its index is the
+  // anchor count after the write minus one (every anchor kind counts,
+  // matching the reader/editor index parity).
+  const updated = xml.slice(0, closeAt) + element + xml.slice(closeAt)
+  const anchors = [
+    ...updated.matchAll(/<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g),
+  ]
+  return anchors.length - 1
 }
 
 function chartFrameXml(shapeId: number, chartRelId: string): string {

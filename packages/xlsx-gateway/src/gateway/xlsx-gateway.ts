@@ -26,6 +26,7 @@ import {
   resolveRelTarget,
   type ShapeAdd,
 } from './xlsx-drawing-add'
+import { ImageReadError, parseSheetImages, type SheetImageInfo } from './xlsx-image-read'
 import { applyTableAdditions, type TableArea } from './xlsx-table-add'
 import type { PivotFilterDef } from '../domain/pivot-filters'
 import {
@@ -138,6 +139,17 @@ export interface XlsxMutation {
   readonly addedEntries: readonly string[]
   readonly beforeEntries: readonly PackageEntry[]
   readonly afterEntries: readonly PackageEntry[]
+  /// EXCEL-022: locators of visuals persisted by this save's
+  /// visualAdditions — the caller merges them into its live image state
+  /// so a later edit targets the exact appended anchor.
+  readonly addedVisuals?: readonly AddedVisualLocator[]
+}
+
+/** Locator of a visual persisted by applyVisualAdditions. */
+export interface AddedVisualLocator {
+  readonly worksheetPath: string
+  readonly drawingPath: string
+  readonly drawingIndex: number
 }
 
 export interface SheetStructuralOps {
@@ -227,6 +239,8 @@ export interface MutationPlan {
   readonly removedEntries: readonly string[]
   readonly addedEntries: readonly string[]
   readonly touchedEntries: readonly string[]
+  /// EXCEL-022: locators of appended visual anchors, in addition order.
+  readonly addedVisuals?: readonly AddedVisualLocator[]
 }
 
 /// Overlay of pending edits on top of a read-only source package. Planning
@@ -356,7 +370,15 @@ async function addDefaultStylesheet(
   }
 }
 
-export async function createBufferEntrySource(buffer: Buffer): Promise<EntrySource> {
+export async function createBufferEntrySource(buffer: Buffer): Promise<{
+  paths(): Promise<readonly string[]>
+  has(path: string): Promise<boolean>
+  readText(path: string): Promise<string>
+  /// EXCEL-022: raw media bytes for the image reader. Only the in-memory
+  /// buffer source can serve this — the platform archive adapter never
+  /// reads images, so EntrySource itself stays unchanged.
+  readBinary(path: string): Promise<Uint8Array>
+}> {
   const zip = await loadSafeZip(buffer)
   return {
     paths: async () =>
@@ -365,6 +387,11 @@ export async function createBufferEntrySource(buffer: Buffer): Promise<EntrySour
         .map(([path]) => path),
     has: async (path) => zip.file(path) !== null,
     readText: (path) => readTextEntry(zip, path),
+    readBinary: async (path) => {
+      const entry = zip.file(path)
+      if (entry === null) throw new Error(`Missing ZIP entry ${path}.`)
+      return new Uint8Array(await entry.async('uint8array'))
+    },
   }
 }
 
@@ -391,6 +418,7 @@ export async function assembleWithJsZip(source: Buffer, plan: MutationPlan): Pro
     addedEntries: plan.addedEntries,
     beforeEntries,
     afterEntries: await inventoryXlsx(buffer),
+    ...(plan.addedVisuals !== undefined ? { addedVisuals: plan.addedVisuals } : {}),
   }
 }
 
@@ -486,6 +514,20 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     } catch (error) {
       if (!(error instanceof TableReadError)) throw error
     }
+    // Image read (EXCEL-022): resolve the sheet's drawing relationship
+    // chain into typed picture entries with inline media. Fail closed
+    // PER SHEET — unreadable drawing wiring surfaces no images, the
+    // workbook still opens, and a no-op save preserves the file's parts
+    // byte-for-byte. Individual unsupported pictures (media type, size,
+    // missing part) are skipped while their anchors still count toward
+    // the drawingIndex parity with the desktop sidecar.
+    let sheetImages: readonly SheetImageInfo[] | undefined
+    try {
+      const parsed = await parseSheetImages(zip, worksheetPath, worksheetXml)
+      if (parsed.length > 0) sheetImages = parsed
+    } catch (error) {
+      if (!(error instanceof ImageReadError)) throw error
+    }
     sheets.push({
       id,
       name: decodedName,
@@ -505,6 +547,7 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
       ...(dvRules ? { dvRules } : {}),
       ...(sheetNotes ? { notes: sheetNotes } : {}),
       ...(sheetTables ? { tables: sheetTables } : {}),
+      ...(sheetImages ? { images: sheetImages } : {}),
       ...(sheetProtection ? { sheetProtection } : {}),
     })
     sheetNamesById[id] = decodedName
@@ -705,6 +748,10 @@ export async function applyCellEditsToXlsx(
   formulaValues: readonly SheetFormulaValues[] = [],
   workbookProtectionState: { readonly lockStructure: boolean } | null = null,
   tableAdditions: readonly SheetTableAddition[] = [],
+  /// EXCEL-022: web-supplied visual families. Appended at the end so the
+  /// desktop translator's positional call sites are untouched.
+  visualAdditions: readonly SheetVisualAddition[] = [],
+  visualEdits: readonly WorkbookVisualEdit[] = [],
 ): Promise<XlsxMutation> {
   const plan = await planCellEditsToXlsx(
     await createBufferEntrySource(source),
@@ -718,14 +765,14 @@ export async function applyCellEditsToXlsx(
     dvStates,
     sheetProtections,
     definedNamesState,
-    [],
+    visualAdditions,
     pageSetupStates,
     noteStates,
     tableAdditions,
     [],
     [],
     [],
-    [],
+    visualEdits,
     [],
     formulaValues,
     null,
@@ -1164,6 +1211,7 @@ export async function planCellEditsToXlsx(
 
   // New visuals run after the worksheet XML flush above so the drawing
   // element lands on the final sheet content.
+  let addedVisuals: readonly AddedVisualLocator[] | undefined
   if (visualAdditions.length > 0) {
     const resolved = []
     for (const addition of visualAdditions) {
@@ -1177,7 +1225,7 @@ export async function planCellEditsToXlsx(
         image: addition.image,
       })
     }
-    await applyVisualAdditions(pkg, resolved, touchedEntries)
+    addedVisuals = await applyVisualAdditions(pkg, resolved, touchedEntries)
   }
 
   // Note snapshots replace each dirty sheet's whole comment set; they run
@@ -1356,7 +1404,8 @@ export async function planCellEditsToXlsx(
     touchedEntries.add(workbookPath)
   }
 
-  return pkg.toPlan(touchedEntries)
+  const plan = pkg.toPlan(touchedEntries)
+  return addedVisuals === undefined ? plan : { ...plan, addedVisuals }
 }
 
 /// Assigns non-colliding part paths, sheetId attributes, and relationship

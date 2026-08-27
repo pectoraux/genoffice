@@ -8,8 +8,7 @@ import type { MutablePackage } from './xlsx-drawing-add'
 
 export class VisualEditError extends Error {}
 
-const ANCHOR_PATTERN =
-  /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g
+const ANCHOR_PATTERN = /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g
 
 export async function applyVisualEdits(
   pkg: MutablePackage,
@@ -32,18 +31,119 @@ export async function applyVisualEdits(
     const ordered = [...group].sort((left, right) => right.drawingIndex - left.drawingIndex)
     const seen = new Set<number>()
     const removedChartRelIds: string[] = []
+    const removedImageRelIds: string[] = []
     for (const edit of ordered) {
       if (seen.has(edit.drawingIndex)) {
         throw new VisualEditError('Duplicate edits target the same drawing anchor.')
       }
       seen.add(edit.drawingIndex)
-      xml = applyOneEdit(xml, edit, removedChartRelIds)
+      xml = applyOneEdit(xml, edit, removedChartRelIds, removedImageRelIds)
     }
     pkg.write(drawingPath, xml)
     touchedEntries.add(drawingPath)
     if (removedChartRelIds.length > 0) {
       await cascadeChartRemovals(pkg, drawingPath, xml, removedChartRelIds, touchedEntries)
     }
+    if (removedImageRelIds.length > 0) {
+      await cascadeImageRemovals(pkg, drawingPath, xml, removedImageRelIds, touchedEntries)
+    }
+  }
+}
+
+/// A deleted picture anchor cascades differently from a chart: the image
+/// relationship is dropped from the drawing rels, and the media part is
+/// removed ONLY when no remaining relationship ANYWHERE in the package
+/// still references it (two pictures can share one xl/media entry, and a
+/// media part can be referenced from another drawing's rels). The
+/// [Content_Types].xml Default for the extension goes only when no other
+/// part with that extension remains. Never remove a media part merely
+/// because one picture was deleted.
+async function cascadeImageRemovals(
+  pkg: MutablePackage,
+  drawingPath: string,
+  remainingDrawingXml: string,
+  relIds: readonly string[],
+  touchedEntries: Set<string>,
+): Promise<void> {
+  const relsPath = drawingPath.replace(/\/([^/]+)$/, '/_rels/$1.rels')
+  if (!(await pkg.has(relsPath))) {
+    throw new VisualEditError('The drawing is missing its relationships part.')
+  }
+  let relsXml = await pkg.readText(relsPath)
+  const removedMediaPaths: string[] = []
+  for (const relId of relIds) {
+    // Another anchor still embeds this relationship (shared media) — the
+    // relationship and the media part both stay.
+    if (remainingDrawingXml.includes(`r:embed="${relId}"`)) continue
+    const relMatch = new RegExp(`<Relationship\\b[^>]*\\bId="${escapeRegExp(relId)}"[^>]*/>`).exec(
+      relsXml,
+    )
+    if (!relMatch) {
+      // Already removed by an earlier edit in this save (two deleted
+      // pictures shared one relationship) — nothing left to do.
+      continue
+    }
+    const target = /\bTarget="([^"]+)"/.exec(relMatch[0])?.[1]
+    const type = /\bType="([^"]+)"/.exec(relMatch[0])?.[1] ?? ''
+    if (!target || !/\/image$/.test(type)) {
+      throw new VisualEditError('The deleted picture is not a plain image — not supported.')
+    }
+    const mediaPath = resolveRelativePart(drawingPath.replace(/\/[^/]+$/, ''), target)
+    relsXml = relsXml.replace(relMatch[0], '')
+    if (!removedMediaPaths.includes(mediaPath)) removedMediaPaths.push(mediaPath)
+  }
+  pkg.write(relsPath, relsXml)
+  touchedEntries.add(relsPath)
+  for (const mediaPath of removedMediaPaths) {
+    if (!(await pkg.has(mediaPath))) continue
+    if (await anyRelationshipReferences(pkg, mediaPath)) continue
+    pkg.remove(mediaPath)
+    await removeContentTypeDefaultIfUnused(pkg, mediaPath, touchedEntries)
+  }
+}
+
+/// Scans every *.rels part in the package for a relationship whose
+/// resolved target is `mediaPath`. External targets are skipped.
+async function anyRelationshipReferences(pkg: MutablePackage, mediaPath: string): Promise<boolean> {
+  for (const path of await pkg.paths()) {
+    if (!/_rels\/[^/]+\.rels$/.test(path)) continue
+    const relsXml = await pkg.readText(path)
+    const base = path.split('/').slice(0, -2)
+    for (const match of relsXml.matchAll(/<Relationship\b[^>]*\/?>/g)) {
+      const element = match[0]
+      if (/\bTargetMode="External"/.test(element)) continue
+      const target = /\bTarget="([^"]+)"/.exec(element)?.[1]
+      if (target === undefined) continue
+      if (resolveRelativePart(base.join('/'), target) === mediaPath) return true
+    }
+  }
+  return false
+}
+
+/// Drops the [Content_Types].xml Default for the removed part's extension
+/// only when NO other package entry still carries that extension.
+async function removeContentTypeDefaultIfUnused(
+  pkg: MutablePackage,
+  removedPath: string,
+  touchedEntries: Set<string>,
+): Promise<void> {
+  const dot = removedPath.lastIndexOf('.')
+  if (dot < 0) return
+  const extension = removedPath.slice(dot + 1).toLowerCase()
+  const paths = await pkg.paths()
+  const stillUsed = paths.some(
+    (path) =>
+      path !== removedPath && path.slice(path.lastIndexOf('.') + 1).toLowerCase() === extension,
+  )
+  if (stillUsed) return
+  const contentTypes = await pkg.readText('[Content_Types].xml')
+  const stripped = contentTypes.replace(
+    new RegExp(`<Default\\b[^>]*\\bExtension="${escapeRegExp(extension)}"[^>]*/>`),
+    '',
+  )
+  if (stripped !== contentTypes) {
+    pkg.write('[Content_Types].xml', stripped)
+    touchedEntries.add('[Content_Types].xml')
   }
 }
 
@@ -66,8 +166,9 @@ async function cascadeChartRemovals(
     if (remainingDrawingXml.includes(`r:id="${relId}"`)) {
       throw new VisualEditError('Another anchor still references the deleted chart.')
     }
-    const relMatch = new RegExp(`<Relationship\\b[^>]*\\bId="${escapeRegExp(relId)}"[^>]*/>`)
-      .exec(relsXml)
+    const relMatch = new RegExp(`<Relationship\\b[^>]*\\bId="${escapeRegExp(relId)}"[^>]*/>`).exec(
+      relsXml,
+    )
     if (!relMatch) {
       throw new VisualEditError('The deleted chart has no drawing relationship.')
     }
@@ -112,6 +213,7 @@ function applyOneEdit(
   xml: string,
   edit: WorkbookVisualEdit,
   removedChartRelIds: string[],
+  removedImageRelIds: string[],
 ): string {
   const anchors = [...xml.matchAll(ANCHOR_PATTERN)]
   const match = anchors[edit.drawingIndex]
@@ -134,6 +236,17 @@ function applyOneEdit(
       }
       removedChartRelIds.push(relId)
     }
+    // A picture anchor collects its image relationship id — the cascade
+    // after the drawing XML is final decides whether the media part goes
+    // (only when nothing else references it anymore). A picture without
+    // an r:embed references no media part, so its removal is a plain
+    // splice (pre-existing behavior for synthetic/degenerate pics).
+    if (anchorXml.includes('<xdr:pic')) {
+      const relId = /<a:blip\b[^>]*\br:embed="([^"]+)"/.exec(anchorXml)?.[1]
+      if (relId !== undefined) {
+        removedImageRelIds.push(relId)
+      }
+    }
     return xml.slice(0, match.index) + xml.slice(match.index + anchorXml.length)
   }
   const anchor = edit.anchor
@@ -141,19 +254,21 @@ function applyOneEdit(
   if (kind === 'absoluteAnchor') {
     throw new VisualEditError('This visual uses an absolute anchor — moving it is not supported.')
   }
-  const from = `<xdr:from><xdr:col>${anchor.fromColumn}</xdr:col>`
-    + `<xdr:colOff>${anchor.fromColumnOffset}</xdr:colOff>`
-    + `<xdr:row>${anchor.fromRow}</xdr:row>`
-    + `<xdr:rowOff>${anchor.fromRowOffset}</xdr:rowOff></xdr:from>`
+  const from =
+    `<xdr:from><xdr:col>${anchor.fromColumn}</xdr:col>` +
+    `<xdr:colOff>${anchor.fromColumnOffset}</xdr:colOff>` +
+    `<xdr:row>${anchor.fromRow}</xdr:row>` +
+    `<xdr:rowOff>${anchor.fromRowOffset}</xdr:rowOff></xdr:from>`
   let patched = anchorXml.replace(/<xdr:from>[\s\S]*?<\/xdr:from>/, () => from)
   if (patched === anchorXml && !anchorXml.includes('<xdr:from>')) {
     throw new VisualEditError('Drawing anchor has no from marker — moving it is not supported.')
   }
   if (kind === 'twoCellAnchor') {
-    const to = `<xdr:to><xdr:col>${anchor.toColumn}</xdr:col>`
-      + `<xdr:colOff>${anchor.toColumnOffset}</xdr:colOff>`
-      + `<xdr:row>${anchor.toRow}</xdr:row>`
-      + `<xdr:rowOff>${anchor.toRowOffset}</xdr:rowOff></xdr:to>`
+    const to =
+      `<xdr:to><xdr:col>${anchor.toColumn}</xdr:col>` +
+      `<xdr:colOff>${anchor.toColumnOffset}</xdr:colOff>` +
+      `<xdr:row>${anchor.toRow}</xdr:row>` +
+      `<xdr:rowOff>${anchor.toRowOffset}</xdr:rowOff></xdr:to>`
     // An unchanged edge replaces to an identical string, so presence must be
     // checked directly (an NW resize touches only the from marker).
     const withTo = patched.replace(/<xdr:to>[\s\S]*?<\/xdr:to>/, () => to)

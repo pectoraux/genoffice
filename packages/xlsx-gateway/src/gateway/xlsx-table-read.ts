@@ -74,8 +74,6 @@ export interface TableStyleContext {
 
 type Rgb = readonly [number, number, number]
 
-const TABLE_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/table'
-
 /// Office default accents — the fallback when the theme palette is absent.
 const DEFAULT_ACCENTS: readonly Rgb[] = [
   [0x44, 0x72, 0xc4],

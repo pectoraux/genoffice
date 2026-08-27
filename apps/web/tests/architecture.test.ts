@@ -166,6 +166,90 @@ describe('architecture: apps/web has zero Electron / Node API imports', () => {
     expect(violations.map((v) => v.rel)).toEqual([])
   })
 
+  // EXCEL-022 (Insert → Picture / image edit): the browser is a thin typed
+  // client for the drawing surface too — it must NEVER parse or construct
+  // drawing XML, relationship XML, or touch media parts directly; all
+  // anchor/picture/relationship/media work stays in the canonical
+  // xlsx-gateway.
+  it('apps/web/src does NOT do drawing/relationship XML work (no image OOXML)', () => {
+    const webFiles = readFiles(join(WEB_ROOT, 'src'))
+    const drawingPatterns = [
+      /<xdr:(?:wsDr|twoCellAnchor|oneCellAnchor|absoluteAnchor|pic)\b/,
+      /<a:blip\b/,
+      /relationships\/image/,
+      /relationships\/drawing/,
+      /xl\/media\//,
+      /xl\/drawings\//,
+      /Target="\.\.\//,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => drawingPatterns.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('apps/web/src imports xlsx-gateway for TYPES only (no image mutation imports)', () => {
+    const webFiles = readFiles(join(WEB_ROOT, 'src'))
+    // A VALUE import from the gateway would bundle the engine into the
+    // browser — only `import type` (erased at build time) is allowed.
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) =>
+        /^import\s+\{[^}]*\}\s+from\s+'@genoffice\/xlsx-gateway'/.test(line.trim()),
+      )
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('apps/web/src image surfaces use ONLY the canonical typed visual families', () => {
+    // The image journal/save code must reference the canonical gateway
+    // types (SheetVisualAddition / WorkbookVisualEdit on the wire,
+    // SheetImageInfo on the read side), not locally-declared duplicates.
+    const clientPath = join(WEB_ROOT, 'src', 'api', 'office-client.ts')
+    expect(existsSync(clientPath), `${clientPath} should exist`).toBe(true)
+    const clientContent = readFileSync(clientPath, 'utf8')
+    expect(clientContent).toContain('SheetVisualAddition')
+    expect(clientContent).toContain('WorkbookVisualEdit')
+    expect(
+      /import type \{[^}]*SheetVisualAddition[^}]*\} from '@genoffice\/xlsx-gateway'/.test(
+        clientContent,
+      ),
+    ).toBe(true)
+    const imagesPath = join(WEB_ROOT, 'src', 'office', 'sheet-images.ts')
+    expect(existsSync(imagesPath), `${imagesPath} should exist`).toBe(true)
+    const imagesContent = readFileSync(imagesPath, 'utf8')
+    expect(imagesContent).toContain('SheetImageInfo')
+    expect(
+      /import type \{[^}]*SheetImageInfo[^}]*\} from '@genoffice\/xlsx-gateway'/.test(
+        imagesContent,
+      ),
+    ).toBe(true)
+  })
+
+  // ARCHITECT REVIEW (PR #20, blocker 1): the browser image module must
+  // reach Univer only through the PUBLIC facade surface — no `as unknown
+  // as` casts and no private internals (`_image`, private transform
+  // fields). Geometry reads go through toBuilder().buildAsync(), the
+  // same public surface the facade's own setters build commands on.
+  it('apps/web/src/office/sheet-images.ts has NO private-Univer-internals access', () => {
+    const imagesPath = join(WEB_ROOT, 'src', 'office', 'sheet-images.ts')
+    expect(existsSync(imagesPath), `${imagesPath} should exist`).toBe(true)
+    const lines = readFileSync(imagesPath, 'utf8')
+      .split('\n')
+      .map((line, index) => ({ line, number: index + 1 }))
+      .filter(({ line }) => !line.trim().startsWith('//') && !line.trim().startsWith('*'))
+    const violations = lines.filter(({ line }) => /\bas unknown as\b|._image\b/.test(line))
+    expect(
+      violations.map((v) => `${v.number}: ${v.line.trim()}`),
+      'sheet-images.ts must use only the public facade surface',
+    ).toEqual([])
+    // The public read adapter must be present (toBuilder + buildAsync).
+    const content = readFileSync(imagesPath, 'utf8')
+    expect(content).toContain('toBuilder()')
+    expect(content).toContain('buildAsync()')
+  })
+
   it('apps/web/src filter surfaces use ONLY the canonical typed SheetFilterState', () => {
     // The filter journal/save code must reference the canonical gateway type,
     // not a locally-declared duplicate of the filter model.

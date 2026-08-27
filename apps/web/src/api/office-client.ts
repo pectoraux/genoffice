@@ -25,7 +25,9 @@ import type {
   SheetFilterState,
   SheetNote,
   SheetTableAddition,
+  SheetVisualAddition,
   WorkbookSnapshot,
+  WorkbookVisualEdit,
 } from '@genoffice/xlsx-gateway'
 
 // ── Wire types (mirror the @contractor/core/api office-routes module) ────────
@@ -169,6 +171,25 @@ export interface BrowserWorkbookSavePlan {
    * entry, so it is never persisted — convert-to-range).
    */
   readonly tableAdditions?: readonly SheetTableAddition[]
+  /**
+   * Session-created images (Insert → Picture, EXCEL-022). Each entry
+   * carries the journaled image creation for one picture — the engine
+   * writes the media part, drawing picture, anchor, and relationships.
+   * IMAGE-ONLY on this wire (chart/shape additions are rejected by the
+   * route — EXCEL-023 will widen the family). Mirrors the desktop
+   * visualAdditions journal semantics: deleting a session image drops
+   * its entry, so it is never persisted.
+   */
+  readonly visualAdditions?: readonly SheetVisualAddition[]
+  /**
+   * Surgical edits to file-native images (move / resize / delete,
+   * EXCEL-022). Each entry targets the canonical (drawingPath,
+   * drawingIndex) locator the open snapshot's images carry. Anchors are
+   * 0-based cell markers with EMU offsets; the browser derives them from
+   * Univer's live over-grid image state (documented conversion:
+   * 1 px = 9525 EMU at 96 dpi).
+   */
+  readonly visualEdits?: readonly WorkbookVisualEdit[]
   readonly [key: string]: unknown
 }
 
@@ -180,6 +201,12 @@ export interface BrowserWorkbookSaveRequest {
 
 export interface SaveWorkbookResponse {
   readonly fileBytes: string
+  /** EXCEL-022: locators of persisted visualAdditions, in order. */
+  readonly addedVisuals?: readonly {
+    readonly worksheetPath?: string
+    readonly drawingPath: string
+    readonly drawingIndex: number
+  }[]
 }
 
 export type SerializedBlockType =
@@ -924,7 +951,7 @@ export async function saveWorkbook(input: {
   fileBytes: Uint8Array | ArrayBuffer
   savePlan: BrowserWorkbookSavePlan
   codec?: OfficeBinaryCodec
-}): Promise<Uint8Array> {
+}): Promise<{ bytes: Uint8Array; addedVisuals?: SaveWorkbookResponse['addedVisuals'] }> {
   const codec = input.codec ?? DEFAULT_CODEC
   const fileBytes = codec.encode(
     input.fileBytes instanceof Uint8Array ? input.fileBytes : new Uint8Array(input.fileBytes),
@@ -935,7 +962,10 @@ export async function saveWorkbook(input: {
     savePlan: input.savePlan,
   }
   const res = await postJson<SaveWorkbookResponse>('/workbooks/save', req, isSaveWorkbookResponse)
-  return codec.decode(res.fileBytes)
+  return {
+    bytes: codec.decode(res.fileBytes),
+    ...(res.addedVisuals !== undefined ? { addedVisuals: res.addedVisuals } : {}),
+  }
 }
 
 /**

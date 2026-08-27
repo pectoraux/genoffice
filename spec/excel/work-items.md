@@ -180,6 +180,49 @@ Objective: Import existing worksheet images and supported drawing metadata, rend
 Dependencies: EXCEL-009, EXCEL-021.
 Required verification: media bytes, relationships, anchor position, dimensions, deletion, no-op preservation.
 
+Status: IMPLEMENTING (local implementation complete; PR pending — the sandbox
+lacks GitHub push credentials).
+
+Implementation summary:
+
+- Canonical read path: `packages/xlsx-gateway/src/gateway/xlsx-image-read.ts`
+  (worksheet → drawing rel → drawing part → image rel → `xl/media/*`, typed
+  `SheetImageInfo` with inline media, per-sheet fail-closed semantics,
+  drawingIndex parity with the desktop sidecar and the edit family).
+- Architecture decision: `WorksheetState.visuals` is CHART-SPECIFIC demo/AI
+  replay state (kind: 'chart' only, never populated by readBasicWorkbook) and
+  stays untouched; images landed as the DEDICATED `WorksheetState.images`
+  field (the EXCEL-021 `tables` pattern).
+- Canonical write path: the EXISTING visualAdditions/visualEdits families —
+  `applyCellEditsToXlsx` gained trailing `visualAdditions`/`visualEdits`
+  parameters (desktop translator call sites untouched); image deletion now
+  cascades the image relationship and removes the media part ONLY when no
+  remaining relationship anywhere references it (charts cascade unchanged;
+  shared media — one rel across pictures or two rels to one part — is
+  preserved; the [Content_Types] Default drops only when no same-extension
+  part remains).
+- Wire contract: `BrowserWorkbookSavePlan.visualAdditions`/`visualEdits`
+  (IMAGE-ONLY additions — chart/shape payloads rejected with 400 until
+  EXCEL-023), strict runtime validation in office-routes.ts (media types,
+  base64 caps, bounded integer anchors, drawing-path pattern, exactly one of
+  remove|anchor, unknown-field rejection, entry caps), and the save response
+  returns `addedVisuals` locators so the browser merges persisted session
+  images into its file-native state with the EXACT assigned drawing index.
+- Browser: Univer 0.25.1 over-grid images (`@univerjs/preset-sheets-drawing`,
+  already installed/registered) — locator-keyed drawing ids, install under
+  journal suppression (no undo pollution), mutation journal via
+  `sheet.mutation.set-drawing-apply` (move/resize dirty-tracking, delete
+  journaling, session-add splice), Insert → Picture through a browser
+  File/Blob upload path, and one-cell/absolute anchors FAIL CLOSED (the
+  refused edit is reverted with remove+reinstall at the file geometry and a
+  status explanation; nothing journals).
+- EMU ↔ pixel conversion documented at 1 px = 9525 EMU (96 dpi) in
+  `apps/web/src/office/sheet-images.ts` — the browser renders typed anchors
+  and derives edit anchors from the live Univer model; the gateway
+  serializes them verbatim. No JSZip, no OOXML/drawing/relationship parsing,
+  no media-part manipulation in `apps/web/src` (architecture tests guard
+  all of it).
+
 ### EXCEL-023 — Charts
 
 Objective: Import supported charts, render them through the shared visual layer, create/edit/delete supported chart types, and persist `chartEdits`.

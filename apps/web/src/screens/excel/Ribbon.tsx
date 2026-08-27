@@ -232,14 +232,21 @@ export interface RibbonTablesProps {
   readonly onDeleteTable: () => void
 }
 
+export interface RibbonImagesProps {
+  /** Insert → Picture: open the browser file picker for an image embed. */
+  readonly onInsertPicture: () => void
+}
+
 export function Ribbon({
   api,
   protection,
   tables,
+  images,
 }: {
   api: ExcelRuntimeApi | null
   protection?: RibbonProtectionProps | null
   tables?: RibbonTablesProps | null
+  images?: RibbonImagesProps | null
 }) {
   const [tab, setTab] = useState<TabId>('home')
   // EXCEL-018 — Remove Duplicates dialog state. Mirrors the desktop's
@@ -527,13 +534,15 @@ export function Ribbon({
               />
             </Group>
             <Group label="Illustrations">
-              {/* Disabled: the wire save plan does not expose
-                 visualAdditions (image embed). */}
+              {/* EXCEL-022: Insert → Picture — a browser File/Blob upload
+                  persisted through the canonical visualAdditions family
+                  (PNG / JPEG / GIF only; the wire validates strictly). */}
               <RibbonButton
                 label="Picture"
-                title="Picture — disabled: the web save plan does not yet expose the visualAdditions (image embed) family"
+                title="Picture — insert an image from your device (PNG, JPEG, GIF)"
                 icon={<ImageIcon />}
-                disabled
+                disabled={disabled || !images}
+                onClick={() => images?.onInsertPicture()}
               />
             </Group>
           </>

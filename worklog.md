@@ -1013,3 +1013,176 @@ Stage Summary:
 - All other CI failures are pre-existing and verified unrelated to EXCEL-020 (frozen-surface lint debt, frozen Electron suite environment, branch-isolation condition, Vercel free-tier deploy limit).
 - Production-build E2E: 5/5 green against vite preview.
 - Workflow state: IMPLEMENTED / PENDING ARCHITECT REVIEW. NOT VERIFIED — the architect owns the VERIFIED decision; deployed (genoffice.vercel.app) verification follows the merge.
+
+---
+
+Task ID: EXCEL-022-implementation
+Agent: Z.ai (Implementation Operator)
+Task: EXCEL-022 — Images / Drawings. Phase A forensic audit, then the full implementation (canonical reader, delete cascade, wire contract, browser rendering/journal/save, tests, fixtures, E2E).
+
+Work Log:
+
+- Rebased on current main 93b4c30 (fresh clone; origin had moved past 2aa2b74 with PROJECT-019). Branch: excel-022-images. Re-applied the EXCEL-021 cleanup (unused TABLE_REL_TYPE removal — still not on origin) as the branch's first commit.
+- ARCHITECTURE DECISION (first required task): WorksheetState.visuals is CHART-SPECIFIC — SheetVisual.kind is the literal 'chart' with a required ChartVisualState; it is populated only by the desktop demo/AI replay (apps/sheets/src/domain/in-memory-workbook.ts + visual-edit-sync.ts), never by readBasicWorkbook, and apps/web never references it. Decision: visuals stays UNTOUCHED; images landed as the DEDICATED WorksheetState.images (readonly SheetImageInfo[]) — the same pattern EXCEL-021 used for tables. No duplicate chart/image abstraction introduced.
+- Phase B — canonical reader: NEW packages/xlsx-gateway/src/gateway/xlsx-image-read.ts. Resolves worksheet → drawing rel → drawing part → image rels → xl/media/*, returns typed SheetImageInfo (drawingPath, drawingIndex, anchorType, 8-number anchor, widthPx/heightPx for one-cell/absolute from a:ext, rotationDeg from a:xfrm rot, name from cNvPr, mediaType, inline dataUrl). drawingIndex counts EVERY anchor in document order (regex parity with xlsx-drawing-edit.ts and the Rust sidecar). Media set = the writer's (png/jpeg/jpg/gif); unsupported types, missing parts, and per-image oversize are skipped per picture; unreadable drawing wiring and per-sheet total oversize fail closed PER SHEET (workbook still opens; no-op save preserves bytes). createBufferEntrySource gained a readBinary member (EntrySource itself unchanged — the platform adapter never reads images).
+- Phase C — delete cascade: xlsx-drawing-edit.ts. Removing an xdr:pic anchor collects its r:embed rel id; after the drawing XML is final, cascadeImageRemovals drops the image relationship (UNLESS another anchor still embeds it — shared media stays), then removes the media part ONLY when no remaining relationship ANYWHERE in the package resolves to it (all .rels parts scanned, external targets skipped), and removes the [Content_Types] Default for the extension only when no other package entry carries that extension. Pictures without r:embed (synthetic) splice plainly — legacy behavior preserved. Charts cascade unchanged.
+- Phase D — wire contract: BrowserWorkbookSavePlan gained visualAdditions/visualEdits (canonical gateway types, optional fields). office-routes.ts strict validation: expectSheetVisualAddition (IMAGE-ONLY — chart/shape payloads rejected; sheetName; 8 bounded non-negative integer anchor fields with unknown-field rejection; mediaType in {png,jpeg,gif}; base64 string with 11M-char cap) and expectWorkbookVisualEdit (drawingPath pattern xl/drawings/*.xml, drawingIndex 0..10000, exactly one of remove:true|anchor, unknown-field rejection). Caps: 50 additions, 200 edits. parseSaveWorkbookRequest + handleSaveWorkbook forward both families into applyCellEditsToXlsx as the two trailing parameters (desktop translator call sites untouched; plan ordering verified: structural ops (line 966) run BEFORE visualEdits (1161) so edit anchors are post-shift coordinates).
+- addedVisuals locator plumbing: applyVisualAdditions now returns per-addition {worksheetPath, drawingPath, drawingIndex} (appendAnchor returns the appended anchor's document-order index); MutationPlan/XlsxMutation carry addedVisuals; SaveWorkbookResponse returns it; the browser merges persisted session images into fileImagesRef with the EXACT assigned index (no guessed indexes — fail-closed against silent corruption).
+- Phases E-I — browser: NEW apps/web/src/office/sheet-images.ts (pure typed mapping; documented EMU↔px conversion 1px=9525EMU; placementFromAnchor/anchorFromPlacement grid walks; readLivePlacement/readLiveAnchor through the Univer facade; collectImageVisualEdits/collectImageVisualAdditions save adapters). ExcelEditor: fileImagesRef/imageAddsRef/imageDirtyRef/imageRemovalsRef/imageInstallingRef state; loadSnapshot installs images under journal suppression with locator-keyed Univer drawing ids (async loadSnapshot); subscribeToImageMutations journals sheet.mutation.set-drawing-apply (UPDATE → dirty two-cell images; REMOVE → removal journal / session-add splice; INSERT ignored — the ribbon path journals directly); handleSave emits visualEdits+visualAdditions (anchors read from the LIVE model) and merges post-save state; Insert → Picture via hidden file input (File/Blob → dataURL, desktop ≤480px scaling parity) with data-testid excel-image-input. Ribbon: Picture enabled (Chart stays disabled until EXCEL-023). One-cell/absolute anchors FAIL CLOSED: the refused edit is reverted (remove + reinstall at file geometry — the Univer set-drawing command's param diff collapses to an empty op when invoked outside the originating interaction, so a surgical setPositionAsync does not reliably land) with a status explanation; nothing journals.
+- Phase K — fixtures + E2E: 5 new deterministic fixtures (single PNG twoCell, two PNGs isolation, multi-sheet SHARED media, minimal JPEG, oneCellAnchor) + readZipEntryBytes helper. NEW apps/web/tests/e2e/ribbon-images.spec.ts — 12 tests, all through real browser → HTTP → routeOffice → gateway → bytes → reopen: import/metadata, render identity (locator id + dataUrl + from/to), move (only anchor changes; media byte-identical), resize, insert (full part set: media + drawing + rel + content-type + neighbor survival), delete cascade (anchor/rel/media/Default all gone), multi-image isolation (move one + delete other), save/reopen with moved anchor, no-op preservation (plan carries NO visual families; 6 entries byte-identical; drawing wiring verbatim), relationship chain integrity (worksheet→drawing→image→media after move+insert), one-cell fail-closed (reverted + no visualEdits + drawing byte-identical), multi-sheet shared media, JPEG round-trip.
+- Phase L — regression: FULL browser E2E 101/101 green (30 excel specs + 43 ribbon specs + 28 word/image specs; ribbon-insert.spec.ts updated — Picture flipped to ENABLED, the documented disabled-control test now covers Chart only). Gateway 602/602 (584 pre-existing + 18 new image tests). contractor-core 423 passed + 4 skipped (404 pre-existing + 19 new route tests). web unit 216/216 (213 + 3 architecture guards). web-host 78/78. Typecheck clean in all four workspaces; eslint clean on every changed file; production build green.
+- Phase M — architecture guards: no drawing/relationship XML patterns (<xdr:*, <a:blip, relationships/image|drawing, xl/media/, xl/drawings/, Target="../) in apps/web/src; gateway imports are TYPE-ONLY (value imports from @genoffice/xlsx-gateway forbidden); office-client + sheet-images must reference the canonical SheetVisualAddition/WorkbookVisualEdit/SheetImageInfo types.
+- Frozen surfaces verified untouched (git diff vs origin/main over apps/sheets/src, apps/docs, apps/shell, packages/platform-electron, packages/renderer-bridge = empty).
+- Spec ledgers updated (work-items.md status IMPLEMENTING + implementation summary; verification-matrix.md local evidence; dependency-graph.md already carries the EXCEL-021→022→023 chain).
+
+Stage Summary:
+
+- EXCEL-022 implemented end-to-end on the EXISTING canonical visual families — no new engine path, no browser-side OOXML/JSZip/drawing parsing, no duplicate image model, no wire-breaking change (both new save-plan fields optional; the open response's images ride the existing snapshot).
+- All local gates green: gateway 602/602, core 423+4sk, web 216/216, host 78/78, browser E2E 101/101 (12 new image tests), architecture 43/43, typecheck/lint/build clean, frozen surfaces untouched.
+- Known limitations (documented): chart/shape additions rejected on the web wire until EXCEL-023; one-cell/absolute images render read-only (edits reverted fail-closed); rotation renders but is not editable; z-order/flip/crop/alt-text not modeled on the xlsx wire (Word has crop/alt; desktop xlsx does not); a save response without addedVisuals (older host) leaves persisted session images untracked for further edits (no guessed indexes).
+- Workflow state: IMPLEMENTING → local implementation complete. The sandbox has no GitHub push credentials, so PR_OPEN/CI/production deploy could NOT be executed — patch files exported to /home/z/my-project/download/ for application. NOT VERIFIED — the architect owns that transition.
+
+---
+
+Task ID: EXCEL-022-deployed-preview
+Agent: Z.ai (Implementation Operator)
+Task: Deployed-deployment verification attempt for EXCEL-022 (preview only — production alias intentionally untouched per the architect's ordering: production deploy follows CI green + merge).
+
+Work Log:
+
+- Verified the Vercel token against the account: project `genoffice` exists (team ekonplacidegmailcoms-projects, production URL https://genoffice.vercel.app, Node 24.x).
+- Deployed the EXCEL-022 branch (commit 7b1cc15) as a Vercel PREVIEW via the CLI from the local checkout — build succeeded on Vercel's infrastructure (bun install --ignore-scripts → build:api + apps/web build): https://genoffice-e1kar1x9m-ekonplacidegmailcoms-projects.vercel.app
+- Attempted the deployed E2E suite (playwright.deployed.config.ts, ribbon-images.spec.ts) against the preview: ALL 12 tests fail at LOGIN — the account's Deployment Protection (SSO) intercepts preview URLs and redirects to vercel.com/login, so Playwright never reaches the app (smoke: preview root → 302 → vercel.com/login; production root → 200). This is an account-level infrastructure condition, identical in character to the documented Vercel free-tier preview limitation from the EXCEL-020 session.
+- Verified the production alias is publicly reachable (200) but deliberately NOT redeployed — it currently serves merged main WITHOUT EXCEL-022; pushing unreviewed code to the production alias would violate the mandated ordering (local green → CI web green → merge → production deploy → production E2E → byte inspection). That chain remains blocked upstream at the GitHub push step (no credentials in this sandbox).
+- Patch series exported for application: /home/z/my-project/download/0001 (EXCEL-021 cleanup re-apply), 0002 (EXCEL-022 implementation).
+
+Stage Summary:
+
+- EXCEL-022 commit 7b1cc15 builds and deploys cleanly on Vercel (preview URL above) — infrastructure-level proof the exact tree compiles in the deploy pipeline.
+- Deployed E2E against the preview: BLOCKED by account Deployment Protection (SSO). Production verification (Phase N) remains pending the PR/merge that the sandbox cannot perform.
+- Workflow state: IMPLEMENTING (local implementation + all local gates green). NOT PR_OPEN (no GitHub credentials), NOT VERIFIED (architect owns that transition).
+
+---
+
+Task ID: EXCEL-022-publish-correction
+Agent: Z.ai (Implementation Operator)
+Task: Respond to the architect's independent remote verification finding: no `excel-022-images` ref exists on GitHub; the reported commits (e1d025d, 7b1cc15, ab325cc) are not remotely verifiable. Make the branch publishable and re-verify every gate on the exact tree to be pushed.
+
+Work Log:
+
+- Architect finding CONFIRMED CORRECT. `git fetch origin` shows no `origin/excel-022-images`; the three commits exist only in this sandbox. My previous report cited local SHAs without stating prominently enough that they were never pushed — that ambiguity is the defect being corrected here.
+- Root cause, verified exhaustively: this sandbox has ZERO GitHub credentials — no credential helper, no ~/.git-credentials, no ~/.netrc, no GITHUB_TOKEN/GH_TOKEN env vars, no gh CLI, no SSH keys. `GIT_TERMINAL_PROMPT=0 git push --dry-run` fails with "could not read Username for 'https://github.com'". Push and PR creation are physically impossible from here. (The Vercel token deploys to Vercel only; it cannot touch GitHub.)
+- Rebased `excel-022-images` onto current origin/main (`93b4c30` → `3d7fc3c`, clean rebase; main had advanced with PR #18/PROJECT-020 which touches no EXCEL-022 file). SHA mapping (neither set ever existed on the remote): e1d025d → a594137 (EXCEL-021 cleanup), 7b1cc15 → 3c6a00a (EXCEL-022 implementation), ab325cc → e058b9f (worklog evidence). Pre-rebase tip preserved locally as `excel-022-images-prerebase`.
+- Fresh gate evidence ON THE REBASED TREE (all re-executed this session, none carried over from the earlier report):
+  - xlsx-gateway: 602/602 (32 files).
+  - contractor-core: 423 passed + 4 skipped (26 files + 1 skipped).
+  - web unit: 216/216 (10 files, includes the 43 architecture guards).
+  - web-host: 78/78.
+  - Typecheck clean: @contractor/web, @contractor/web-host, @contractor/core, @genoffice/xlsx-gateway.
+  - Browser E2E (real Vite + API stack): 101/101 — batch 1 (excel + insert): 50/50; ribbon-images: 12/12; batch 2 (ribbon + word): 39/39.
+  - Frozen surfaces vs origin/main: empty diff over apps/sheets/src, apps/docs, apps/shell, packages/platform-electron, packages/renderer-bridge. Full PR: 21 files, +3773/−39.
+- Publish package exported for credential-holders: /home/z/my-project/download/excel-022-images/ — 3-patch series (git am onto current main), pr-combined.diff, pr-diffstat.txt, SHA256SUMS, PUBLISH.md (exact push + PR-open commands). Stale pre-rebase 0003 patch moved to superseded/.
+- Publication remains with the architect/operator: apply patches → push excel-022-images → open PR. Alternatively, provision a GitHub token in this sandbox and the push + PR happen immediately from here.
+
+Stage Summary:
+
+- The implementation is real, complete, and freshly re-verified (602/602, 423+4s, 216/216, 78/78, 101/101 E2E, typecheck clean, frozen surfaces untouched) on branch excel-022-images rebased at 3d7fc3c + 3 commits (tip after this worklog commit).
+- Push/PR cannot originate from this sandbox (no credentials — verified, not assumed). Patch series + instructions exported; ready for `git am` + push by anyone with repo access.
+- Workflow state: EXCEL-022 remains IMPLEMENTING. NOT PR_OPEN (no remote ref — architect's finding stands), NOT VERIFIED (architect owns that transition). EXCEL-021 cleanup likewise rides this branch (a594137) and remains NOT VERIFIED until it lands on remote main.
+
+---
+
+Task ID: EXCEL-022-pr-open
+Agent: Z.ai (Implementation Operator)
+Task: Publish the excel-022-images branch and open the PR (architect supplied a GitHub PAT after confirming the remote ref was missing).
+
+Work Log:
+
+- Architect supplied a GitHub PAT (exported as GITHUB_TOKEN, persisted in ~/.bashrc; authenticates as pectoraux with full repo scope). Note for future sessions: each shell invocation is fresh — `source ~/.bashrc` before any authenticated command.
+- Verified origin/main still at 3d7fc3c (branch base unchanged; project-office moved but is unrelated). Pushed excel-022-images: remote ref = f10ad0ffd8371e70c9b5a673fcc8592bd20ea820 = local HEAD.
+- Opened PR #20 (base main ← head excel-022-images): https://github.com/pectoraux/genoffice/pull/20 — 4 commits, 21 files, +3801/−39. PR body carries the full implementation summary, gate evidence, commit mapping (pre-rebase local SHAs → published SHAs), known limitations, and workflow state.
+- The patch package at /home/z/my-project/download/excel-022-images/ is now SUPERSEDED by the remote ref (kept for the audit trail; tree identity was proven before pushing).
+
+Stage Summary:
+
+- EXCEL-022 workflow state: IMPLEMENTING → PR_OPEN. Remote ref and PR exist and are reviewable.
+- CI evidence collection on PR #20 follows (web job is the canonical office gate; test/e2e/foundation failures are the documented pre-existing baseline if they recur).
+- NOT VERIFIED — the architect owns that transition; review proceeds on the actual diff.
+
+---
+
+Task ID: EXCEL-022-ci-round1
+Agent: Z.ai (Implementation Operator)
+Task: Collect CI evidence on PR #20 (first run, head 8fcf26a) and correct what it surfaced.
+
+Work Log:
+
+- First CI round on 8fcf26a: the `test` job FAILED at `npm run format:check` — Prettier violations in 11 files, ALL of them EXCEL-022 files (sheet-images.ts, ExcelEditor.tsx, fixtures.ts, ribbon-images.spec.ts, office-routes.ts, office-visual-routes.test.ts, xlsx-drawing-add.ts, xlsx-drawing-edit.ts, xlsx-image-read.ts, xlsx-image.test.ts, work-items.md). Root cause: my local pre-push gates ran ESLint on changed files but never the repo's Prettier format gate (`FORMAT_BASE_REF=origin/main npm run format:check`). This was a REAL defect in my verification process — not pre-existing debt.
+- Correction: ran `npm run format` (Prettier write) over the changed-vs-origin/main file set — pure formatting (99+/100−, line wrapping only). `format:check` now passes.
+- Gates re-verified on the formatted tree: xlsx-gateway 602/602, contractor-core 423+4sk, web unit 216/216, web-host 78/78, typecheck clean in all four workspaces, ribbon-images browser E2E 12/12.
+- `foundation` job: FAILED — the documented pre-existing branch-isolation structural condition (diffs origin/main...HEAD and flags the parity-phase file set; fails for every feature-branch commit; same as EXCEL-018/020 evidence).
+- `e2e` job: FAILED — verifying against the documented pre-existing frozen-desktop baseline (chromium_headless_shell binary + desktop sheets sandbox); detail check follows in the next round if needed.
+
+Stage Summary:
+
+- Format-gate defect found by CI and corrected (this is exactly why the remote CI gate matters — the sandbox-only verification missed it).
+- Workflow state: PR_OPEN (PR #20). NOT VERIFIED — architect owns that transition.
+
+---
+
+Task ID: EXCEL-022-ci-round2
+Agent: Z.ai (Implementation Operator)
+Task: CI evidence on the format-corrected head 0a559f3 (PR #20).
+
+Work Log:
+
+- Round-2 CI on 0a559f3 (run 33033335267), all four checks final:
+  - `web` (the canonical office gate): SUCCESS — every step green. Typecheck (@contractor/web) clean; unit tests web 216/216 + web-host 78/78 + contractor-core 423 passed + 4 skipped; production build green; Playwright browser E2E **101 passed (9.7m)** on GitHub's infrastructure — including the 12 new ribbon-images tests and the architect's sort/formula semantic gate.
+  - `test`: FAILURE — pre-existing lint debt. All 20 annotations live in frozen/pre-existing files (apps/docs, apps/sheets, apps/slides, apps/web/src/screens/BOQ.tsx). Cross-checked against the PR's changed-file list: ZERO overlap with EXCEL-022 files. Identical in character to the documented baseline that also failed on project-office and every prior office PR.
+  - `e2e`: FAILURE — the frozen desktop Electron suite (InvalidSessionError/sandbox), untouched by this PR (frozen surfaces = empty diff); same documented baseline as EXCEL-018/020.
+  - `foundation`: FAILURE — the branch-isolation guard rejects ANY branch touching packages/xlsx-gateway/ by design; verified identical failures on excel-020-protection, excel-021-tables, and web-office-editor before their merges. Not an office-gate signal.
+- Round-1 → round-2 delta: the ONLY new failure round 1 exposed was the Prettier format violation (fixed in 0a559f3); round 2 confirms `test` now fails only on the pre-existing debt set.
+
+Stage Summary:
+
+- The canonical web gate is GREEN in CI on 0a559f3 with the full 101-test browser E2E. EXCEL-022 stands at PR_OPEN with complete local + CI evidence.
+- Remaining pre-merge step per the mandated ordering: architect review of the actual diff (PR #20). Post-merge: production deploy → deployed E2E against genoffice.vercel.app → independent byte inspection.
+- Workflow state: PR_OPEN. NOT VERIFIED — the architect owns that transition.
+
+---
+
+Task ID: EXCEL-022-architect-review-round1
+Agent: Z.ai (Implementation Operator)
+Task: Correct the two blockers from the architect's CHANGES REQUESTED review of PR #20 (posted on the PR 2026-08-27).
+
+Work Log:
+
+- Blocker 1 (browser purity boundary) — CORRECTED. sheet-images.ts read the private `_image`/`sheetTransform` internals of FOverGridImage through an `as unknown as` cast. Verified from the installed Univer 0.25.1 sources that the PUBLIC read path exists: `FOverGridImage.toBuilder().buildAsync()` returns the live image data — the same public surface the facade's own setPositionAsync/setSizeAsync build their commands on (facade.js:612 + buildAsync implementation). Rewrote readLivePlacement as an async function reading the returned public sheetTransform (from/to markers, pixel offsets) through an EXPLICIT narrow adapter (BuiltImageGeometry); width/height derive from the live grid between the markers exactly as before. Cascaded the async change through readLiveAnchor, collectImageVisualEdits, collectImageVisualAdditions (handleSave already async; anchors refresh at save time as before). Also removed ALL six EXCEL-022 `as unknown as` casts in ExcelEditor.tsx — the augmented FWorksheet type (sheets-drawing/facade import) structurally satisfies ImageWorksheetFacade, and `remove()` is a documented public method now declared on the adapter interface. The install builder param is typed against the REAL public ISheetImage type (Partial + Pick — exactly what the install path supplies; Univer's own documented example omits the derived transform fields). The E2E liveImages helper's own `_image` access was corrected to toBuilder().buildAsync() as well. Only the two PRE-EXISTING casts (EXCEL-021 table-theme muting, data-validation rule handle) remain — both predate EXCEL-022 and are outside its scope.
+- Blocker 1 guard — STRENGTHENED (the architect said do not weaken the architecture guard): new architecture test "sheet-images.ts has NO private-Univer-internals access" rejects any `as unknown as` or `_image` access in the image module and requires the public toBuilder()/buildAsync() read adapter to be present.
+- Blocker 2 (absolute-anchor fidelity) — CORRECTED, fail-closed branch chosen. The reader mapped every absoluteAnchor to zeroAnchor(), silently relocating imported absolute pictures to (0,0). xlsx-image-read.ts now omits absolute-anchored pictures from the browser model entirely (architect's fail-closed option): the picture never surfaces, stays untouched in the file, and a no-op save preserves its drawing XML and media byte-for-byte. The anchor still counts toward drawingIndex parity (later anchors keep stable locators). SheetImageInfo.anchorType narrowed to 'two-cell' | 'one-cell' — 'absolute' can no longer occur on the wire by design. zeroAnchor() dead code removed.
+- Tests: gateway xlsx-image.test.ts — flipped the absolute-anchor case to assert omission, added "keeps drawingIndex parity across an omitted absolute anchor" and "preserves an absolute-anchored picture byte-for-byte through a no-op save". Browser E2E — new deterministic absoluteAnchor fixture + test 15 "an absolute-anchored image is omitted, never relocated (fail closed)": open response carries no image, nothing renders over the grid, and the drawing XML (including <xdr:pos x="47625" y="9525"/>) plus media bytes survive a cell-edit save byte-for-byte.
+- Gates re-verified on the corrected tree: xlsx-gateway 604/604, contractor-core 423+4sk, web unit 217/217 (216 + the new architecture guard), web-host 78/78, typecheck clean in all four workspaces, ESLint clean on every changed file, Prettier format:check clean, production build green, frozen surfaces untouched (7 files changed, all in the two blocker areas), full browser E2E 102/102 — batch 1 (excel + insert) 50/50, ribbon-images 13/13 (move/resize exercise the new public geometry read end-to-end through save → reopen), batch 2 (ribbon + word) 39/39.
+
+Stage Summary:
+
+- Both architect blockers corrected at the root: the browser image module now reaches Univer ONLY through the public facade surface (guarded by a new architecture test), and absolute-anchored pictures fail closed — omitted from the browser model, never relocated, preserved untouched in the file.
+- Workflow state: CHANGES REQUESTED → corrections pushed for re-review (PR #20). NOT VERIFIED — the architect owns that transition and explicitly re-reviews the corrected diff.
+
+---
+
+Task ID: EXCEL-022-architect-review-ci
+Agent: Z.ai (Implementation Operator)
+Task: CI evidence for the architect-review correction head 4b59a2c (PR #20).
+
+Work Log:
+
+- CI on 4b59a2c (the correction commit), all four checks final:
+  - `web` (the canonical office gate): SUCCESS — typecheck clean, web unit 217/217, web-host 78/78, contractor-core 423+4sk, production build green, Playwright browser E2E **102 passed (10.4m)** on GitHub's infrastructure — including the 13 ribbon-images tests (move/resize exercise the new public toBuilder().buildAsync() geometry read end-to-end; test 15 proves the absolute-anchor fail-closed omission).
+  - `test`: FAILURE — pre-existing lint debt; all 9 annotated files are frozen/pre-existing, ZERO overlap with the EXCEL-022 file set, and ZERO format annotations (the round-1 Prettier defect stays corrected).
+  - `e2e`: FAILURE — the frozen desktop Electron suite baseline (untouched; frozen surfaces = empty diff).
+  - `foundation`: FAILURE — the branch-isolation guard that rejects any branch touching packages/xlsx-gateway/ by design (identical on every prior office PR).
+
+Stage Summary:
+
+- Both architect blockers corrected, all local gates green, and the web CI gate green with the full 102-test browser E2E on the correction head 4b59a2c.
+- Workflow state: CHANGES REQUESTED → corrections pushed, awaiting architect re-review of the actual diff. NOT VERIFIED — the architect owns that transition.

@@ -1,18 +1,19 @@
 /**
- * REAL browser E2E — Insert tab (Phase 4 Inc. 3; EXCEL-021 flipped Table).
+ * REAL browser E2E — Insert tab (Phase 4 Inc. 3; EXCEL-021 flipped Table;
+ * EXCEL-022 flipped Picture).
  *
- * Verifies the Insert tab's Picture / Chart controls are VISIBLY DISABLED
- * (per spec: "a disabled button is preferable to a fake feature") — the
- * wire save plan still does not expose the visualAdditions / chartEdits
- * families. Table is ENABLED since EXCEL-021: the tableAdditions family
- * IS on the wire (ribbon-table.spec.ts proves the full round-trip), so
- * the old disabled-stub assertion flips to enabled + wired.
+ * Verifies the Insert tab's control wiring: Picture is ENABLED since
+ * EXCEL-022 (the visualAdditions family is on the wire;
+ * ribbon-images.spec.ts proves the full round-trip). Chart remains
+ * VISIBLY DISABLED (per spec: "a disabled button is preferable to a fake
+ * feature") — the wire save plan still does not expose the chartEdits
+ * family (EXCEL-023). Table is ENABLED since EXCEL-021.
  */
 import { test, expect } from '@playwright/test'
 import { loginAsDemoOwner, gotoHashRoute, waitForGridCanvas } from './helpers'
 
 test.describe('Insert tab — disabled-by-design controls', () => {
-  test('Picture and Chart are disabled with documented reason; Table is enabled', async ({
+  test('Chart is disabled with documented reason; Picture and Table are enabled', async ({
     page,
   }) => {
     test.setTimeout(120_000)
@@ -47,13 +48,13 @@ test.describe('Insert tab — disabled-by-design controls', () => {
       /chartEdits|visualAdditions/,
     )
 
-    // Picture — must be disabled with a title naming visualAdditions.
+    // Picture — ENABLED since EXCEL-022: the visualAdditions (image
+    // embed) family is on the wire; the canonical round-trip is proven
+    // in ribbon-images.spec.ts.
     const pictureBtn = page.getByRole('button', { name: /^Picture/ }).first()
-    await expect(pictureBtn).toBeDisabled()
+    await expect(pictureBtn).toBeEnabled()
     const pictureTitle = await pictureBtn.getAttribute('title')
-    expect(pictureTitle, 'Picture title names the architectural reason').toContain(
-      'visualAdditions',
-    )
+    expect(pictureTitle, 'Picture title names the insert action').toContain('insert an image')
 
     expect(pageErrors).toEqual([])
   })
