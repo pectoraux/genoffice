@@ -62,7 +62,17 @@ Any change to a frozen invariant requires a recorded architecture-change proposa
 
 ## 13. Forbidden dependencies
 
-Foundation packages must not import React/React DOM, Electron, Node filesystem/process APIs, browser globals, HTTP clients/server route modules, Excel renderer packages, or `.mpp`/MSPDI parser implementation code.
+Foundation packages must not import React/React DOM, Electron, Node filesystem/process APIs, browser globals, HTTP clients/server route modules, or Excel renderer packages.
+
+Foundation semantic/runtime packages (`project-contracts`, `project-engine`, `project-scheduling`, `project-renderer-core`) must not import external MSPDI/MPP parser implementations.
+
+`packages/project-file` is the sanctioned file-adapter boundary and may contain format-specific parser/serializer implementations.
+
+No `project-engine`, `project-scheduling`, `project-renderer-core`, or host package may directly import format-specific parser internals.
+
+File-format implementations remain behind the `project-file` adapter boundary.
+
+(Clarified by ACR-001 — `spec/project/architecture-changes/ACR-001-project-file-adapter-boundary.md` — the recorded architecture-change proposal under §12; no prohibition is weakened.)
 
 ## 14. Completion authority
 

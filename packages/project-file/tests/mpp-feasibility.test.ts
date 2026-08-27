@@ -17,9 +17,11 @@
  *   - NO production MPP implementation was introduced: the project-file
  *     package has no MPP source module, its runtime dependencies are exactly
  *     contracts + engine, and the public export surface gained nothing MPP;
- *   - the frozen architecture lock still forbids foundation packages from
- *     importing MPP parser implementation code (the investigation may not
- *     silently weaken it).
+ *   - the frozen architecture lock still governs MPP parser boundaries under
+ *     the clarified §13 rule (ACR-001 — external MSPDI/MPP parser
+ *     implementations forbidden for semantic/runtime foundation packages;
+ *     project-file the sanctioned in-package adapter boundary; the
+ *     investigation may not silently weaken it).
  *
  * The dynamic feasibility claims themselves (MPXJ installability, real-file
  * processing, mapping to canonical structures) were validated by the isolated
@@ -168,11 +170,21 @@ describe('PROJECT-017 — no production MPP implementation introduced', () => {
     expect(mppIndexSource).not.toMatch(/child_process|node:|spawn|exec/)
   })
 
-  it('the frozen architecture lock still forbids foundation MPP parser imports', () => {
-    // The investigation must not weaken architecture-lock.md §13 — the guard
-    // text itself must still be present verbatim.
+  it('the frozen architecture lock still governs MPP parser boundaries (clarified by ACR-001, never weakened)', () => {
+    // The roadmap reconciliation increment (ACR-001) clarified §13: external
+    // MSPDI/MPP parser implementations stay forbidden for the semantic/runtime
+    // foundation packages, and packages/project-file is the sanctioned
+    // in-package adapter boundary — the pure-TS MSPDI tokenizer this report
+    // recommended keeps its sanctioned home, and MPXJ remains confined to the
+    // host sidecar. The guard text must still be present verbatim.
     expect(architectureLock).toContain(
-      'Foundation packages must not import React/React DOM, Electron, Node filesystem/process APIs, browser globals, HTTP clients/server route modules, Excel renderer packages, or `.mpp`/MSPDI parser implementation code.',
+      'Foundation semantic/runtime packages (`project-contracts`, `project-engine`, `project-scheduling`, `project-renderer-core`) must not import external MSPDI/MPP parser implementations.',
+    )
+    expect(architectureLock).toContain(
+      '`packages/project-file` is the sanctioned file-adapter boundary and may contain format-specific parser/serializer implementations.',
+    )
+    expect(architectureLock).toContain(
+      'File-format implementations remain behind the `project-file` adapter boundary.',
     )
     expect(architectureLock).toContain('Status: FROZEN')
   })

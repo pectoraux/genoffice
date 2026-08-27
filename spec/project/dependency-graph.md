@@ -1,49 +1,68 @@
 # GenOffice Project — Dependency Graph
 
-## Foundation DAG
+## Canonical direct-dependency graph
+
+Each line lists one work item (in PROJECT-number order — the authoritative roadmap order) and its complete set of DIRECT dependencies, exactly as recorded in the `Depends on` column of `work-items.md`. The former foundation-tree and chain-shorthand blocks are superseded by this explicit form (roadmap reconciliation increment — same direct dependencies, no roadmap reorder; the deterministic consistency guard `packages/project-file/tests/spec-consistency.test.ts` enforces the correspondence between the two documents).
 
 ```text
-PROJECT-001
-   ├── PROJECT-002 ──┐
-   │                 ├── PROJECT-004 ──┐
-   │                 └── PROJECT-005 ──┼── PROJECT-006
-   └── PROJECT-003 ────────────────────┘
+PROJECT-001 ← none
+PROJECT-002 ← 001
+PROJECT-003 ← 001, 002
+PROJECT-004 ← 001, 002
+PROJECT-005 ← 001, 002
+PROJECT-006 ← 002, 004, 005
+PROJECT-007 ← 002, 006
+PROJECT-008 ← 006
+PROJECT-009 ← 006
+PROJECT-010 ← 002, 004, 006
+PROJECT-011 ← 010
+PROJECT-012 ← 006
+PROJECT-013 ← 011, 012
+PROJECT-014 ← 002, 003
+PROJECT-015 ← 014
+PROJECT-016 ← 014, 015
+PROJECT-017 ← 014, 015
+PROJECT-018 ← 017
+PROJECT-019 ← 017
+PROJECT-020 ← 015, 018
+PROJECT-021 ← 002, 003, 006
+PROJECT-022 ← 021
+PROJECT-023 ← 022
+PROJECT-024 ← 023, 005
+PROJECT-025 ← 022, 004
+PROJECT-026 ← 022, 012
+PROJECT-027 ← 021, 022
+PROJECT-028 ← 021, 022
+PROJECT-029 ← 021, 023
+PROJECT-030 ← 021, 023
+PROJECT-031 ← 022, 023, 029
+PROJECT-032 ← 022, 023
+PROJECT-033 ← 010, 011, 022
+PROJECT-034 ← 005, 021
+PROJECT-035 ← 009, 022
+PROJECT-036 ← 002, 003, 022
+PROJECT-037 ← 021, 036
+PROJECT-038 ← 009, 036
+PROJECT-039 ← 008, 009, 011
+PROJECT-040 ← 039
+PROJECT-041 ← 007, 008
+PROJECT-042 ← 007, 014
+PROJECT-043 ← 010, 013
+PROJECT-044 ← 004, 010
+PROJECT-045 ← 013, 043
+PROJECT-046 ← 027, 028, 029, 030, 031
+PROJECT-047 ← 014, 015, 016, 018, 019, 020
+PROJECT-048 ← 046, 047
+PROJECT-049 ← 046, 047, 048
 ```
 
-## Full roadmap dependency intent
+## Accepted frontier
+
+The objectively accepted state and the next authorized product increment (the authorization gate below applies):
 
 ```text
-001 → 002 → 003
-002 → 004
-002 → 005
-004 + 005 + 002 → 006
-006 → 007 → 008 → 009
-002 + 004 + 006 → 010 → 011 → 013
-006 → 012 → 013
-002 + 003 + 006 → 014 → 015 → 016
-014 → 017 → 018 → 019
-015 + 018 → 020
-002 + 003 + 006 → 021 → 022 → 023 → 024
-004 + 022 → 025
-012 + 022 → 026
-021 + 022 → 027
-021 + 022 → 028
-021 + 023 → 029 → 030 → 031
-022 + 023 → 032
-010 + 011 + 022 → 033
-005 + 021 → 034
-009 + 022 → 035
-002 + 003 + 022 → 036 → 037
-009 + 036 → 038
-008 + 009 + 011 → 039 → 040
-007 + 008 → 041
-007 + 014 → 042
-010 + 013 → 043
-004 + 010 → 044
-013 + 043 → 045
-027 + 028 + 029 + 030 + 031 → 046
-014 + 015 + 016 + 018 + 019 + 020 → 047
-046 + 047 → 048 → 049
+Accepted: PROJECT-001..PROJECT-025 (PROJECT-019 completed as the 019A rescope decision record)
+Next authorized: PROJECT-026
 ```
 
 A work item cannot be authorized until all direct dependencies are objectively accepted. A dependency change requires synchronized updates to `work-items.md`, this file, and `architecture-lock.md` when the change affects a frozen invariant.
