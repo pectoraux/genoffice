@@ -1041,3 +1041,23 @@ Stage Summary:
 - All local gates green: gateway 602/602, core 423+4sk, web 216/216, host 78/78, browser E2E 101/101 (12 new image tests), architecture 43/43, typecheck/lint/build clean, frozen surfaces untouched.
 - Known limitations (documented): chart/shape additions rejected on the web wire until EXCEL-023; one-cell/absolute images render read-only (edits reverted fail-closed); rotation renders but is not editable; z-order/flip/crop/alt-text not modeled on the xlsx wire (Word has crop/alt; desktop xlsx does not); a save response without addedVisuals (older host) leaves persisted session images untracked for further edits (no guessed indexes).
 - Workflow state: IMPLEMENTING → local implementation complete. The sandbox has no GitHub push credentials, so PR_OPEN/CI/production deploy could NOT be executed — patch files exported to /home/z/my-project/download/ for application. NOT VERIFIED — the architect owns that transition.
+
+---
+
+Task ID: EXCEL-022-deployed-preview
+Agent: Z.ai (Implementation Operator)
+Task: Deployed-deployment verification attempt for EXCEL-022 (preview only — production alias intentionally untouched per the architect's ordering: production deploy follows CI green + merge).
+
+Work Log:
+
+- Verified the Vercel token against the account: project `genoffice` exists (team ekonplacidegmailcoms-projects, production URL https://genoffice.vercel.app, Node 24.x).
+- Deployed the EXCEL-022 branch (commit 7b1cc15) as a Vercel PREVIEW via the CLI from the local checkout — build succeeded on Vercel's infrastructure (bun install --ignore-scripts → build:api + apps/web build): https://genoffice-e1kar1x9m-ekonplacidegmailcoms-projects.vercel.app
+- Attempted the deployed E2E suite (playwright.deployed.config.ts, ribbon-images.spec.ts) against the preview: ALL 12 tests fail at LOGIN — the account's Deployment Protection (SSO) intercepts preview URLs and redirects to vercel.com/login, so Playwright never reaches the app (smoke: preview root → 302 → vercel.com/login; production root → 200). This is an account-level infrastructure condition, identical in character to the documented Vercel free-tier preview limitation from the EXCEL-020 session.
+- Verified the production alias is publicly reachable (200) but deliberately NOT redeployed — it currently serves merged main WITHOUT EXCEL-022; pushing unreviewed code to the production alias would violate the mandated ordering (local green → CI web green → merge → production deploy → production E2E → byte inspection). That chain remains blocked upstream at the GitHub push step (no credentials in this sandbox).
+- Patch series exported for application: /home/z/my-project/download/0001 (EXCEL-021 cleanup re-apply), 0002 (EXCEL-022 implementation).
+
+Stage Summary:
+
+- EXCEL-022 commit 7b1cc15 builds and deploys cleanly on Vercel (preview URL above) — infrastructure-level proof the exact tree compiles in the deploy pipeline.
+- Deployed E2E against the preview: BLOCKED by account Deployment Protection (SSO). Production verification (Phase N) remains pending the PR/merge that the sandbox cannot perform.
+- Workflow state: IMPLEMENTING (local implementation + all local gates green). NOT PR_OPEN (no GitHub credentials), NOT VERIFIED (architect owns that transition).
