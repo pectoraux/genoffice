@@ -31,6 +31,7 @@ import {
   reconcileViewState,
 } from './state.js'
 import { type TaskEditing, initialTaskEditDraft, isTaskFieldEditable } from './editing.js'
+import { type DependencyEditing, initialDependencyEditDraft } from './dependency-editing.js'
 /** Viewport span guards and fit padding are defined once in `./timeline.js`
  * (the module that owns the viewport math) and re-exported here for reducer
  * consumers. */
@@ -243,9 +244,12 @@ export function reduceViewState(
       }
       // Activating a cell edit selects the edited row (the Microsoft Project
       // cell-edit gesture): the selection becomes exactly that row. An
-      // already-active edit is replaced — at most one editor is live.
+      // already-active edit is replaced — at most one editor is live, and a
+      // dependency edit and a task edit never coexist (PROJECT-024: the
+      // single-editor rule).
+      const { dependencyEditing: _endedDependencyEdit, ...rest } = state
       next = {
-        ...state,
+        ...rest,
         tasks: { taskIds: [intent.taskId], anchorId: intent.taskId, focusId: intent.taskId },
         editing,
       }
@@ -259,6 +263,44 @@ export function reduceViewState(
     case 'endTaskEdit': {
       if (state.editing === undefined) return state
       const { editing: _ended, ...rest } = state
+      next = rest
+      break
+    }
+    case 'beginDependencyEdit': {
+      const dependency = document.dependencies.find(
+        (candidate) => candidate.id === intent.dependencyId,
+      )
+      // Deterministic no-op for an unknown dependency (the single-editor
+      // rule's dependency side: both fields are editable on every
+      // dependency, so existence is the only gate).
+      if (dependency === undefined) return state
+      const dependencyEditing: DependencyEditing = {
+        dependencyId: intent.dependencyId,
+        field: intent.field,
+        draft: initialDependencyEditDraft(document, intent.dependencyId, intent.field),
+      }
+      // Activating a dependency edit selects the edited link (the PROJECT-023
+      // cell-edit gesture's dependency analog) and ends any active TASK edit
+      // — at most one editor is live across both families.
+      const { editing: _endedTaskEdit, ...rest } = state
+      next = {
+        ...rest,
+        dependencies: [intent.dependencyId],
+        dependencyEditing,
+      }
+      break
+    }
+    case 'updateDependencyEditDraft': {
+      if (state.dependencyEditing === undefined) return state
+      next = {
+        ...state,
+        dependencyEditing: { ...state.dependencyEditing, draft: intent.draft },
+      }
+      break
+    }
+    case 'endDependencyEdit': {
+      if (state.dependencyEditing === undefined) return state
+      const { dependencyEditing: _endedDependency, ...rest } = state
       next = rest
       break
     }

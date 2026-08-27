@@ -31,6 +31,7 @@ import type {
   TaskId,
 } from '@genoffice/project-contracts'
 import type { EditableTaskField } from './editing.js'
+import type { EditableDependencyField } from './dependency-editing.js'
 
 /** How a select intent combines with the existing selection. */
 export type SelectMode =
@@ -72,6 +73,20 @@ export type ProjectViewIntent =
    * the commit flow `./edit-flow.js` ends the editor regardless of the
    * command outcome). A no-op when nothing is being edited. */
   | { type: 'endTaskEdit' }
+  // ---- dependency editing (PROJECT-024) ----
+  /** Activate the dependency editor for (dependency, field) with the
+   * canonical initial draft (`initialDependencyEditDraft`) and select the
+   * edited link (replacing any active task edit). A deterministic no-op
+   * when the dependency does not exist — both fields (type, lag) are
+   * editable on every dependency. The draft is canonical protocol text
+   * (a type code or decimal minutes), not presentation. */
+  | { type: 'beginDependencyEdit'; dependencyId: DependencyId; field: EditableDependencyField }
+  /** Replace the active dependency edit's draft text (no-op when no
+   * dependency edit is active). */
+  | { type: 'updateDependencyEditDraft'; draft: string }
+  /** End the active dependency edit WITHOUT committing (also the
+   * post-commit cleanup). A no-op when no dependency edit is active. */
+  | { type: 'endDependencyEdit' }
   // ---- dependency / resource selection ----
   | { type: 'selectDependency'; dependencyId: DependencyId; mode?: SelectMode }
   | { type: 'selectResource'; resourceId: ResourceId; mode?: SelectMode }

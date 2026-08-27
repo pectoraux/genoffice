@@ -15,9 +15,23 @@
  * contracts; their interaction surfaces are PROJECT-023/024 scope. The
  * builders below are the ones where two independent host implementations
  * would otherwise risk divergent semantics.
+ *
+ * PROJECT-024 adds the dependency builders: deterministic dependency-id
+ * allocation, the creation defaults (FS, zero lag — the Microsoft Project
+ * link defaults), and the gesture guards for link creation (unknown or
+ * self-referencing endpoints are disabled gestures, never invented
+ * commands). The engine remains the single validation authority — a builder
+ * only refuses to build what the engine would deterministically reject.
  */
-import { asTaskId, asWorkingMinutes } from '@genoffice/project-contracts'
-import type { ProjectCommand, ProjectDocument, Task, TaskId } from '@genoffice/project-contracts'
+import { asDependencyId, asTaskId, asWorkingMinutes } from '@genoffice/project-contracts'
+import type {
+  DependencyId,
+  DependencyType,
+  ProjectCommand,
+  ProjectDocument,
+  Task,
+  TaskId,
+} from '@genoffice/project-contracts'
 import { HierarchyError, buildTaskHierarchy, previousSiblingOf } from '@genoffice/project-engine'
 
 /** Canonical local-id pattern for renderer-allocated tasks: `t` + a positive
@@ -25,6 +39,14 @@ import { HierarchyError, buildTaskHierarchy, previousSiblingOf } from '@genoffic
  * takes `max + 1` — deterministic for the same document regardless of array
  * order. */
 const RENDERER_TASK_ID_PATTERN = /^t(\d+)$/
+
+/** Canonical local-id pattern for renderer-allocated dependencies: `d` + a
+ * positive decimal integer. Allocation scans the document's existing
+ * dependency ids and takes `max + 1` — deterministic for the same document.
+ * Imported ids that do not match the pattern (e.g. the MSPDI importer's
+ * `d-{succ}-{pred}-{type}` ids) are ignored by the scan, so allocation never
+ * collides with them. */
+const RENDERER_DEPENDENCY_ID_PATTERN = /^d(\d+)$/
 
 /** Canonical creation defaults (presentation-layer choices only; every
  * derived field — wbs, outlineLevel, summary — is recomputed by the engine
@@ -230,4 +252,97 @@ export function buildDeleteSelectionCommands(
     .filter((index) => index >= 0)
     .sort((a, b) => b - a)
     .map((index) => ({ type: 'DeleteTask', taskId: document.tasks[index]!.id }) as ProjectCommand)
+}
+
+// ===========================================================================
+// PROJECT-024 — dependency command builders
+// ===========================================================================
+
+/**
+ * The deterministic identity for the next renderer-created dependency: the
+ * smallest `d{n}` greater than every existing `d{n}` id (or `d1` when none).
+ * Pure: the same document always yields the same identity. Ids that do not
+ * match the `d{n}` pattern (imported links) are ignored — allocation never
+ * collides with them and never renumbers existing links.
+ */
+export function nextDependencyIdentity(document: ProjectDocument): DependencyId {
+  let maxId = 0
+  for (const dependency of document.dependencies) {
+    const match = RENDERER_DEPENDENCY_ID_PATTERN.exec(dependency.id)
+    if (match !== null) {
+      const numeric = Number.parseInt(match[1]!, 10)
+      if (Number.isFinite(numeric) && numeric > maxId) maxId = numeric
+    }
+  }
+  return asDependencyId(`d${maxId + 1}`)
+}
+
+/** The canonical creation defaults for a renderer-created link (presentation
+ * defaults only — the Microsoft Project link defaults): FS with zero lag. */
+export const DEFAULT_DEPENDENCY_TYPE: DependencyType = 'FS'
+export const DEFAULT_DEPENDENCY_LAG_MINUTES = 0
+
+/** The optional creation parameters for `buildAddDependencyCommand`. */
+export interface AddDependencyOptions {
+  /** The relationship type (default `FS`). */
+  readonly type?: DependencyType
+  /** The lag in integer working minutes (default `0`; negative = lead). */
+  readonly lagMinutes?: number
+}
+
+/**
+ * Builds the `AddDependency` command for the link-creation gesture from one
+ * task to another: identity allocated deterministically from the document,
+ * canonical defaults (FS, zero lag), and the endpoint wiring. The engine
+ * enforces every semantic rule on acceptance — cycles
+ * (`DEPENDENCY_CYCLE`), duplicate links (`DUPLICATE_DEPENDENCY_LINK`), the
+ * summary↔own-descendant rule (`SUMMARY_DEPENDENCY`), and lag integrality
+ * (`INVALID_LAG`) surface through the session as engine diagnostics.
+ *
+ * Returns `undefined` for the gestures the engine would ALWAYS reject on
+ * endpoint structure alone (the disabled-gesture contract of
+ * `buildIndentCommand`/`buildOutdentCommand`): an unknown predecessor or
+ * successor, or a self-referencing link (predecessor === successor). The
+ * host surfaces a disabled gesture; it never invents a command.
+ */
+export function buildAddDependencyCommand(
+  document: ProjectDocument,
+  predecessorId: TaskId,
+  successorId: TaskId,
+  options: AddDependencyOptions = {},
+): ProjectCommand | undefined {
+  const predecessor = document.tasks.some((task) => task.id === predecessorId)
+  const successor = document.tasks.some((task) => task.id === successorId)
+  if (!predecessor || !successor) return undefined
+  if (predecessorId === successorId) return undefined
+  return {
+    type: 'AddDependency',
+    dependency: {
+      id: nextDependencyIdentity(document),
+      predecessorId,
+      successorId,
+      type: options.type ?? DEFAULT_DEPENDENCY_TYPE,
+      lagMinutes: options.lagMinutes ?? DEFAULT_DEPENDENCY_LAG_MINUTES,
+    },
+  }
+}
+
+/**
+ * Builds the `RemoveDependency` commands for a dependency selection: one
+ * command per EXISTING selected id, emitted in canonical document order
+ * (deterministic; each removal looks the link up by identity, so the order
+ * is a stability guarantee, not a correctness dependency). Unknown ids are
+ * dropped — the gesture never invents removals.
+ */
+export function buildRemoveDependencySelectionCommands(
+  document: ProjectDocument,
+  selectedDependencyIds: readonly DependencyId[],
+): ProjectCommand[] {
+  const selected = new Set(selectedDependencyIds)
+  if (selected.size === 0) return []
+  return document.dependencies
+    .filter((dependency) => selected.has(dependency.id))
+    .map(
+      (dependency) => ({ type: 'RemoveDependency', dependencyId: dependency.id }) as ProjectCommand,
+    )
 }

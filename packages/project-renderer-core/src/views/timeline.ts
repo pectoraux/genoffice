@@ -13,7 +13,7 @@
  */
 import type { ProjectDocument } from '@genoffice/project-contracts'
 import type { ProjectTaskRow, ProjectViewProjection } from '../projection.js'
-import type { TimelineViewport } from '../state.js'
+import type { ProjectViewState, TimelineViewport } from '../state.js'
 import {
   type TimeAxisBand,
   type TimeAxisLevel,
@@ -57,12 +57,21 @@ export interface ProjectTimeline {
  * Builds the timeline view model. Pure and deterministic; never mutates
  * its inputs. An unparseable/degenerate viewport yields an EMPTY model
  * (no bands, no rows, no geometry) rather than invented values.
+ *
+ * PROJECT-024: the optional `state` parameter threads the interaction
+ * state's dependency selection / edit target into the link surface
+ * (`selected`/`editingField` reflections) — the PROJECT-023 row-reflection
+ * contract's dependency analog. Omitted (or a state with nothing selected
+ * / edited), the links carry `selected: false` and no `editingField`; the
+ * geometry is IDENTICAL either way (reflection is a pure echo, never a
+ * geometry input).
  */
 export function buildTimeline(
   document: ProjectDocument,
   projection: ProjectViewProjection,
   viewport: TimelineViewport,
   rowWindow: ProjectRowWindow,
+  state?: ProjectViewState,
 ): ProjectTimeline {
   const span = viewportSpanMs(viewport)
   const axisLevel: TimeAxisLevel =
@@ -86,6 +95,6 @@ export function buildTimeline(
     rows,
     bars: buildGanttBars(projection, viewport, rowWindow),
     milestones: buildMilestones(projection, viewport, rowWindow),
-    links: buildDependencies(document, projection, viewport, rowWindow),
+    links: buildDependencies(document, projection, viewport, rowWindow, state),
   }
 }

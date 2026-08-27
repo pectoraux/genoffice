@@ -172,3 +172,15 @@ PROJECT-023 (Selection / editing) adds NO new workspace package and NO new packa
 ```
 
 The editing surface lives INSIDE `@genoffice/project-renderer-core` (`src/editing.ts` — the pure edit model; `src/edit-flow.ts` — the session commit flow; the reducer/state/intent extensions), consuming only what the package already depends on. The editing modules never import the scheduling package (no scheduling authority — lock §3/§6; the draft reads the projection's by-reference schedule join passed as arguments), never the file/host packages (R-009), and never React/Electron/Node/DOM APIs (lock §13 — the discipline suite's raw-source scan covers them and now additionally guards the editing modules against scheduling-derived state, lock §11). CI is unchanged: the 21-step foundation gate already typechecks/tests both touched packages and its boundary grep covers them recursively. The work-item edge `023 → 024` opens on acceptance.
+
+## Package dependency edges (PROJECT-024)
+
+PROJECT-024 (Dependency editing) adds NO new workspace package and NO new package edge. The four engine command implementations (`AddDependency`, `RemoveDependency`, `ChangeDependencyType`, `ChangeLag`) live inside the accepted `@genoffice/project-engine` — the remaining members of the FROZEN command union whose implementation PROJECT-021 documented as deferred to this increment; the contracts package, the command union, and every existing edge are unchanged:
+
+```text
+@genoffice/project-renderer-core → @genoffice/project-contracts (types + brand helpers)
+@genoffice/project-renderer-core → @genoffice/project-engine (applyProjectCommand, hierarchy utilities)
+@genoffice/project-scheduling → @genoffice/project-engine (document validation + leveler registration, unchanged)
+```
+
+The dependency-editing surface lives INSIDE `@genoffice/project-renderer-core` (`src/dependency-editing.ts` — the pure edit model mirroring `src/editing.ts`; the builder additions in `src/commands.ts`; the `commitDependencyEditThroughSession` addition in `src/edit-flow.ts`; the reducer/state/intent extensions; the link reflection in `src/views/dependencies.ts` threaded through `src/views/timeline.ts` from `buildGanttView`'s existing `state` parameter), consuming only what the package already depends on. The dependency modules never import the scheduling package (no scheduling authority — lock §3/§6; the scheduling effects are asserted at the TEST layer against the injected REAL scheduler, the accepted precedent), never the file/host packages (R-009), and never React/Electron/Node/DOM APIs (lock §13 — the discipline suite's raw-source scan covers them and the lock §11 scheduling-free scan now includes `dependency-editing.ts`). CI is unchanged: the existing foundation gate already typechecks/tests both touched packages and its boundary grep covers them recursively. The work-item edge `023 → 024` completes on acceptance; `024 → 025` (calendar visualization) remains gated on the dependency graph's ordering.

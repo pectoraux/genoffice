@@ -41,8 +41,9 @@ import type {
   TaskSchedule,
 } from '@genoffice/project-contracts'
 import type { ProjectViewProjection } from '../projection.js'
-import type { TimelineViewport } from '../state.js'
+import type { ProjectViewState, TimelineViewport } from '../state.js'
 import { parseInstant } from '../state.js'
+import type { EditableDependencyField } from '../dependency-editing.js'
 import { viewportSpanMs } from './gantt-bars.js'
 import type { ProjectRowWindow } from './virtualization.js'
 import { rowWindowIsEmpty } from './virtualization.js'
@@ -68,7 +69,16 @@ export interface ProjectLinkEndpoint {
 
 /** One dependency link's geometry. `predecessorTaskId`/`successorTaskId`
  * are the CANONICAL dependency endpoints (never the resolved ancestors) —
- * the resolved rows are on `from`/`to`. */
+ * the resolved rows are on `from`/`to`.
+ *
+ * PROJECT-024 reflection: `selected` and `editingField` are pure echoes of
+ * the interaction state joined onto the link the same way `selected` /
+ * `focused` / `editingField` join onto the projection rows (lock §11-clean
+ * — no scheduling value, no geometry input; identical geometry whether or
+ * not a state is passed). The edit DRAFT stays on the live state — only
+ * the edit TARGET projects. A link whose row is scrolled out of the window
+ * simply produces no link (the visibility rule above); its selection stays
+ * in the view state and re-projects when it scrolls back in. */
 export interface ProjectDependencyLink {
   readonly dependencyId: DependencyId
   readonly type: DependencyType
@@ -77,6 +87,13 @@ export interface ProjectDependencyLink {
   readonly from: ProjectLinkEndpoint
   readonly to: ProjectLinkEndpoint
   readonly route: readonly ProjectLinkPoint[]
+  /** Whether this link is in the view state's dependency selection
+   * (`state.dependencies` membership — a pure echo). */
+  readonly selected: boolean
+  /** The field of the ACTIVE dependency edit targeting this link
+   * (`state.dependencyEditing.field`), present iff the editing target is
+   * this link. */
+  readonly editingField?: EditableDependencyField
 }
 
 /** The dependency-link surface (PROJECT-022): the visible links in
@@ -102,15 +119,28 @@ const SUCC_EDGE_BY_TYPE: Readonly<Record<DependencyType, 'start' | 'finish'>> = 
 /**
  * Builds the dependency-link geometry. Pure and deterministic; never
  * mutates its inputs.
+ *
+ * PROJECT-024: the optional `state` parameter adds the interaction-state
+ * reflection (`selected`/`editingField`) — a by-value echo of the view
+ * state's dependency selection / edit target joined onto each link. When
+ * `state` is omitted the reflection is empty (`selected: false`, no
+ * `editingField`) and the geometry is IDENTICAL — reflection is never a
+ * geometry input (the PROJECT-023 row-reflection contract's dependency
+ * analog).
  */
 export function buildDependencies(
   document: ProjectDocument,
   projection: ProjectViewProjection,
   viewport: TimelineViewport,
   rowWindow: ProjectRowWindow,
+  state?: ProjectViewState,
 ): ProjectDependencies {
   const span = viewportSpanMs(viewport)
   if (span === undefined || rowWindowIsEmpty(rowWindow)) return []
+
+  const selectedDependencyIds = new Set(state?.dependencies ?? [])
+  const editingDependencyId = state?.dependencyEditing?.dependencyId
+  const editingField = state?.dependencyEditing?.field
 
   const rowIndexByTask = new Map<TaskId, number>()
   projection.rows.forEach((row, index) => rowIndexByTask.set(row.taskId, index))
@@ -160,6 +190,10 @@ export function buildDependencies(
         { fraction: mid, rowIndex: to.rowIndex },
         { fraction: to.fraction, rowIndex: to.rowIndex },
       ],
+      selected: selectedDependencyIds.has(dependency.id),
+      ...(editingDependencyId === dependency.id && editingField !== undefined
+        ? { editingField }
+        : {}),
     })
   }
   return links
