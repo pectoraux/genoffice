@@ -237,16 +237,29 @@ export interface RibbonImagesProps {
   readonly onInsertPicture: () => void
 }
 
+/**
+ * EXCEL-023 charts surface (Insert → Charts group). The shell
+ * (ExcelEditor) owns the chart store + session journal and passes the
+ * command down here; the button only calls back (the Chart Design pane
+ * handles type selection over the active selection).
+ */
+export interface RibbonChartsProps {
+  /** Insert → Chart: open the Chart Design pane in create mode. */
+  readonly onInsertChart: () => void
+}
+
 export function Ribbon({
   api,
   protection,
   tables,
   images,
+  charts,
 }: {
   api: ExcelRuntimeApi | null
   protection?: RibbonProtectionProps | null
   tables?: RibbonTablesProps | null
   images?: RibbonImagesProps | null
+  charts?: RibbonChartsProps | null
 }) {
   const [tab, setTab] = useState<TabId>('home')
   // EXCEL-018 — Remove Duplicates dialog state. Mirrors the desktop's
@@ -524,13 +537,16 @@ export function Ribbon({
               />
             </Group>
             <Group label="Charts">
-              {/* Disabled: the wire save plan does not expose chartEdits /
-                 visualAdditions families. */}
+              {/* EXCEL-023: Insert → Chart — the Chart Design pane parses
+                  the active selection (shared chartDataFromValues) and
+                  journals a session chart persisted through the canonical
+                  visualAdditions.chart family on save. */}
               <RibbonButton
                 label="Chart"
-                title="Chart — disabled: the web save plan does not yet expose the chartEdits / visualAdditions families"
+                title="Chart — insert a chart from the selected data range (column, bar, line, area, pie, doughnut, scatter, radar, combo)"
                 icon={<ChartIcon />}
-                disabled
+                disabled={disabled || !charts}
+                onClick={() => charts?.onInsertChart()}
               />
             </Group>
             <Group label="Illustrations">

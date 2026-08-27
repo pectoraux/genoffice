@@ -83,6 +83,21 @@ import {
   numfmtEditsFromMutation,
 } from '../office/cell-mutation-merge'
 import { Ribbon } from './excel/Ribbon'
+import { ChartPanel } from './excel/ChartPanel'
+import type { ChartAdd } from '@genoffice/xlsx-gateway'
+import {
+  chartAddToVisualState,
+  collectChartAdditions,
+  collectChartEdits,
+  collectChartVisualEdits,
+  createChartEditingStore,
+  fileChartId,
+  installSheetChart,
+  useChartStoreVersion,
+  type ChartEditingStore,
+  type ChartHost,
+} from '../office/sheet-charts'
+import { applyChartStateEdit, type ChartGridValue } from '../office/chart-domain'
 import { NameBox } from './excel/NameBox'
 import { FormulaBar } from './excel/FormulaBar'
 import { StatusBar } from './excel/StatusBar'
@@ -489,6 +504,35 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   const imageInstallingRef = useRef(false)
   const imageSeqRef = useRef(0)
   const imageFileInputRef = useRef<HTMLInputElement | null>(null)
+  // ── Chart state (EXCEL-023, Insert → Chart / Chart Design). Desktop
+  //    parity (App.tsx file.visuals + edit-journal chartEdits +
+  //    visualAdds). The shared ChartEditingStore holds:
+  //    - fileCharts: the FILE's own charts keyed by their canonical
+  //      locator id `file-chart:{drawingPath}#{drawingIndex}`, carrying
+  //      the wire SheetChartInfo (anchor locator + chartPath locator +
+  //      canonical ChartVisualState). Seeded on open, merged after save.
+  //    - sessionAdds: the session journal (SessionChartAdd — id,
+  //      sheetName, anchor, ChartAdd). Deleting a session chart SPLICES
+  //      its entry (never persisted).
+  //    - edits: pending semantic ChartStateEdit overlays keyed by
+  //      chartPath (file charts) — successive edits merge (desktop
+  //      recordChartEdit parity); the save emits the canonical
+  //      chartEdits family keyed by chartPath.
+  //    - dirty/removals: moved/resized/deleted file charts — the save
+  //      reads the LIVE anchor from the store, so multiple interactions
+  //      collapse into one final-state visualEdit; deletes drop pending
+  //      chartEdits for the same chart (never edit-then-delete).
+  //    chartInstallsRef holds the float-DOM disposables; structural
+  //    changes (open / insert / delete / geometry commit / sheet
+  //    switch) reinstall through chartRenderSeq. Rendering floats over
+  //    the Univer grid via the PUBLIC registerComponent +
+  //    addFloatDomToRange pair — the desktop's exact chart architecture.
+  const chartStoreRef = useRef<ChartEditingStore>(createChartEditingStore())
+  const chartInstallsRef = useRef<Map<string, { dispose(): void }>>(new Map())
+  const chartSeqRef = useRef(0)
+  const [chartRenderSeq, setChartRenderSeq] = useState(0)
+  const [chartPanelMode, setChartPanelMode] = useState<'create' | 'edit' | null>(null)
+  const chartVersion = useChartStoreVersion(chartStoreRef.current)
   // Echo for the ribbon's Protect Sheet / Protect Workbook buttons —
   // recomputed whenever the journal, the file state, or the ACTIVE SHEET
   // changes (the runtime's ActiveSheetChanged subscription re-renders the
@@ -656,6 +700,107 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   const workbookEchoHasPassword = workbookProtectionFileRef.current?.hasPassword ?? false
 
   const bumpProtectionEcho = useCallback(() => setProtectionSeq((n) => n + 1), [])
+
+  // ── EXCEL-023: chart visual installation. Charts render as the web
+  //    app's own SVG frames floated over the grid (public
+  //    registerComponent + addFloatDomToRange — desktop parity). Only the
+  //    ACTIVE sheet's charts install; sheet switches and structural
+  //    changes (open / insert / delete / geometry commit) reinstall
+  //    through chartRenderSeq. Best-effort per chart — a failed install
+  //    never breaks the open (desktop installWorkbookVisuals parity).
+  const bumpChartRender = useCallback(() => setChartRenderSeq((n) => n + 1), [])
+
+  const reinstallActiveSheetCharts = useCallback(() => {
+    const rt = runtimeRef.current
+    if (!rt) return
+    const wb = rt.univerAPI.getActiveWorkbook()
+    const sheetName = wb?.getActiveSheet()?.getSheetName()
+    for (const install of chartInstallsRef.current.values()) {
+      try {
+        install.dispose()
+      } catch {
+        /* already gone */
+      }
+    }
+    chartInstallsRef.current.clear()
+    if (!wb || !sheetName) return
+    const ws = wb.getSheetByName(sheetName)
+    if (!ws) return
+    const store = chartStoreRef.current
+    const host: ChartHost = {
+      univerAPI: rt.univerAPI,
+      store,
+      onGeometryCommit: (key, anchor) => {
+        const entry = store.fileCharts.get(key)
+        if (entry !== undefined) {
+          store.fileCharts.set(key, {
+            sheetName: entry.sheetName,
+            info: { ...entry.info, anchor },
+          })
+          store.dirty.add(key)
+        } else {
+          const add = store.sessionAdds.get(key)
+          if (add !== undefined) {
+            store.sessionAdds.set(key, { ...add, anchor })
+          }
+        }
+        store.bump()
+        setDirty(true)
+        bumpChartRender()
+      },
+      onStructureChange: () => {
+        setDirty(true)
+        bumpChartRender()
+      },
+    }
+    const ids = new Set<string>()
+    for (const [id, entry] of store.fileCharts.entries()) {
+      if (entry.sheetName === sheetName && !store.removals.has(id)) ids.add(id)
+    }
+    for (const [id, add] of store.sessionAdds.entries()) {
+      if (add.sheetName === sheetName) ids.add(id)
+    }
+    for (const id of ids) {
+      try {
+        const install = installSheetChart(host, ws, id)
+        if (install !== null) chartInstallsRef.current.set(id, install)
+      } catch {
+        // Best-effort install: an unsupported chart must not fail the open.
+      }
+    }
+  }, [bumpChartRender])
+
+  useEffect(() => {
+    reinstallActiveSheetCharts()
+  }, [reinstallActiveSheetCharts, chartRenderSeq, runtime, activeSheetName])
+
+  // ── EXCEL-023: the chart journal feeds the editor's dirty gate, and the
+  //    Chart Design pane follows the selection (desktop ChartPanels
+  //    parity). A pending semantic edit (recordChartEdit from the pane), a
+  //    session creation, a geometry change, or a removal marks the workbook
+  //    unsaved exactly like a cell edit — Save must never stay disabled
+  //    while the journal still holds work. Selecting a chart frame opens
+  //    the pane in edit mode; closing it stays closed until a different
+  //    chart is selected.
+  const chartSelectionKey = chartStoreRef.current.selection
+  const chartSelectionRef = useRef<string | null>(null)
+  useEffect(() => {
+    const store = chartStoreRef.current
+    if (
+      store.edits.size > 0 ||
+      store.sessionAdds.size > 0 ||
+      store.dirty.size > 0 ||
+      store.removals.size > 0
+    ) {
+      setDirty(true)
+    }
+  }, [chartVersion])
+  useEffect(() => {
+    if (chartSelectionKey !== chartSelectionRef.current) {
+      chartSelectionRef.current = chartSelectionKey
+      if (chartSelectionKey !== null) setChartPanelMode('edit')
+    }
+  }, [chartSelectionKey, chartVersion])
 
   /**
    * Review → Protect Sheet / Unprotect Sheet (EXCEL-020). Desktop parity
@@ -1052,6 +1197,34 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           }
         }
       }
+      // EXCEL-023 chart state: same leak guard. The file refs re-seed from
+      // THIS snapshot (per-sheet charts with both locators + the canonical
+      // ChartVisualState), the session journal starts empty (a freshly
+      // opened workbook saves NO chartEdits/visualAdditions — a no-op save
+      // preserves the chart parts byte-for-byte), and the interaction
+      // journals reset. Unsupported charts never surfaced (the gateway
+      // reader omitted them; their bytes stay untouched).
+      const chartStore = chartStoreRef.current
+      chartStore.fileCharts.clear()
+      chartStore.sessionAdds.clear()
+      chartStore.edits.clear()
+      chartStore.dirty.clear()
+      chartStore.removals.clear()
+      chartStore.selection = null
+      for (const sheet of snapshot.sheets) {
+        if (sheet.charts && sheet.charts.length > 0) {
+          for (const info of sheet.charts) {
+            chartStore.fileCharts.set(fileChartId(info.drawingPath, info.drawingIndex), {
+              sheetName: sheet.name,
+              info,
+            })
+          }
+        }
+      }
+      chartStore.bump()
+      chartSeqRef.current = 0
+      setChartPanelMode(null)
+      bumpChartRender()
       const sheetsConfig: Record<string, IWorksheetData> = {}
       for (const sheet of snapshot.sheets) {
         const fr = sheet.freeze
@@ -1394,7 +1567,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       structuralOpsRef.current.clear()
       setDirty(false)
     },
-    [bumpProtectionEcho],
+    [bumpChartRender, bumpProtectionEcho],
   )
 
   const handleOpenFile = useCallback(
@@ -1496,11 +1669,27 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           imageDirtyRef.current,
           imageRemovalsRef.current,
         )
-        const visualAdditions = await collectImageVisualAdditions(
+        const imageVisualAdditions = await collectImageVisualAdditions(
           worksheetByName,
           imageAddsRef.current,
           imageRemovalsRef.current,
         )
+        // EXCEL-023: the chart save families. Desktop save-actions parity:
+        //   - chartEdits: the pending semantic journal keyed by chartPath
+        //     (successive edits merged; a deleted chart's entry dropped);
+        //   - chart visualEdits: moved/resized/deleted file charts — the
+        //     anchors read from the LIVE store state, so multiple
+        //     interactions collapse into one final-state edit;
+        //   - chart visualAdditions: session creations (deleted session
+        //     charts already spliced out).
+        // A workbook without chart interactions emits NO family, so a
+        // no-op save preserves the chart parts byte-for-byte.
+        const chartStore = chartStoreRef.current
+        const chartEdits = collectChartEdits(chartStore)
+        const chartVisualEdits = collectChartVisualEdits(chartStore)
+        const chartVisualAdditions = collectChartAdditions(chartStore)
+        const visualAdditions = [...imageVisualAdditions, ...chartVisualAdditions]
+        const allVisualEdits = [...visualEdits, ...chartVisualEdits]
         // SPLIT-SAVE (desktop save-actions heldTables parity): the gateway
         // fails closed when a new table rides with row/column changes on
         // its sheet ("A new table cannot be saved together with row/column
@@ -1532,8 +1721,9 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             ...(sheetProtections.length > 0 ? { sheetProtections } : {}),
             ...(workbookProtectionState !== null ? { workbookProtectionState } : {}),
             ...(!splitSave && tableAdditions.length > 0 ? { tableAdditions } : {}),
-            ...(visualEdits.length > 0 ? { visualEdits } : {}),
+            ...(allVisualEdits.length > 0 ? { visualEdits: allVisualEdits } : {}),
             ...(visualAdditions.length > 0 ? { visualAdditions } : {}),
+            ...(chartEdits.length > 0 ? { chartEdits } : {}),
           },
         })
         if (splitSave) {
@@ -1669,6 +1859,76 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             imageAddsRef.current = imageAddsRef.current.filter((add) => consumed.has(add.id))
           }
         }
+        // EXCEL-023: the saved chart state is now IN the source bytes.
+        // Merge the journals into the chart store so a subsequent save
+        // diffs against the persisted state:
+        //   - removals leave the tracked map (their anchors and chart
+        //     parts are gone from the file);
+        //   - moved/resized charts keep their committed anchors (the
+        //     store already holds the final geometry — the dirty flags
+        //     just clear);
+        //   - the pending semantic journal bakes into the tracked chart
+        //     state through applyChartStateEdit (the same immutable
+        //     overlay the preview renders with — the domain's documented
+        //     preview/persistence mirroring), then clears;
+        //   - session creations become file-native: the save response's
+        //     addedVisuals locators (drawingPath + drawingIndex + the
+        //     allocated chartPath) rebuild their tracked entries under
+        //     the SAME key, so the floats never churn. A missing locator
+        //     block (older host) keeps the chart movable/deletable but
+        //     refuses semantic edits (empty chartPath — fail closed
+        //     against targeting a guessed part).
+        const chartStoreAfter = chartStoreRef.current
+        for (const id of chartStoreAfter.removals) {
+          chartStoreAfter.fileCharts.delete(id)
+        }
+        chartStoreAfter.removals.clear()
+        chartStoreAfter.dirty.clear()
+        for (const [key, edit] of chartStoreAfter.edits.entries()) {
+          const entry = chartStoreAfter.fileCharts.get(key)
+          if (entry === undefined) continue
+          chartStoreAfter.fileCharts.set(key, {
+            sheetName: entry.sheetName,
+            info: {
+              ...entry.info,
+              chart: applyChartStateEdit(entry.info.chart, edit),
+            },
+          })
+        }
+        chartStoreAfter.edits.clear()
+        if (chartVisualAdditions.length > 0 && saved.addedVisuals !== undefined) {
+          const locators = saved.addedVisuals
+          if (locators.length === visualAdditions.length) {
+            const chartOffset = imageVisualAdditions.length
+            const orderedAdds = [...chartStoreAfter.sessionAdds.values()]
+            for (const [index] of chartVisualAdditions.entries()) {
+              const locator = locators[chartOffset + index]
+              if (locator === undefined) continue
+              // collectChartAdditions iterates sessionAdds in order, but
+              // deletions since save are impossible (the save consumed
+              // the live set) — match by position against the ordered ids.
+              const add = orderedAdds[index]
+              if (add === undefined) continue
+              const wireAddition = chartVisualAdditions[index]
+              if (wireAddition === undefined || wireAddition.sheetName !== add.sheetName) {
+                continue
+              }
+              chartStoreAfter.fileCharts.set(add.id, {
+                sheetName: add.sheetName,
+                info: {
+                  drawingPath: locator.drawingPath,
+                  drawingIndex: locator.drawingIndex,
+                  chartPath: locator.chartPath ?? '',
+                  anchorType: 'two-cell',
+                  anchor: wireAddition.anchor,
+                  chart: chartAddToVisualState(add.chart),
+                },
+              })
+              chartStoreAfter.sessionAdds.delete(add.id)
+            }
+          }
+        }
+        chartStoreAfter.bump()
         const blob = new Blob([savedBytes.buffer as ArrayBuffer], {
           type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         })
@@ -1768,6 +2028,81 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     setStatus('Picture inserted')
   }, [])
 
+  // ── EXCEL-023: Insert → Chart. The panel parses the active selection
+  //    through the gateway's shared chartDataFromValues (header/category
+  //    detection identical to the desktop ribbon) and journals a
+  //    SessionChartAdd — the save persists it through the canonical
+  //    visualAdditions.chart family; nothing touches the file before
+  //    then. The anchor defaults to two columns right of the selection
+  //    (desktop buildChartVisual parity).
+  const chartSelection = useCallback((): {
+    values: readonly (readonly ChartGridValue[])[]
+    label: string
+  } | null => {
+    const rt = runtimeRef.current
+    const wb = rt?.univerAPI.getActiveWorkbook()
+    const range = wb?.getActiveRange()
+    if (!wb || !range) return null
+    const values = range.getValues()
+    if (!values || values.length === 0) return null
+    return {
+      values: values.map((row) =>
+        (row ?? []).map((cell) =>
+          cell === null || cell === undefined
+            ? null
+            : typeof cell === 'number' || typeof cell === 'boolean'
+              ? cell
+              : String(cell),
+        ),
+      ),
+      label: range.getA1Notation(),
+    }
+  }, [])
+
+  const handleInsertChart = useCallback(() => {
+    const selection = chartSelection()
+    if (selection === null) {
+      setStatus('Select a data range first — charts need at least one numeric column.')
+      return
+    }
+    setChartPanelMode('create')
+  }, [chartSelection])
+
+  const handleChartInsertFromPanel = useCallback(
+    (chart: ChartAdd) => {
+      const rt = runtimeRef.current
+      const wb = rt?.univerAPI.getActiveWorkbook()
+      const ws = wb?.getActiveSheet()
+      const range = wb?.getActiveRange()
+      if (!wb || !ws || !range) {
+        setStatus('Select a data range first')
+        return
+      }
+      const sheetName = ws.getSheetName()
+      const row = range.getRow()
+      const column = range.getColumn()
+      const anchor = {
+        fromRow: row,
+        fromColumn: column + range.getWidth() + 1,
+        fromRowOffset: 0,
+        fromColumnOffset: 0,
+        toRow: row + 15,
+        toColumn: column + range.getWidth() + 8,
+        toRowOffset: 0,
+        toColumnOffset: 0,
+      }
+      const id = `session-chart-${chartSeqRef.current++}`
+      chartStoreRef.current.sessionAdds.set(id, { id, sheetName, anchor, chart })
+      chartStoreRef.current.selection = id
+      chartStoreRef.current.bump()
+      setChartPanelMode('edit')
+      setDirty(true)
+      bumpChartRender()
+      setStatus('Chart inserted — it persists on save.')
+    },
+    [bumpChartRender],
+  )
+
   return (
     <div className="excel-shell" data-testid="excel-shell">
       {/* Single application header — replaces the previous double chrome
@@ -1862,7 +2197,30 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           onDeleteTable: handleDeleteTable,
         }}
         images={{ onInsertPicture: handleInsertPicture }}
+        charts={{ onInsertChart: handleInsertChart }}
       />
+
+      {/* EXCEL-023 — the Chart Design pane (create mode after Insert →
+          Chart, edit mode while a chart is selected). Journals through
+          the canonical chartEdits family via the shared store. */}
+      {chartPanelMode !== null && (
+        <ChartPanel
+          store={chartStoreRef.current}
+          mode={chartPanelMode}
+          selection={
+            chartSelectionKey !== null
+              ? {
+                  key: chartSelectionKey,
+                  isSession: chartStoreRef.current.sessionAdds.has(chartSelectionKey),
+                }
+              : null
+          }
+          selectionValues={chartPanelMode === 'create' ? (chartSelection()?.values ?? null) : null}
+          selectionRangeLabel={chartSelection()?.label ?? ''}
+          onInsert={handleChartInsertFromPanel}
+          onClose={() => setChartPanelMode(null)}
+        />
+      )}
 
       <div className="excel-formula-row" data-testid="excel-formula-row">
         <NameBox

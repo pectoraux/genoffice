@@ -1186,3 +1186,82 @@ Stage Summary:
 
 - Both architect blockers corrected, all local gates green, and the web CI gate green with the full 102-test browser E2E on the correction head 4b59a2c.
 - Workflow state: CHANGES REQUESTED → corrections pushed, awaiting architect re-review of the actual diff. NOT VERIFIED — the architect owns that transition.
+
+---
+
+Task ID: EXCEL-023-audit
+Agent: Z.ai (Implementation Operator)
+Task: Phase A forensic audit for EXCEL-023 (Charts) — mandatory before implementation.
+
+Work Log:
+
+Environment: sandbox was reset; repo re-cloned from origin/main @ cb1fff6 (EXCEL-022 merge commit, PR #20). Branch excel-023-charts created from origin/main. EXCEL-022 confirmed MERGED (visualAdditions/visualEdits families + WorksheetState.images live on main).
+
+Q1 — Canonical chart model: packages/xlsx-gateway/src/domain/chart-visual.ts (697 lines) defines ChartVisualState (chartTypes[], barDirection, title, series: ChartSeriesVisualState[] [name/categories/values/valuesRef/categoriesRef/color/pointColors/explosionPct/pointExplosions/numberFormat/categoryFormat], legend, axisTitles, dataLabels+position+format, grouping, gridlines, valueAxis, categoryAxisFormat, gapWidthPct, holeSizePct, xAxis/yAxis/secondaryYAxis: ChartAxisInfoState, scatterStyle, titleStyle) + ChartStateEdit + applyChartStateEdit (immutable overlay merge — desktop preview parity) + CHART_EDIT_TYPES + transposeChartSeries + axis scale helpers (valueAxisScale, scatterAxisBounds — Excel-fidelity tick math). The desktop re-exports this module verbatim (apps/sheets/src/domain/chart-visual.ts = `export * from '@genoffice/xlsx-gateway/src/domain/chart-visual.js'`) — it IS the shared canonical model.
+
+Q2 — WorkbookChartEdit (packages/xlsx-gateway/src/types.ts:123-143): chartPath locator + title?, chartType? ('column'|'bar'|'line'|'area'|'pie'|'doughnut'), seriesColors?, legend?, dataLabels?/dataLabelPosition?/dataLabelFormat?, axisTitles?, pointColors?, grouping?, gridlines?, valueAxis? {min,max|null}, gapWidthPct?, holeSizePct?, explosionPct?, pointExplosions?, seriesSet? (full replacement), series? (index-keyed). Desktop Zod mirror: apps/sheets/src/shared/desktop-api.ts:943-999 (bounded: title<=255, gapWidth 0-500, holeSize 10-90, explosion 0-400, series color keys 0-999).
+
+Q3 — Gateway capability matrix:
+
+- READ charts: NO. readBasicWorkbook (xlsx-gateway.ts:425-568) parses cells/styles/merges/rowHeights/colWidths/freeze/filter/dv/notes/tables/images/protection — zero chart handling. No parseChart/readChart function exists anywhere in the gateway (verified by search). The DESKTOP reads file charts through its RUST SIDECAR (session.metadata.visuals → buildWorkbookFile, apps/sheets/src/main/sheets-save-adapter.ts:416) — outside this repo's TS read path, unavailable to web.
+- CREATE charts: YES. SheetVisualAddition.chart?: ChartAdd (xlsx-gateway.ts:792; xlsx-drawing-add.ts:33-63). buildChartXml (xlsx-drawing-add.ts:409) supports 9 types: column/bar/line/area/pie/scatter/radar/doughnut/combo (combo = clustered columns + last series line on secondary axis). Writes chart part + drawing part + drawing rels + worksheet drawing rel + [Content_Types] overrides; returns AddedVisualLocator (worksheetPath/drawingPath/drawingIndex — xlsx-gateway.ts:149-153; NO chartPath yet).
+- EDIT charts: YES. applyChartEdit (xlsx-chart.ts:33, 997 lines): title, type conversion within CONVERTIBLE_PLOTS [barChart, lineChart, areaChart, pieChart, doughnutChart] (refuses scatter), seriesSet/series rewrite with refs+caches, series/point colors, legend, plot-level data labels (+position/format), axis titles, grouping (stacked/percentStacked/clustered), gridlines, value-axis bounds, gapWidth, holeSize, explosion/pointExplosions. Fail-closed: ChartEditError outside the envelope.
+- DELETE charts: YES. visualEdits remove on a graphicFrame anchor cascades the drawing relationship, the chart part, the chart's own rels, and the [Content_Types] override (xlsx-drawing-edit.ts:153-197); chart-owned colors/style parts deliberately stay (harmless orphans). Duplicate-locator edits rejected.
+- SHIFT anchors on row/col ops: chart XML references shift (shiftChartReferences, xlsx-gateway.ts:1053-1054, runs for every xl/charts/*.xml part); drawing anchors shift via shiftAnchoredSheetParts (same save pass). Chart series refs + cross-sheet formulas + defined names all shift.
+
+Q4 — Canonically supported chart types: EDIT/CONVERT: column, bar, line, area, pie, doughnut (6). CREATE adds: scatter, radar, combo (9 total). Scatter is NOT convertible (xlsx-chart.test.ts:123 'refuses to convert a scatter chart').
+
+Q5 — OOXML chart parts represented: xl/charts/chartN.xml (edit+create+delete), xl/charts/_rels/chartN.xml.rels (deleted with the chart; chartColorStyle targets preserved while alive), [Content_Types].xml chart override (managed on create+delete), drawing anchors twoCellAnchor/oneCellAnchor/absoluteAnchor all recognized (ANCHOR_PATTERN xlsx-drawing-edit.ts:11).
+
+Q6 — Wiring chain: worksheet.xml <drawing r:id> → worksheet rels → xl/drawings/drawingN.xml → anchor (document order = drawingIndex) → graphicFrame/c:chart r:id → drawing rels → xl/charts/chartN.xml. xlsx-image-read.ts already walks worksheet→drawing→rels for pictures; chart reader reuses the same chain shape.
+
+Q7 — Desktop renderer: charts render as the app's OWN SVG React overlay, NOT Univer charts. installWorkbookVisuals (WorkbookVisuals.tsx:115-210): univerAPI.registerComponent + worksheet.addFloatDomToRange with pixel-exact twoCellAnchor layout (markerSpan over live column widths/row heights; EMU_PER_PIXEL). ChartVisual (1160-1502): SVG renderers BarChart/LineChart/AreaChart/RadarChart/ScatterChart/PieChart + VerticalAxis + data labels + SeriesLegend + TruncationNote + combo handling; pending file-chart edits overlay via withChartEdit (applyChartStateEdit); openpyxl numCache-less files hydrate series from live cells via readVector (1188-1251). EditableShapeVisual (584+): selection, move (ghost on body), 8-corner resize via walkMarker; Delete key + context menu remove. ChartPanels.tsx: ChartFormatPane (element-aware fill colors, title, legend, labels, axis titles, bounds, gap width, hole size, explosion) + SelectDataDialog (seriesSet rebuild + switch row/column). edit-journal.ts recordChartEdit (519-560): per-chartPath merge — seriesSet invalidates earlier per-index series/color edits; deleting a visual drops its pending chartEdits (visual-edit-sync.ts:377-378).
+
+Q8 — Univer 0.25.1 chart surface: NONE. Installed @univerjs set (core + 9 sheets presets incl. drawing) contains no chart plugin (verified: no chart-named package; preset-sheets-drawing exposes image/float-DOM only). Public APIs the desktop uses for charts — univerAPI.registerComponent and FWorksheet.addFloatDomToRange (node_modules/@univerjs/sheets-drawing-ui/lib/types/facade/f-worksheet.d.ts:305, documented with examples) — are available to the web through the ALREADY-INSTALLED preset-sheets-drawing. No new dependency needed.
+
+Q9 — Web chart registration today: NONE. Ribbon.tsx:526-535 carries a disabled Chart stub whose title documents the missing families. No chartEdits in BrowserWorkbookSavePlan (extensibility seam comment at office-routes.ts:166-167). office-routes visualAdditions is IMAGE-ONLY and explicitly REJECTS chart/shape additions (office-routes.ts:2536-2541) with the comment 'EXCEL-023 will widen the family when charts land'.
+
+Q10 — Existing visuals models: (a) WorksheetState.visuals (workbook.types.ts:52-53) = demo/AI chart replay state — NEVER populated by readBasicWorkbook, demo-only, deliberately NOT repurposed (EXCEL-022 architecture decision). (b) desktop state.file.visuals = Rust-sidecar read (canonical for desktop, unreachable from web). (c) ChartVisualState = canonical shared domain (Q1). Web currently has NO visuals at all.
+
+Q11 — Wire family decision: chartEdits needs its own semantic wire family (keyed by chartPath) — EXCEL-022's visualEdits is geometric-only (drawingPath+drawingIndex locator, anchor rewrite/splice) and ALREADY serves chart move/resize/delete correctly (Q3). The two families compose: chartEdits patches chart XML; visualEdits patches the anchor. visualAdditions must be WIDENED from image-only to accept chart (ChartAdd). The route's own comment reserves exactly this seam. AddedVisualLocator must gain chartPath so a saved session chart can be targeted by later chartEdits.
+
+Q12 — WorksheetState additions: dedicated `charts?: readonly SheetChartInfo[]` field (mirrors EXCEL-022's images pattern; does NOT touch demo visuals). SheetChartInfo = { drawingPath, drawingIndex (anchor locator, ALL anchors counted for parity), chartPath, anchorType 'two-cell'|'one-cell', anchor: DrawingAnchor, chart: ChartVisualState }.
+
+Q13 — Fail-closed classification:
+
+- absoluteAnchor charts: omitted from browser model, bytes preserved (EXCEL-022 precedent; visualEdits already refuses absolute moves).
+- 3-D plots (bar3DChart, pie3DChart, line3DChart, surface, bubble, stock, ofPie etc.): per-chart omission — not in the canonical model.
+- chartEx / pivotChart extension parts (c15:, cx:): per-chart omission.
+- multi-plot charts whose plots aren't a supported combination: omitted unless single-plot family or bar+line combo (the canonical combo shape ChartAdd itself writes).
+- scatter/radar/combo: renderable + movable/resizable/deletable, but NOT type-convertible and NOT seriesSet-replaceable per-some-plots — applyChartEdit fails closed (scatter refusal already tested).
+- rich formatting beyond the model (gradient fills, custom label positions on unsupported plots, trendlines, error bars): read-ignored (stay in file untouched), never written.
+- oversized chart series sets: bounded on the wire (desktop Zod parity), rejected at route validation.
+
+Q14 — Reusable tests/fixtures: gateway xlsx-chart.test.ts (1039 lines — full applyChartEdit envelope incl. fail-closed cases), xlsx-drawing-add.options.test.ts (buildChartXml options), xlsx-drawing-edit.test.ts (anchor edits + chart cascade), fixture-builder.ts (chart-bearing archives: drawing rel + chart part + colors1.xml + content types, lines 144-360); web architecture.test.ts guard patterns (EXCEL-020/021/022 blocks); ribbon-images.spec.ts E2E structure (15 scenarios — template for charts); desktop-api.ts Zod schemas (validation reference).
+
+Stage Summary:
+
+- Audit verdict: the canonical engine ALREADY owns chart create/edit/delete/move/resize/reference-shift; the ONLY missing capability is the chart READER (gateway→typed state→wire) plus the entire web browser surface (render + interact + journal). No second storage architecture is needed — charts ride the EXCEL-022 families exactly as the work item presumed.
+- Rendering architecture decision (desktop parity): web charts render as the web app's own SVG React overlay floated via the PUBLIC addFloatDomToRange/registerComponent facades (the desktop's exact pattern; Univer 0.25.1 has no chart plugin, so this is the only parity path). Desktop WorkbookVisuals renderer is REFERENCE ONLY (frozen surface) — the web gets its own renderer module adapted from the desktop's rendering semantics.
+- Workflow state: EXCEL-023 ASSIGNED → IMPLEMENTING. Not VERIFIED — architect owns that transition.
+
+---
+
+Task ID: EXCEL-023-implementation
+Agent: Z.ai (Implementation Operator)
+Task: Implement EXCEL-023 (Charts) on branch excel-023-charts per the audited architecture — gateway chart reader, chartEdits wire family, web chart visual surface, and the 15-scenario browser E2E suite.
+
+Work Log:
+
+- Branch: excel-023-charts from origin/main @ cb1fff6 (EXCEL-022 merged). Note: this session began with the four EXCEL-023 commits sitting on local main after a sandbox reset — restructured non-destructively (branch created at the head, local main reset to origin/main; zero commits lost).
+- 7655903 gateway chart reader: xlsx-chart-read.ts (668 lines) walks the worksheet→drawing→rels→chart chain (the EXCEL-022 image chain shape) into SheetChartInfo {drawingPath, drawingIndex (ALL anchors counted for parity), chartPath, anchorType, anchor, chart: ChartVisualState}; unsupported structures (3-D plots, chartEx, unsupported multi-plot combos, absolute anchors) are omitted per-chart, never relocated. AddedVisualLocator gained chartPath. 789-line gateway test file (17 new tests: read fidelity, omission cases, byte preservation, locator parity).
+- 9dcd652 wire family: chartEdits (semantic, keyed by canonical xl/charts path; strict validation — bounded types/series/style options, fail-closed on unknown fields, 200-edit cap) + visualAdditions widened from image-only to exactly-one-payload (image or chart). 382-line route validation test file (18 tests).
+- 6f4f30b web visual surface: sheet-charts.tsx (2002 lines — SVG renderers for all 8 canonical families with Excel-like axis auto-scale, anchor↔pixel math over the live grid, interactive frames with select/move/8-handle resize/delete, the shared ChartEditingStore with desktop edit-journal merge parity); ChartPanel.tsx (Chart Design pane: create mode over the parsed selection, edit mode title/convert/legend/labels/series colors + typed source ranges); ExcelEditor seeding/reinstall/save-collection/post-save merge; Ribbon Insert→Chart wired; 6 new architecture guards (chart OOXML absence in apps/web, canonical families, no private internals, pure-domain-only value imports, ribbon wiring, read/save path wiring).
+- c1a0ab6 E2E completion (this session's continuation work): the 15-scenario ribbon-charts.spec.ts + chart fixtures; two E2E-driven product fixes (one-cell anchors size from a:ext — two-cell from the live marker span; DOM-safe float/component ids for locator keys); three test-round defects found and corrected — (a) contractor-core test helper return type (TS2698 spread), (b) the chart journal now feeds the editor's dirty gate (recordChartEdit marks the workbook unsaved exactly like a cell edit — Save must never stay disabled while the journal holds work), (c) selecting a chart frame opens the Chart Design pane in edit mode (desktop ChartPanels parity) and the panel's selection.isSession is computed; the 3-D fixture's omitted anchor moved to index 0 so the survivor keeps drawingIndex 1 (anchor-count parity proof); ribbon-insert.spec.ts updated — Chart is ENABLED (was the pre-EXCEL-023 disabled stub); no-op byte-preservation proofs ride a cell-edit save (EXCEL-022 ribbon-images precedent — Save is disabled while the workbook is clean).
+- Prettier format pass over the EXCEL-023 file set (the EXCEL-022 round-1 lesson applied: format:check vs origin/main run BEFORE push).
+- Gates on c1a0ab6: typecheck clean in all four workspaces; unit — xlsx-gateway 621/621, contractor-core 441 passed + 4 skipped, web 223/223 (incl. 6 new architecture guards), web-host 78/78; ESLint clean on every changed file; format:check clean; production build green; full browser E2E 111/111 (charts 9 blocks covering the 15 scenarios + 2 extra fail-closed proofs; regression batches excel-core/nested 30, images/insert/data-validation/data 25, insert-fixed/filter/persistence/protection 14, dedupe/notes/table/view 18, word 16).
+
+Stage Summary:
+
+- EXCEL-023 implementation complete on branch excel-023-charts (5 commits: audit docs, gateway reader, wire family, web surface, E2E completion). The browser never touches chart OOXML — all XML work stays in @genoffice/xlsx-gateway (guarded by architecture tests); charts ride the EXCEL-022 visual transport families (chartEdits + visualEdits + widened visualAdditions) exactly as the work item's architecture requires.
+- Workflow state: IMPLEMENTING → PR_OPEN (branch pushed, PR to follow). NOT VERIFIED — the architect owns that transition.

@@ -27,6 +27,7 @@ import {
   type ShapeAdd,
 } from './xlsx-drawing-add'
 import { ImageReadError, parseSheetImages, type SheetImageInfo } from './xlsx-image-read'
+import { ChartReadError, parseSheetCharts, type SheetChartInfo } from './xlsx-chart-read'
 import { applyTableAdditions, type TableArea } from './xlsx-table-add'
 import type { PivotFilterDef } from '../domain/pivot-filters'
 import {
@@ -150,6 +151,9 @@ export interface AddedVisualLocator {
   readonly worksheetPath: string
   readonly drawingPath: string
   readonly drawingIndex: number
+  /** EXCEL-023: the allocated chart part for chart additions — later
+   * chartEdits target this exact path. */
+  readonly chartPath?: string | undefined
 }
 
 export interface SheetStructuralOps {
@@ -528,6 +532,23 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     } catch (error) {
       if (!(error instanceof ImageReadError)) throw error
     }
+    // Chart read (EXCEL-023): resolve the same drawing relationship
+    // chain into typed chart entries carrying the canonical
+    // ChartVisualState plus both locators (anchor pair for the
+    // visualEdits family, chartPath for the chartEdits family). Fail
+    // closed PER SHEET — unreadable drawing wiring surfaces no charts,
+    // the workbook still opens, and a no-op save preserves the file's
+    // parts byte-for-byte. Individual unsupported charts (3-D,
+    // bubble/stock/surface, chartEx, non-canonical combos, absolute
+    // anchors) are skipped while their anchors still count toward
+    // drawingIndex parity with the desktop sidecar.
+    let sheetCharts: readonly SheetChartInfo[] | undefined
+    try {
+      const parsed = await parseSheetCharts(zip, worksheetPath, worksheetXml)
+      if (parsed.length > 0) sheetCharts = parsed
+    } catch (error) {
+      if (!(error instanceof ChartReadError)) throw error
+    }
     sheets.push({
       id,
       name: decodedName,
@@ -548,6 +569,7 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
       ...(sheetNotes ? { notes: sheetNotes } : {}),
       ...(sheetTables ? { tables: sheetTables } : {}),
       ...(sheetImages ? { images: sheetImages } : {}),
+      ...(sheetCharts ? { charts: sheetCharts } : {}),
       ...(sheetProtection ? { sheetProtection } : {}),
     })
     sheetNamesById[id] = decodedName

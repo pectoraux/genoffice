@@ -73,20 +73,27 @@ describe('workbooks/save visualAdditions validation', () => {
     expect(res.body.error).toBe('malformed')
   })
 
-  it('rejects chart and shape additions (image-only wire)', async () => {
-    const chart = await save({
-      visualAdditions: [
-        { ...canonicalAddition(), chart: { chartType: 'column', title: 'X', series: [] } },
-      ],
-    })
-    expect(chart.status).toBe(400)
-    expect(chart.body.message).toContain('unsupported visual kind')
-
+  it('rejects shape additions and image+chart double payloads', async () => {
     const shape = await save({
       visualAdditions: [{ ...canonicalAddition(), shape: { shapeType: 'rect' } }],
     })
     expect(shape.status).toBe(400)
     expect(shape.body.message).toContain('unsupported visual kind')
+
+    const both = await save({
+      visualAdditions: [
+        {
+          ...canonicalAddition(),
+          chart: {
+            chartType: 'column',
+            title: 'X',
+            series: [{ name: 'S', categories: ['a'], values: [1] }],
+          },
+        },
+      ],
+    })
+    expect(both.status).toBe(400)
+    expect(both.body.message).toContain('both image and chart')
   })
 
   it('rejects a missing image payload', async () => {

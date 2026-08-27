@@ -592,3 +592,321 @@ body {
   background: var(--danger-bg);
   color: var(--danger);
 }
+
+/* ── EXCEL-023: chart visual layer (floating SVG charts) ────────────── */
+
+.chart-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #d8dde6);
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: move;
+  user-select: none;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 8%);
+}
+
+.chart-frame.chart-selected {
+  border-color: var(--accent, #0f7b3d);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #0f7b3d) 35%, transparent);
+}
+
+.chart-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text, #222);
+  padding: 6px 8px 2px;
+  text-align: center;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  flex: 0 0 auto;
+}
+
+.chart-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.chart-svg {
+  width: 100%;
+  height: 100%;
+  flex: 1 1 auto;
+  font-size: 10px;
+  color: var(--text, #222);
+}
+
+.chart-svg text {
+  fill: currentColor;
+}
+
+.chart-svg .chart-axis-label {
+  font-size: 9px;
+  opacity: 0.85;
+}
+
+.chart-svg .chart-axis-title {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.chart-error {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  color: var(--text-tertiary, #888);
+}
+
+.chart-legend {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 6px;
+  font-size: 10px;
+  max-width: 42%;
+  overflow: hidden;
+  color: var(--text, #222);
+}
+
+.chart-legend span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.chart-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 1px;
+  flex: 0 0 auto;
+}
+
+.chart-legend-bottom,
+.chart-legend-top {
+  flex-direction: row;
+  flex-wrap: wrap;
+  max-width: 100%;
+  gap: 10px;
+}
+
+.chart-legend-none {
+  display: none;
+}
+
+.chart-pie-layout {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.chart-pie-svg {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chart-pie-label-inside {
+  fill: #fff;
+  font-size: 9px;
+}
+
+.chart-pie-label-outside {
+  fill: var(--text, #444);
+  font-size: 9px;
+}
+
+.chart-delete-button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  line-height: 16px;
+  padding: 0;
+  border: 1px solid var(--border, #d8dde6);
+  border-radius: 3px;
+  background: var(--surface, #fff);
+  color: var(--danger, #b3261e);
+  font-size: 11px;
+  cursor: pointer;
+  z-index: 3;
+}
+
+.chart-delete-button:hover {
+  background: var(--danger-bg, #fdeceb);
+}
+
+.chart-handle {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  background: var(--surface, #fff);
+  border: 1.5px solid var(--accent, #0f7b3d);
+  border-radius: 1px;
+  z-index: 3;
+}
+
+.chart-handle.handle-nw {
+  top: -4px;
+  left: -4px;
+  cursor: nwse-resize;
+}
+.chart-handle.handle-n {
+  top: -4px;
+  left: 50%;
+  margin-left: -3.5px;
+  cursor: ns-resize;
+}
+.chart-handle.handle-ne {
+  top: -4px;
+  right: -4px;
+  cursor: nesw-resize;
+}
+.chart-handle.handle-e {
+  top: 50%;
+  margin-top: -3.5px;
+  right: -4px;
+  cursor: ew-resize;
+}
+.chart-handle.handle-se {
+  bottom: -4px;
+  right: -4px;
+  cursor: nwse-resize;
+}
+.chart-handle.handle-s {
+  bottom: -4px;
+  left: 50%;
+  margin-left: -3.5px;
+  cursor: ns-resize;
+}
+.chart-handle.handle-sw {
+  bottom: -4px;
+  left: -4px;
+  cursor: nesw-resize;
+}
+.chart-handle.handle-w {
+  top: 50%;
+  margin-top: -3.5px;
+  left: -4px;
+  cursor: ew-resize;
+}
+
+/* ── EXCEL-023: Chart Design pane ───────────────────────────────────── */
+
+.chart-panel {
+  position: absolute;
+  top: 84px;
+  right: 16px;
+  width: 248px;
+  max-height: calc(100% - 120px);
+  overflow-y: auto;
+  z-index: 40;
+  background: var(--surface-strong, #fff);
+  border: 1px solid var(--border, #d8dde6);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 14%);
+  font-size: 12px;
+  color: var(--text, #222);
+  padding-bottom: 8px;
+}
+
+.chart-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #e4e8ee);
+  font-weight: 600;
+}
+
+.chart-panel header button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-tertiary, #777);
+}
+
+.chart-panel-section {
+  padding: 8px 10px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.chart-panel-section > strong {
+  font-size: 11px;
+  color: var(--text-secondary, #555);
+}
+
+.chart-panel select,
+.chart-panel input[type='text'] {
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--border, #d8dde6);
+  border-radius: 4px;
+  background: var(--surface, #fff);
+  color: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.chart-panel-color-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chart-panel-color-row span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chart-panel-ref {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+
+.chart-panel-ref code {
+  font-size: 10px;
+  color: var(--text-secondary, #555);
+  overflow-wrap: anywhere;
+}
+
+.chart-panel-hint {
+  padding: 6px 10px;
+  font-size: 10px;
+  color: var(--text-tertiary, #888);
+}
+
+.chart-panel-error {
+  color: var(--danger, #b3261e);
+}
+
+.chart-panel-primary {
+  margin: 8px 10px;
+  padding: 6px 10px;
+  font: inherit;
+  font-weight: 600;
+  border: none;
+  border-radius: 4px;
+  background: var(--accent, #0f7b3d);
+  color: #fff;
+  cursor: pointer;
+}
+
+.chart-panel-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -3039,3 +3039,360 @@ export async function readZipEntryBytes(buffer: Buffer, path: string): Promise<B
   const entry = zip.file(path)
   return entry === null ? null : ((await entry.async('nodebuffer')) as Buffer)
 }
+
+// ── EXCEL-023: chart-carrying fixtures ─────────────────────────────────────
+
+const CHART_REL = (id: string, target: string): string =>
+  `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/${target}"/>`
+
+interface ChartAnchorSpec {
+  kind: 'twoCellAnchor' | 'oneCellAnchor' | 'absoluteAnchor'
+  chartRelId?: string
+  name?: string
+  from?: { col: number; colOff: number; row: number; rowOff: number }
+  to?: { col: number; colOff: number; row: number; rowOff: number }
+  ext?: { cx: number; cy: number }
+  picture?: boolean
+}
+
+function chartAnchorXml(spec: ChartAnchorSpec): string {
+  const marker = (m: { col: number; colOff: number; row: number; rowOff: number }) =>
+    `<xdr:col>${m.col}</xdr:col><xdr:colOff>${m.colOff}</xdr:colOff>` +
+    `<xdr:row>${m.row}</xdr:row><xdr:rowOff>${m.rowOff}</xdr:rowOff>`
+  const from = spec.from ?? { col: 1, colOff: 0, row: 2, rowOff: 0 }
+  const to = spec.to ?? { col: 8, colOff: 0, row: 18, rowOff: 0 }
+  const ext = spec.ext ?? { cx: 914400, cy: 609600 }
+  const relId = spec.chartRelId ?? 'rIdChart1'
+  const name = spec.name ?? 'Chart 1'
+  const body = spec.picture
+    ? '<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="2" name="Pic"/><xdr:cNvPicPr/></xdr:nvPicPr>' +
+      '<xdr:blipFill><a:blip r:embed="rIdPic"/></xdr:blipFill>' +
+      `<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${ext.cx}" cy="${ext.cy}"/></a:xfrm></xdr:spPr></xdr:pic>`
+    : '<xdr:graphicFrame macro="">' +
+      `<xdr:nvGraphicFramePr><xdr:cNvPr id="3" name="${name}"/></xdr:nvGraphicFramePr></xdr:nvGraphicFramePr>` +
+      `<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="${ext.cx}" cy="${ext.cy}"/></xdr:xfrm>` +
+      '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">' +
+      `<c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="${relId}"/>` +
+      '</a:graphicData></a:graphic></xdr:graphicFrame>'
+  const head =
+    spec.kind === 'absoluteAnchor'
+      ? `<xdr:pos x="47625" y="9525"/><xdr:ext cx="${ext.cx}" cy="${ext.cy}"/>`
+      : `<xdr:from>${marker(from)}</xdr:from>` +
+        (spec.kind === 'twoCellAnchor' ? `<xdr:to>${marker(to)}</xdr:to>` : '') +
+        (spec.kind === 'oneCellAnchor' ? `<xdr:ext cx="${ext.cx}" cy="${ext.cy}"/>` : '')
+  return `<xdr:${spec.kind}>${head}${body}<xdr:clientData/></xdr:${spec.kind}>`
+}
+
+function chartSeriesXml(
+  name: string,
+  values: readonly number[],
+  options: {
+    color?: string
+    valuesRef?: string
+  } = {},
+): string {
+  const nameRef =
+    '<c:tx><c:strRef><c:f>Data!$B$1</c:f><c:strCache><c:ptCount val="1"/>' +
+    `<c:pt idx="0"><c:v>${name}</c:v></c:pt></c:strCache></c:strRef></c:tx>`
+  const spPr =
+    options.color !== undefined
+      ? `<c:spPr><a:solidFill><a:srgbClr val="${options.color}"/></a:solidFill></c:spPr>`
+      : ''
+  const valuesRef = options.valuesRef ?? 'Data!$B$2:$B$4'
+  const points = values
+    .map((value, idx) => `<c:pt idx="${idx}"><c:v>${value}</c:v></c:pt>`)
+    .join('')
+  return (
+    `<c:ser><c:idx val="0"/><c:order val="0"/>${nameRef}${spPr}` +
+    '<c:cat><c:strRef><c:f>Data!$A$2:$A$4</c:f><c:strCache><c:ptCount val="3"/>' +
+    '<c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt>' +
+    '<c:pt idx="2"><c:v>Q3</c:v></c:pt></c:strCache></c:strRef></c:cat>' +
+    `<c:val><c:numRef><c:f>${valuesRef}</c:f><c:numCache><c:formatCode>General</c:formatCode>` +
+    `<c:ptCount val="${values.length}"/>${points}</c:numCache></c:numRef></c:val></c:ser>`
+  )
+}
+
+function barChartXml(
+  series: readonly string[],
+  options: { title?: string; legendPos?: string; gapWidth?: number } = {},
+): string {
+  const title =
+    options.title !== undefined
+      ? '<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r>' +
+        `<a:t>${options.title}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>`
+      : ''
+  const legend =
+    options.legendPos !== undefined
+      ? `<c:legend><c:legendPos val="${options.legendPos}"/></c:legend>`
+      : ''
+  return (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" ' +
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    '<c:chart>' +
+    title +
+    '<c:autoTitleDeleted val="0"/>' +
+    '<c:plotArea><c:layout/>' +
+    '<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>' +
+    '<c:varyColors val="0"/>' +
+    series.join('') +
+    `<c:gapWidth val="${options.gapWidth ?? 150}"/>` +
+    '<c:axId val="111"/><c:axId val="222"/></c:barChart>' +
+    '<c:catAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling>' +
+    '<c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222"/></c:catAx>' +
+    '<c:valAx><c:axId val="222"/><c:scaling><c:orientation val="minMax"/></c:scaling>' +
+    '<c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/><c:crossAx val="111"/></c:valAx>' +
+    '</c:plotArea>' +
+    legend +
+    '<c:plotVisOnly val="1"/></c:chart></c:chartSpace>'
+  )
+}
+
+function pieChartXml(series: readonly string[], title?: string): string {
+  const titleElement =
+    title !== undefined
+      ? '<c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r>' +
+        `<a:t>${title}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>`
+      : ''
+  return (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" ' +
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    '<c:chart>' +
+    titleElement +
+    '<c:plotArea><c:layout/>' +
+    '<c:pieChart><c:varyColors val="1"/>' +
+    series.join('') +
+    '<c:firstSliceAng val="0"/></c:pieChart></c:plotArea>' +
+    '<c:legend><c:legendPos val="r"/></c:legend>' +
+    '<c:plotVisOnly val="1"/></c:chart></c:chartSpace>'
+  )
+}
+
+function threeDeeChartXml(series: readonly string[]): string {
+  return (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" ' +
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    '<c:chart><c:plotArea><c:layout/>' +
+    '<c:bar3DChart><c:barDir val="col"/><c:grouping val="clustered"/>' +
+    series.join('') +
+    '<c:axId val="111"/><c:axId val="222"/></c:bar3DChart>' +
+    '</c:plotArea><c:plotVisOnly val="1"/></c:chart></c:chartSpace>'
+  )
+}
+
+/**
+ * Builds a chart-carrying workbook: one 'Data' sheet with typed cell data
+ * (headers B1/C1, categories A2:A4, values B2:C4 as inline strings +
+ * numbers) plus a drawing part with configurable chart anchors and chart
+ * parts.
+ */
+async function buildSheetChartFixture(options: {
+  anchors: ChartAnchorSpec[]
+  chartParts: Record<string, string>
+  chartRels: string[]
+  dataRows?: boolean
+}): Promise<Buffer> {
+  const zip = new JSZip()
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>
+  ${Object.keys(options.chartParts)
+    .map(
+      (path) =>
+        `<Override PartName="/${path}" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`,
+    )
+    .join('\n  ')}
+</Types>`,
+  )
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets>
+</workbook>`,
+  )
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`,
+  )
+  const data =
+    options.dataRows === false
+      ? ''
+      : `
+    <row r="1"><c r="A1" t="inlineStr"><is><t>Quarter</t></is></c><c r="B1" t="inlineStr"><is><t>Revenue</t></is></c><c r="C1" t="inlineStr"><is><t>Cost</t></is></c></row>
+    <row r="2"><c r="A2" t="inlineStr"><is><t>Q1</t></is></c><c r="B2"><v>10</v></c><c r="C2"><v>5</v></c></row>
+    <row r="3"><c r="A3" t="inlineStr"><is><t>Q2</t></is></c><c r="B3"><v>20</v></c><c r="C3"><v>8</v></c></row>
+    <row r="4"><c r="A4" t="inlineStr"><is><t>Q3</t></is></c><c r="B4"><v>30</v></c><c r="C4"><v>11</v></c></row>`
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>${data}</sheetData>
+  <drawing r:id="rIdDrw1"/>
+</worksheet>`,
+  )
+  addFile(
+    zip,
+    'xl/worksheets/_rels/sheet1.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdDrw1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+</Relationships>`,
+  )
+  addFile(
+    zip,
+    'xl/drawings/drawing1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">${options.anchors
+      .map((anchor) => chartAnchorXml(anchor))
+      .join('')}</xdr:wsDr>`,
+  )
+  addFile(
+    zip,
+    'xl/drawings/_rels/drawing1.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${options.chartRels.join('')}</Relationships>`,
+  )
+  for (const [path, xml] of Object.entries(options.chartParts)) {
+    addFile(zip, path, xml)
+  }
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+}
+
+/** One two-cell bar chart (2 series with refs + caches). */
+export async function buildExcelChartFixture(): Promise<Buffer> {
+  return buildSheetChartFixture({
+    anchors: [{ kind: 'twoCellAnchor', chartRelId: 'rIdChart1', name: 'Sales chart' }],
+    chartParts: {
+      'xl/charts/chart1.xml': barChartXml(
+        [
+          chartSeriesXml('Revenue', [10, 20, 30], { color: '4472C4' }),
+          chartSeriesXml('Cost', [5, 8, 11], { color: 'ED7D31', valuesRef: 'Data!$C$2:$C$4' }),
+        ],
+        { title: 'Sales &amp; Cost', legendPos: 'r' },
+      ),
+    },
+    chartRels: [CHART_REL('rIdChart1', 'chart1.xml')],
+  })
+}
+
+/** Two charts on one sheet (bar + pie) — isolation evidence. */
+export async function buildExcelChartsFixture(): Promise<Buffer> {
+  return buildSheetChartFixture({
+    anchors: [
+      { kind: 'twoCellAnchor', chartRelId: 'rIdChart1', name: 'Sales chart' },
+      {
+        kind: 'twoCellAnchor',
+        chartRelId: 'rIdChart2',
+        name: 'Share chart',
+        from: { col: 10, colOff: 0, row: 2, rowOff: 0 },
+        to: { col: 16, colOff: 0, row: 18, rowOff: 0 },
+      },
+    ],
+    chartParts: {
+      'xl/charts/chart1.xml': barChartXml(
+        [chartSeriesXml('Revenue', [10, 20, 30], { color: '4472C4' })],
+        { title: 'Revenue', legendPos: 'b' },
+      ),
+      'xl/charts/chart2.xml': pieChartXml([chartSeriesXml('Share', [40, 35, 25])], 'Share'),
+    },
+    chartRels: [CHART_REL('rIdChart1', 'chart1.xml'), CHART_REL('rIdChart2', 'chart2.xml')],
+  })
+}
+
+/** One supported bar chart + one 3-D chart (unsupported — omitted). The
+ *  3-D chart is the FIRST anchor: the survivor keeps drawingIndex 1,
+ *  proving the omitted anchor still counts toward locator parity. */
+export async function buildExcel3DChartFixture(): Promise<Buffer> {
+  return buildSheetChartFixture({
+    anchors: [
+      { kind: 'twoCellAnchor', chartRelId: 'rIdChart2', name: 'Unsupported 3D' },
+      {
+        kind: 'twoCellAnchor',
+        chartRelId: 'rIdChart1',
+        name: 'Supported',
+        from: { col: 10, colOff: 0, row: 2, rowOff: 0 },
+        to: { col: 16, colOff: 0, row: 18, rowOff: 0 },
+      },
+    ],
+    chartParts: {
+      'xl/charts/chart1.xml': barChartXml(
+        [chartSeriesXml('Revenue', [10, 20, 30], { color: '4472C4' })],
+        { title: 'Revenue' },
+      ),
+      'xl/charts/chart2.xml': threeDeeChartXml([chartSeriesXml('Cost', [5, 8, 11])]),
+    },
+    chartRels: [CHART_REL('rIdChart1', 'chart1.xml'), CHART_REL('rIdChart2', 'chart2.xml')],
+  })
+}
+
+/** One oneCellAnchor chart — move-only (resize fails closed). */
+export async function buildExcelOneCellChartFixture(): Promise<Buffer> {
+  return buildSheetChartFixture({
+    anchors: [{ kind: 'oneCellAnchor', chartRelId: 'rIdChart1', ext: { cx: 476250, cy: 285750 } }],
+    chartParts: {
+      'xl/charts/chart1.xml': barChartXml([chartSeriesXml('Revenue', [10, 20, 30])], {
+        title: 'One cell',
+      }),
+    },
+    chartRels: [CHART_REL('rIdChart1', 'chart1.xml')],
+  })
+}
+
+/** One absoluteAnchor chart (omitted) + one supported two-cell chart. */
+export async function buildExcelAbsoluteChartFixture(): Promise<Buffer> {
+  return buildSheetChartFixture({
+    anchors: [
+      { kind: 'absoluteAnchor', chartRelId: 'rIdChart1', name: 'Absolute' },
+      {
+        kind: 'twoCellAnchor',
+        chartRelId: 'rIdChart2',
+        name: 'Supported',
+        from: { col: 10, colOff: 0, row: 2, rowOff: 0 },
+        to: { col: 16, colOff: 0, row: 18, rowOff: 0 },
+      },
+    ],
+    chartParts: {
+      'xl/charts/chart1.xml': barChartXml([chartSeriesXml('A', [1, 2, 3])], { title: 'Absolute' }),
+      'xl/charts/chart2.xml': barChartXml([chartSeriesXml('Revenue', [10, 20, 30])], {
+        title: 'Supported',
+      }),
+    },
+    chartRels: [CHART_REL('rIdChart1', 'chart1.xml'), CHART_REL('rIdChart2', 'chart2.xml')],
+  })
+}
+
+/** Data-only workbook (A1:C4 typed cells, no charts) — insert-chart input. */
+export async function buildExcelChartDataOnlyFixture(): Promise<Buffer> {
+  return buildSheetChartFixture({
+    anchors: [],
+    chartParts: {},
+    chartRels: [],
+  })
+}

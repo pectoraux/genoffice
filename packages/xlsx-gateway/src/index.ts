@@ -66,6 +66,9 @@ export type {
   WorkbookVisualEdit,
 } from './types.js'
 
+// ── Chart additions (drawing-add family) ──
+export type { ChartAdd, ChartAddSeries } from './gateway/xlsx-drawing-add.js'
+
 // ── Sheet edit plan ──
 export type { SheetEditPlan, SheetAllocation } from './gateway/xlsx-sheets.js'
 export { SheetEditError, validateSheetName } from './gateway/xlsx-sheets.js'
@@ -103,6 +106,10 @@ export { TableReadError } from './gateway/xlsx-table-read.js'
 export type { SheetImageInfo } from './gateway/xlsx-image-read.js'
 export { ImageReadError } from './gateway/xlsx-image-read.js'
 export type { AddedVisualLocator } from './gateway/xlsx-gateway.js'
+
+// ── Worksheet charts (EXCEL-023) ──
+export type { SheetChartInfo } from './gateway/xlsx-chart-read.js'
+export { ChartReadError } from './gateway/xlsx-chart-read.js'
 
 // ── Defined names ──
 export type { DefinedNamesState } from './gateway/xlsx-defined-names.js'
