@@ -108,11 +108,14 @@ const CHART_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.drawin
 
 /** Locator of an appended visual anchor (EXCEL-022 — lets callers merge
  * a persisted session visual into their live state with the exact
- * drawing index it landed at). */
+ * drawing index it landed at). Chart additions (EXCEL-023) also carry
+ * the allocated chart part path so a later semantic edit targets the
+ * exact chart the save created. */
 export interface VisualAdditionLocator {
   readonly worksheetPath: string
   readonly drawingPath: string
   readonly drawingIndex: number
+  readonly chartPath?: string | undefined
 }
 
 export async function applyVisualAdditions(
@@ -139,6 +142,13 @@ export async function applyVisualAdditions(
       drawingIndex = await appendAnchor(pkg, drawing.path, addition.anchor, (shapeId) =>
         chartFrameXml(shapeId, chartRelId),
       )
+      locators.push({
+        worksheetPath: addition.worksheetPath,
+        drawingPath: drawing.path,
+        drawingIndex,
+        chartPath,
+      })
+      continue
     } else if (addition.shape) {
       const shape = addition.shape
       drawingIndex = await appendAnchor(pkg, drawing.path, addition.anchor, (shapeId) =>

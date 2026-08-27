@@ -104,6 +104,10 @@ export type { SheetImageInfo } from './gateway/xlsx-image-read.js'
 export { ImageReadError } from './gateway/xlsx-image-read.js'
 export type { AddedVisualLocator } from './gateway/xlsx-gateway.js'
 
+// ── Worksheet charts (EXCEL-023) ──
+export type { SheetChartInfo } from './gateway/xlsx-chart-read.js'
+export { ChartReadError } from './gateway/xlsx-chart-read.js'
+
 // ── Defined names ──
 export type { DefinedNamesState } from './gateway/xlsx-defined-names.js'
 export { DefinedNameError } from './gateway/xlsx-defined-names.js'

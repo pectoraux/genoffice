@@ -9,6 +9,7 @@ import type { SheetFilterState } from '../gateway/xlsx-filter'
 import type { DvWireRule } from '../gateway/xlsx-dv'
 import type { SheetNote } from '../gateway/xlsx-notes'
 import type { SheetTableInfo } from '../gateway/xlsx-table-read'
+import type { SheetChartInfo } from '../gateway/xlsx-chart-read'
 import type { SheetImageInfo } from '../gateway/xlsx-image-read'
 
 export type CellScalar = string | number | boolean | null
@@ -126,6 +127,25 @@ export interface WorksheetState {
    * repurposed (EXCEL-022 architecture decision, worklog).
    */
   readonly images?: readonly SheetImageInfo[] | undefined
+  /**
+   * Worksheet charts (EXCEL-023) parsed from the sheet's drawing part
+   * (resolved through the worksheet rels → drawing rels → chart parts).
+   * Each entry carries the canonical (drawingPath, drawingIndex) anchor
+   * locator for move/resize/delete through the visualEdits family, the
+   * chartPath part locator for semantic edits through the chartEdits
+   * family, and the full canonical ChartVisualState (the shared domain
+   * model the desktop also renders from). Absent means the sheet carries
+   * no representable charts — including when the drawing wiring is
+   * unreadable (fail closed PER SHEET) or when individual charts are
+   * unsupported (3-D plots, bubble/stock/surface, chartEx extensions,
+   * non-canonical multi-plot combinations, absolute anchors — skipped per
+   * chart, anchors still counted for drawingIndex parity). The web Sheets
+   * shell renders charts as its own SVG visual surface floated over the
+   * Univer grid (the desktop's exact rendering architecture — Univer
+   * 0.25.1 ships no chart plugin) and journals semantic changes through
+   * the canonical chartEdits save family, keyed by chartPath.
+   */
+  readonly charts?: readonly SheetChartInfo[] | undefined
   /**
    * Sheet protection state parsed from the worksheet's <sheetProtection>
    * element. Absent means the worksheet carries NO element (not
