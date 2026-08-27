@@ -320,10 +320,7 @@ export function readLivePlacement(
  * Reads the canonical edit anchor for a live image, or null when the
  * image is gone. THE save-side adapter: plain typed data out.
  */
-export function readLiveAnchor(
-  worksheet: ImageWorksheetFacade,
-  id: string,
-): DrawingAnchor | null {
+export function readLiveAnchor(worksheet: ImageWorksheetFacade, id: string): DrawingAnchor | null {
   const placement = readLivePlacement(worksheet, id)
   if (placement === null) return null
   return anchorFromPlacement(worksheet, placement)

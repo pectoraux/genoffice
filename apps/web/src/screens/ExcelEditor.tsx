@@ -482,9 +482,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   //      references it.
   //    imageInstallingRef suppresses mutation journaling while the load
   //    path (or a read-only revert) installs/reinstalls images.
-  const fileImagesRef = useRef<Map<string, { sheetName: string; info: SheetImageInfo }>>(
-    new Map(),
-  )
+  const fileImagesRef = useRef<Map<string, { sheetName: string; info: SheetImageInfo }>>(new Map())
   const imageAddsRef = useRef<SessionImageAdd[]>([])
   const imageDirtyRef = useRef<Set<string>>(new Set())
   const imageRemovalsRef = useRef<Set<string>>(new Set())
@@ -2651,7 +2649,7 @@ function subscribeToImageMutations(
       | undefined
     if (params?.type === undefined || !Array.isArray(params.objects)) return
     const wb = runtime.univerAPI.getActiveWorkbook()
-    if (!wb || params.unitId !== undefined && params.unitId !== wb.getId()) return
+    if (!wb || (params.unitId !== undefined && params.unitId !== wb.getId())) return
     const ids = params.objects
       .map((object) => object?.drawingId)
       .filter((id): id is string => typeof id === 'string')
@@ -2766,11 +2764,7 @@ async function revertImageToBaseline(
       // once it had time, and reinstall again if the ghost edit landed.
       await new Promise((resolve) => window.setTimeout(resolve, 350))
       const current = readLivePlacement(imageWs, id)
-      if (
-        current === null ||
-        current.column !== baseline.column ||
-        current.row !== baseline.row
-      ) {
+      if (current === null || current.column !== baseline.column || current.row !== baseline.row) {
         const ghost = imageWs.getImages().find((entry) => entry.getId() === id)
         if (ghost !== undefined) {
           try {

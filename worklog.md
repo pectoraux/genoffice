@@ -1108,3 +1108,22 @@ Stage Summary:
 - EXCEL-022 workflow state: IMPLEMENTING → PR_OPEN. Remote ref and PR exist and are reviewable.
 - CI evidence collection on PR #20 follows (web job is the canonical office gate; test/e2e/foundation failures are the documented pre-existing baseline if they recur).
 - NOT VERIFIED — the architect owns that transition; review proceeds on the actual diff.
+
+---
+
+Task ID: EXCEL-022-ci-round1
+Agent: Z.ai (Implementation Operator)
+Task: Collect CI evidence on PR #20 (first run, head 8fcf26a) and correct what it surfaced.
+
+Work Log:
+
+- First CI round on 8fcf26a: the `test` job FAILED at `npm run format:check` — Prettier violations in 11 files, ALL of them EXCEL-022 files (sheet-images.ts, ExcelEditor.tsx, fixtures.ts, ribbon-images.spec.ts, office-routes.ts, office-visual-routes.test.ts, xlsx-drawing-add.ts, xlsx-drawing-edit.ts, xlsx-image-read.ts, xlsx-image.test.ts, work-items.md). Root cause: my local pre-push gates ran ESLint on changed files but never the repo's Prettier format gate (`FORMAT_BASE_REF=origin/main npm run format:check`). This was a REAL defect in my verification process — not pre-existing debt.
+- Correction: ran `npm run format` (Prettier write) over the changed-vs-origin/main file set — pure formatting (99+/100−, line wrapping only). `format:check` now passes.
+- Gates re-verified on the formatted tree: xlsx-gateway 602/602, contractor-core 423+4sk, web unit 216/216, web-host 78/78, typecheck clean in all four workspaces, ribbon-images browser E2E 12/12.
+- `foundation` job: FAILED — the documented pre-existing branch-isolation structural condition (diffs origin/main...HEAD and flags the parity-phase file set; fails for every feature-branch commit; same as EXCEL-018/020 evidence).
+- `e2e` job: FAILED — verifying against the documented pre-existing frozen-desktop baseline (chromium_headless_shell binary + desktop sheets sandbox); detail check follows in the next round if needed.
+
+Stage Summary:
+
+- Format-gate defect found by CI and corrected (this is exactly why the remote CI gate matters — the sandbox-only verification missed it).
+- Workflow state: PR_OPEN (PR #20). NOT VERIFIED — architect owns that transition.

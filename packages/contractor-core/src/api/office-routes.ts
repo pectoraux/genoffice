@@ -2506,10 +2506,7 @@ function expectDrawingAnchor(
   }
   for (const key of Object.keys(value)) {
     if (!bounds.some(([name]) => name === key)) {
-      throw new OfficeValidationError(
-        'validation',
-        `${field} carries an unknown field "${key}"`,
-      )
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
     }
   }
   return out as {
@@ -2575,10 +2572,7 @@ function expectSheetVisualAddition(value: unknown, index: number): SheetVisualAd
   }
   for (const key of Object.keys(value)) {
     if (!['sheetName', 'anchor', 'image'].includes(key)) {
-      throw new OfficeValidationError(
-        'validation',
-        `${field} carries an unknown field "${key}"`,
-      )
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
     }
   }
   return { sheetName, anchor, image: { mediaType, base64 } }
@@ -2623,23 +2617,15 @@ function expectWorkbookVisualEdit(value: unknown, index: number): WorkbookVisual
     )
   }
   if (!hasRemove && !hasAnchor) {
-    throw new OfficeValidationError(
-      'validation',
-      `${field} needs either remove or anchor`,
-    )
+    throw new OfficeValidationError('validation', `${field} needs either remove or anchor`)
   }
   if (hasRemove && value.remove !== true) {
     throw new OfficeValidationError('validation', `${field}.remove must be true`)
   }
-  const anchor = hasAnchor
-    ? expectDrawingAnchor(value.anchor, `${field}.anchor`)
-    : undefined
+  const anchor = hasAnchor ? expectDrawingAnchor(value.anchor, `${field}.anchor`) : undefined
   for (const key of Object.keys(value)) {
     if (!['drawingPath', 'drawingIndex', 'remove', 'anchor'].includes(key)) {
-      throw new OfficeValidationError(
-        'validation',
-        `${field} carries an unknown field "${key}"`,
-      )
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
     }
   }
   return {
@@ -3010,11 +2996,7 @@ function parseSaveWorkbookRequest(
     }
     const visualEdits =
       body.savePlan.visualEdits !== undefined && body.savePlan.visualEdits !== null
-        ? expectArray(
-            body.savePlan.visualEdits,
-            'savePlan.visualEdits',
-            expectWorkbookVisualEdit,
-          )
+        ? expectArray(body.savePlan.visualEdits, 'savePlan.visualEdits', expectWorkbookVisualEdit)
         : undefined
     if (visualEdits !== undefined && visualEdits.length > MAX_VISUAL_EDITS) {
       throw new OfficeValidationError(

@@ -98,9 +98,7 @@ describe('workbooks/save visualAdditions validation', () => {
   it('rejects unsupported media types', async () => {
     for (const mediaType of ['image/wmf', 'image/tiff', 'image/svg+xml', 'png']) {
       const res = await save({
-        visualAdditions: [
-          { ...canonicalAddition(), image: { mediaType, base64: 'aGVsbG8=' } },
-        ],
+        visualAdditions: [{ ...canonicalAddition(), image: { mediaType, base64: 'aGVsbG8=' } }],
       })
       expect(res.status).toBe(400)
       expect(res.body.message).toContain('mediaType')
@@ -115,9 +113,7 @@ describe('workbooks/save visualAdditions validation', () => {
     expect(missing.body.message).toContain('base64')
 
     const notString = await save({
-      visualAdditions: [
-        { ...canonicalAddition(), image: { mediaType: 'image/png', base64: 42 } },
-      ],
+      visualAdditions: [{ ...canonicalAddition(), image: { mediaType: 'image/png', base64: 42 } }],
     })
     expect(notString.status).toBe(400)
     expect(notString.body.message).toContain('base64')

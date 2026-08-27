@@ -2845,7 +2845,10 @@ async function buildSheetImageFixture(options: {
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
     ${options.sheets
-      .map((sheet, index) => `<sheet name="${sheet.name}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`)
+      .map(
+        (sheet, index) =>
+          `<sheet name="${sheet.name}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`,
+      )
       .join('\n    ')}
   </sheets>
 </workbook>`,

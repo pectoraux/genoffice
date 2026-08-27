@@ -290,9 +290,7 @@ async function appendAnchor(
   // matching the reader/editor index parity).
   const updated = xml.slice(0, closeAt) + element + xml.slice(closeAt)
   const anchors = [
-    ...updated.matchAll(
-      /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g,
-    ),
+    ...updated.matchAll(/<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g),
   ]
   return anchors.length - 1
 }

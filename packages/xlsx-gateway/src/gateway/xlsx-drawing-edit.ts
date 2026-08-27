@@ -8,8 +8,7 @@ import type { MutablePackage } from './xlsx-drawing-add'
 
 export class VisualEditError extends Error {}
 
-const ANCHOR_PATTERN =
-  /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g
+const ANCHOR_PATTERN = /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g
 
 export async function applyVisualEdits(
   pkg: MutablePackage,
@@ -76,8 +75,9 @@ async function cascadeImageRemovals(
     // Another anchor still embeds this relationship (shared media) — the
     // relationship and the media part both stay.
     if (remainingDrawingXml.includes(`r:embed="${relId}"`)) continue
-    const relMatch = new RegExp(`<Relationship\\b[^>]*\\bId="${escapeRegExp(relId)}"[^>]*/>`)
-      .exec(relsXml)
+    const relMatch = new RegExp(`<Relationship\\b[^>]*\\bId="${escapeRegExp(relId)}"[^>]*/>`).exec(
+      relsXml,
+    )
     if (!relMatch) {
       // Already removed by an earlier edit in this save (two deleted
       // pictures shared one relationship) — nothing left to do.
@@ -104,10 +104,7 @@ async function cascadeImageRemovals(
 
 /// Scans every *.rels part in the package for a relationship whose
 /// resolved target is `mediaPath`. External targets are skipped.
-async function anyRelationshipReferences(
-  pkg: MutablePackage,
-  mediaPath: string,
-): Promise<boolean> {
+async function anyRelationshipReferences(pkg: MutablePackage, mediaPath: string): Promise<boolean> {
   for (const path of await pkg.paths()) {
     if (!/_rels\/[^/]+\.rels$/.test(path)) continue
     const relsXml = await pkg.readText(path)
@@ -135,7 +132,8 @@ async function removeContentTypeDefaultIfUnused(
   const extension = removedPath.slice(dot + 1).toLowerCase()
   const paths = await pkg.paths()
   const stillUsed = paths.some(
-    (path) => path !== removedPath && path.slice(path.lastIndexOf('.') + 1).toLowerCase() === extension,
+    (path) =>
+      path !== removedPath && path.slice(path.lastIndexOf('.') + 1).toLowerCase() === extension,
   )
   if (stillUsed) return
   const contentTypes = await pkg.readText('[Content_Types].xml')
@@ -168,8 +166,9 @@ async function cascadeChartRemovals(
     if (remainingDrawingXml.includes(`r:id="${relId}"`)) {
       throw new VisualEditError('Another anchor still references the deleted chart.')
     }
-    const relMatch = new RegExp(`<Relationship\\b[^>]*\\bId="${escapeRegExp(relId)}"[^>]*/>`)
-      .exec(relsXml)
+    const relMatch = new RegExp(`<Relationship\\b[^>]*\\bId="${escapeRegExp(relId)}"[^>]*/>`).exec(
+      relsXml,
+    )
     if (!relMatch) {
       throw new VisualEditError('The deleted chart has no drawing relationship.')
     }
@@ -255,19 +254,21 @@ function applyOneEdit(
   if (kind === 'absoluteAnchor') {
     throw new VisualEditError('This visual uses an absolute anchor — moving it is not supported.')
   }
-  const from = `<xdr:from><xdr:col>${anchor.fromColumn}</xdr:col>`
-    + `<xdr:colOff>${anchor.fromColumnOffset}</xdr:colOff>`
-    + `<xdr:row>${anchor.fromRow}</xdr:row>`
-    + `<xdr:rowOff>${anchor.fromRowOffset}</xdr:rowOff></xdr:from>`
+  const from =
+    `<xdr:from><xdr:col>${anchor.fromColumn}</xdr:col>` +
+    `<xdr:colOff>${anchor.fromColumnOffset}</xdr:colOff>` +
+    `<xdr:row>${anchor.fromRow}</xdr:row>` +
+    `<xdr:rowOff>${anchor.fromRowOffset}</xdr:rowOff></xdr:from>`
   let patched = anchorXml.replace(/<xdr:from>[\s\S]*?<\/xdr:from>/, () => from)
   if (patched === anchorXml && !anchorXml.includes('<xdr:from>')) {
     throw new VisualEditError('Drawing anchor has no from marker — moving it is not supported.')
   }
   if (kind === 'twoCellAnchor') {
-    const to = `<xdr:to><xdr:col>${anchor.toColumn}</xdr:col>`
-      + `<xdr:colOff>${anchor.toColumnOffset}</xdr:colOff>`
-      + `<xdr:row>${anchor.toRow}</xdr:row>`
-      + `<xdr:rowOff>${anchor.toRowOffset}</xdr:rowOff></xdr:to>`
+    const to =
+      `<xdr:to><xdr:col>${anchor.toColumn}</xdr:col>` +
+      `<xdr:colOff>${anchor.toColumnOffset}</xdr:colOff>` +
+      `<xdr:row>${anchor.toRow}</xdr:row>` +
+      `<xdr:rowOff>${anchor.toRowOffset}</xdr:rowOff></xdr:to>`
     // An unchanged edge replaces to an identical string, so presence must be
     // checked directly (an NW resize touches only the from marker).
     const withTo = patched.replace(/<xdr:to>[\s\S]*?<\/xdr:to>/, () => to)

@@ -12,11 +12,11 @@ import type { WorkbookVisualEdit } from '../src/types.js'
 ///    configurable picture anchors. PNG bytes are a deterministic 1×1
 ///    solid-color PNG (structure-valid, tiny).
 const PNG_BYTES = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
-  0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
-  0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8,
-  0xcf, 0xc0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x5c, 0xcd, 0xff, 0x69, 0x00, 0x00, 0x00,
-  0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+  0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+  0x00, 0x00, 0x03, 0x00, 0x01, 0x5c, 0xcd, 0xff, 0x69, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+  0x44, 0xae, 0x42, 0x60, 0x82,
 ])
 const PNG_BASE64 = PNG_BYTES.toString('base64')
 
@@ -55,7 +55,9 @@ function anchorXml(spec: AnchorSpec): string {
             : '') +
           (spec.kind === 'oneCellAnchor' ? `<xdr:ext cx="${ext.cx}" cy="${ext.cy}"/>` : '')) +
       '<xdr:sp macro="" textlink=""><xdr:nvSpPr><xdr:cNvPr id="9" name="Shape"/></xdr:nvSpPr></xdr:sp>' +
-      '<xdr:clientData/></xdr:' + spec.kind + '>'
+      '<xdr:clientData/></xdr:' +
+      spec.kind +
+      '>'
     )
   }
   const pic =
@@ -76,7 +78,9 @@ function anchorXml(spec: AnchorSpec): string {
           : '') +
         (spec.kind === 'oneCellAnchor' ? `<xdr:ext cx="${ext.cx}" cy="${ext.cy}"/>` : '')) +
     pic +
-    '<xdr:clientData/></xdr:' + spec.kind + '>'
+    '<xdr:clientData/></xdr:' +
+    spec.kind +
+    '>'
   )
 }
 
@@ -93,10 +97,9 @@ async function buildImageFixture(options: ImageFixtureOptions = {}): Promise<Buf
   const anchors = options.anchors ?? [
     { kind: 'twoCellAnchor' as const, embedId: 'rId1', name: 'Red dot' },
   ]
-  const rels =
-    options.rels ?? [
-      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>',
-    ]
+  const rels = options.rels ?? [
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>',
+  ]
   const media = options.media ?? { 'xl/media/image1.png': PNG_BYTES }
   const zip = new JSZip()
   zip.file(
@@ -119,10 +122,11 @@ async function buildImageFixture(options: ImageFixtureOptions = {}): Promise<Buf
 </Relationships>`,
   )
   const sheetCount = options.secondSheetDrawing ? 2 : 1
-  const sheetEntries = [0, 1].slice(0, sheetCount).map(
-    (index) =>
-      `<sheet name="Sheet${index + 1}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`,
-  )
+  const sheetEntries = [0, 1]
+    .slice(0, sheetCount)
+    .map(
+      (index) => `<sheet name="Sheet${index + 1}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`,
+    )
   zip.file(
     'xl/workbook.xml',
     `<?xml version="1.0" encoding="UTF-8"?>
@@ -213,7 +217,23 @@ async function saveWithVisualEdits(
   visualEdits: readonly WorkbookVisualEdit[],
 ): Promise<XlsxMutation> {
   return applyCellEditsToXlsx(
-    buffer, [], [], [], undefined, [], [], [], [], [], null, [], [], [], null, [], [],
+    buffer,
+    [],
+    [],
+    [],
+    undefined,
+    [],
+    [],
+    [],
+    [],
+    [],
+    null,
+    [],
+    [],
+    [],
+    null,
+    [],
+    [],
     visualEdits,
   )
 }
@@ -226,13 +246,13 @@ async function readDrawingEntry(buffer: Buffer): Promise<string> {
 async function readEntry(buffer: Buffer, path: string): Promise<string | null> {
   const zip = await JSZip.loadAsync(buffer)
   const entry = zip.file(path)
-  return entry === null ? null : (await entry.async('string'))
+  return entry === null ? null : await entry.async('string')
 }
 
 async function readEntryBytes(buffer: Buffer, path: string): Promise<Buffer | null> {
   const zip = await JSZip.loadAsync(buffer)
   const entry = zip.file(path)
-  return entry === null ? null : (await entry.async('nodebuffer'))
+  return entry === null ? null : await entry.async('nodebuffer')
 }
 
 async function listEntries(buffer: Buffer): Promise<string[]> {
@@ -423,7 +443,12 @@ describe('image delete: relationship and media cascade', () => {
     const buffer = await buildImageFixture({
       anchors: [
         { kind: 'twoCellAnchor', embedId: 'rId1', name: 'First' },
-        { kind: 'twoCellAnchor', embedId: 'rId2', name: 'Second', from: { col: 8, colOff: 0, row: 4, rowOff: 0 } },
+        {
+          kind: 'twoCellAnchor',
+          embedId: 'rId2',
+          name: 'Second',
+          from: { col: 8, colOff: 0, row: 4, rowOff: 0 },
+        },
       ],
       rels: [
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>',

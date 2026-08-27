@@ -71,11 +71,7 @@ interface LiveImageView {
   toRow: number
 }
 
-async function openFixture(
-  page: Page,
-  bytes: Buffer,
-  path: string,
-): Promise<ImageSnapshotView> {
+async function openFixture(page: Page, bytes: Buffer, path: string): Promise<ImageSnapshotView> {
   writeFileSync(path, bytes)
   const openResponsePromise = page.waitForResponse(
     (r) => r.url().includes('/api/office/workbooks/open') && r.request().method() === 'POST',
@@ -560,9 +556,7 @@ test.describe('Insert tab — Images persist through the canonical pipeline', ()
     expect((drawing.match(/<xdr:pic>/g) ?? []).length).toBe(2)
     // drawing rels → media parts resolve
     const rels = await readZipEntry(saved, 'xl/drawings/_rels/drawing1.xml.rels')
-    const targets = [...rels.matchAll(/Target="\.\.\/media\/(image\d+\.png)"/g)].map(
-      (m) => m[1]!,
-    )
+    const targets = [...rels.matchAll(/Target="\.\.\/media\/(image\d+\.png)"/g)].map((m) => m[1]!)
     expect(targets).toHaveLength(2)
     for (const target of targets) {
       expect(await readZipEntryBytes(saved, `xl/media/${target}`)).not.toBeNull()
@@ -573,7 +567,9 @@ test.describe('Insert tab — Images persist through the canonical pipeline', ()
     }
   })
 
-  test('12: a one-cell anchored image renders but refuses edits (fail closed)', async ({ page }) => {
+  test('12: a one-cell anchored image renders but refuses edits (fail closed)', async ({
+    page,
+  }) => {
     await loginAsDemoOwner(page)
     await gotoHashRoute(page, '/office/excel')
     await waitForGridCanvas(page)
@@ -592,7 +588,9 @@ test.describe('Insert tab — Images persist through the canonical pipeline', ()
     // explains why — the journal never records the change.
     expect(await moveImage(page, 'Data', id, 9, 9)).toBe(true)
     await expect(
-      page.getByText('This image uses a one-cell or absolute anchor — moving or resizing it is not supported yet.'),
+      page.getByText(
+        'This image uses a one-cell or absolute anchor — moving or resizing it is not supported yet.',
+      ),
     ).toBeVisible({ timeout: 10_000 })
     await page.waitForTimeout(800)
     const reverted = await liveImages(page, 'Data')

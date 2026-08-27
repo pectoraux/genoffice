@@ -184,6 +184,7 @@ Status: IMPLEMENTING (local implementation complete; PR pending — the sandbox
 lacks GitHub push credentials).
 
 Implementation summary:
+
 - Canonical read path: `packages/xlsx-gateway/src/gateway/xlsx-image-read.ts`
   (worksheet → drawing rel → drawing part → image rel → `xl/media/*`, typed
   `SheetImageInfo` with inline media, per-sheet fail-closed semantics,

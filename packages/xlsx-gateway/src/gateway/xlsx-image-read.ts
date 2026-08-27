@@ -30,14 +30,12 @@ const SUPPORTED_MEDIA_TYPES: Record<string, 'image/png' | 'image/jpeg' | 'image/
 
 const DRAWING_REL_TYPE =
   'http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing'
-const IMAGE_REL_TYPE =
-  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'
+const IMAGE_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'
 
 /// Anchors count in document order — identical pattern to
 /// xlsx-drawing-edit.ts, so a visualEdit's drawingIndex from this reader
 /// addresses the exact same anchor the editor patches.
-const ANCHOR_PATTERN =
-  /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g
+const ANCHOR_PATTERN = /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g
 
 /// One picture on one sheet — the typed wire model the browser consumes.
 /// `drawingPath` + `drawingIndex` are the canonical edit locator (the same
@@ -240,7 +238,13 @@ function parsePictureAnchor(
     // read-only.
     return {
       anchorType: 'one-cell',
-      anchor: { ...from, toRow: from.fromRow, toColumn: from.fromColumn, toRowOffset: 0, toColumnOffset: 0 },
+      anchor: {
+        ...from,
+        toRow: from.fromRow,
+        toColumn: from.fromColumn,
+        toRowOffset: 0,
+        toColumnOffset: 0,
+      },
       ...(widthPx !== undefined ? { widthPx } : {}),
       ...(heightPx !== undefined ? { heightPx } : {}),
       ...(rot !== undefined ? { rotationDeg: Number(rot) / 60000 } : {}),
