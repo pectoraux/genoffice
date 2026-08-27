@@ -61,8 +61,8 @@ PROJECT-049 ← 046, 047, 048
 The objectively accepted state and the next authorized product increment (the authorization gate below applies):
 
 ```text
-Accepted: PROJECT-001..PROJECT-024 (PROJECT-019 completed as the 019A rescope decision record)
-Next authorized: PROJECT-025
+Accepted: PROJECT-001..PROJECT-025 (PROJECT-019 completed as the 019A rescope decision record)
+Next authorized: PROJECT-026
 ```
 
 A work item cannot be authorized until all direct dependencies are objectively accepted. A dependency change requires synchronized updates to `work-items.md`, this file, and `architecture-lock.md` when the change affects a frozen invariant.
