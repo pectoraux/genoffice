@@ -160,3 +160,15 @@ PROJECT-022 (Gantt / task grid / timeline views) adds NO new workspace package a
 ```
 
 The views consume the package's OWN accepted layers (the `projectDocumentView` projection, the `TimelineViewport`/`buildTimeAxis` timeline math) plus the canonical contracts types (`ProjectDocument`, `TaskSchedule`, `Dependency`, `ProjectTable`); they never import the scheduling package (no scheduling authority — lock §3/§6), never the file/host packages (R-009), and never React/Electron/Node/DOM APIs (lock §13 — the discipline suite's raw-source scan now globs `src/**/*.ts`, covering the views subfolder, and additionally guards the views against pixel/DOM layout APIs). CI is unchanged: the 21-step foundation gate already typechecks/tests the package and its boundary grep covers the whole package recursively. The work-item edge `021 → 022` completes; `022 → 023`, `022 → 025`, `022 → 026`, `022 → 027`, `022 → 028` open on acceptance.
+
+## Package dependency edges (PROJECT-023)
+
+PROJECT-023 (Selection / editing) adds NO new workspace package and NO new package edge. The engine command additions (`SetTaskDuration`, `SetTaskFinish`) live inside the accepted `@genoffice/project-engine` — two members of the FROZEN command union whose implementation PROJECT-021 documented as deferred to this increment; the contracts package, the command union, and every existing edge are unchanged:
+
+```text
+@genoffice/project-renderer-core → @genoffice/project-contracts (types + brand helpers)
+@genoffice/project-renderer-core → @genoffice/project-engine (applyProjectCommand, hierarchy utilities)
+@genoffice/project-scheduling → @genoffice/project-engine (document validation + leveler registration, unchanged)
+```
+
+The editing surface lives INSIDE `@genoffice/project-renderer-core` (`src/editing.ts` — the pure edit model; `src/edit-flow.ts` — the session commit flow; the reducer/state/intent extensions), consuming only what the package already depends on. The editing modules never import the scheduling package (no scheduling authority — lock §3/§6; the draft reads the projection's by-reference schedule join passed as arguments), never the file/host packages (R-009), and never React/Electron/Node/DOM APIs (lock §13 — the discipline suite's raw-source scan covers them and now additionally guards the editing modules against scheduling-derived state, lock §11). CI is unchanged: the 21-step foundation gate already typechecks/tests both touched packages and its boundary grep covers them recursively. The work-item edge `023 → 024` opens on acceptance.

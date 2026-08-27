@@ -24,7 +24,7 @@ jobs:
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Verify branch isolation
         run: |
-          git fetch origin main --depth=1
+          git fetch origin +refs/heads/main:refs/remotes/origin/main
           changed=$(git diff --name-only origin/main...HEAD)
           if echo "$changed" | grep -E '^(apps/sheets/|apps/web/src/screens/ExcelEditor|apps/web/src/screens/excel/|packages/xlsx-gateway/|packages/docx-engine/)' ; then
             echo 'Project foundation changed a forbidden Excel/frozen surface.' >&2

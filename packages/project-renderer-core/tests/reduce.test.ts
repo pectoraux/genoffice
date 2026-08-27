@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { asISODateTime, asTaskId } from '@genoffice/project-contracts'
+import { asISODateTime, asTaskId, asWorkingMinutes } from '@genoffice/project-contracts'
+import type { DerivedSchedule } from '@genoffice/project-contracts'
 import { createViewState, reduceViewState } from '../src/index.js'
 import { makeDocument, makeTask, multiSiblingDocument, outlineDocument } from './fixtures.js'
 
@@ -462,5 +463,370 @@ describe('PROJECT-021 reducer — determinism and reconciliation', () => {
     expect(
       state.tasks.focusId === undefined || state.tasks.taskIds.includes(state.tasks.focusId),
     ).toBe(true)
+  })
+})
+
+// ===========================================================================
+// PROJECT-023 — keyboard focus navigation (moveTaskFocus)
+// ===========================================================================
+
+describe('PROJECT-023 reducer — moveTaskFocus', () => {
+  it('bootstraps from nothing by focusing (and selecting) the first visible row', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'down' }, context(document))
+    expect(state.tasks.taskIds).toEqual([asTaskId('root')])
+    expect(state.tasks.anchorId).toBe(asTaskId('root'))
+    expect(state.tasks.focusId).toBe(asTaskId('root'))
+  })
+
+  it('moves down and up through the outline order, replacing the selection', () => {
+    const document = outlineDocument() // root, a, a1, b
+    let state = createViewState(document)
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'first' }, context(document))
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'down' }, context(document))
+    expect(state.tasks.taskIds).toEqual([asTaskId('a')])
+    expect(state.tasks.focusId).toBe(asTaskId('a'))
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'up' }, context(document))
+    expect(state.tasks.taskIds).toEqual([asTaskId('root')])
+    expect(state.tasks.focusId).toBe(asTaskId('root'))
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'last' }, context(document))
+    expect(state.tasks.taskIds).toEqual([asTaskId('b')])
+    expect(state.tasks.focusId).toBe(asTaskId('b'))
+  })
+
+  it('clamps at the boundaries: up at the first row and down at the last row are no-ops', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'selectTask', taskId: asTaskId('root') },
+      context(document),
+    )
+    const atFirst = reduceViewState(
+      state,
+      { type: 'moveTaskFocus', direction: 'up' },
+      context(document),
+    )
+    expect(atFirst).toBe(state) // reference-equal no-op
+    state = reduceViewState(state, { type: 'selectTask', taskId: asTaskId('b') }, context(document))
+    const atLast = reduceViewState(
+      state,
+      { type: 'moveTaskFocus', direction: 'down' },
+      context(document),
+    )
+    expect(atLast).toBe(state) // reference-equal no-op
+    // first/last when already at the target row: also reference-equal no-ops.
+    expect(
+      reduceViewState(state, { type: 'moveTaskFocus', direction: 'last' }, context(document)),
+    ).toBe(state)
+  })
+
+  it('skips rows hidden by a collapsed ancestor (visible order, not document order)', () => {
+    const document = outlineDocument() // root > (a > a1, b)
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'toggleCollapse', taskId: asTaskId('root') },
+      context(document),
+    )
+    // Only `root` is visible now: moving focus down from nothing selects it,
+    // and moving down again is a clamped no-op (its subtree is hidden).
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'down' }, context(document))
+    expect(state.tasks.taskIds).toEqual([asTaskId('root')])
+    const clamped = reduceViewState(
+      state,
+      { type: 'moveTaskFocus', direction: 'down' },
+      context(document),
+    )
+    expect(clamped).toBe(state)
+    // Expanding again restores the full order for navigation.
+    state = reduceViewState(
+      state,
+      { type: 'toggleCollapse', taskId: asTaskId('root') },
+      context(document),
+    )
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'down' }, context(document))
+    expect(state.tasks.focusId).toBe(asTaskId('a'))
+  })
+
+  it('focus on a collapsed summary moves down PAST its hidden subtree to the next visible row', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'toggleCollapse', taskId: asTaskId('a') },
+      context(document),
+    ) // visible: root, a, b (a1 hidden)
+    state = reduceViewState(state, { type: 'selectTask', taskId: asTaskId('a') }, context(document))
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'down' }, context(document))
+    expect(state.tasks.focusId).toBe(asTaskId('b'))
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'up' }, context(document))
+    expect(state.tasks.focusId).toBe(asTaskId('a'))
+  })
+
+  it('extend moves apply the accepted outline-range rule from the anchor', () => {
+    const document = outlineDocument() // root, a, a1, b
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'selectTask', taskId: asTaskId('root') },
+      context(document),
+    )
+    state = reduceViewState(
+      state,
+      { type: 'moveTaskFocus', direction: 'down', extend: true },
+      context(document),
+    )
+    expect(state.tasks.taskIds).toEqual([asTaskId('root'), asTaskId('a')])
+    expect(state.tasks.anchorId).toBe(asTaskId('root'))
+    expect(state.tasks.focusId).toBe(asTaskId('a'))
+    // Extending to the end covers the anchor..last range.
+    state = reduceViewState(
+      state,
+      { type: 'moveTaskFocus', direction: 'last', extend: true },
+      context(document),
+    )
+    expect(state.tasks.taskIds).toEqual([
+      asTaskId('root'),
+      asTaskId('a'),
+      asTaskId('a1'),
+      asTaskId('b'),
+    ])
+    expect(state.tasks.anchorId).toBe(asTaskId('root'))
+    expect(state.tasks.focusId).toBe(asTaskId('b'))
+  })
+
+  it('the anchor/focus selection invariant holds after every navigation step', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    for (const direction of ['down', 'down', 'down', 'up', 'last', 'first'] as const) {
+      state = reduceViewState(
+        state,
+        { type: 'moveTaskFocus', direction, extend: direction === 'last' },
+        context(document),
+      )
+      expect(
+        state.tasks.anchorId === undefined || state.tasks.taskIds.includes(state.tasks.anchorId),
+        `anchor after ${direction}`,
+      ).toBe(true)
+      expect(
+        state.tasks.focusId === undefined || state.tasks.taskIds.includes(state.tasks.focusId),
+        `focus after ${direction}`,
+      ).toBe(true)
+    }
+  })
+
+  it('an empty document is a deterministic no-op', () => {
+    const document = makeDocument({ tasks: [] })
+    const state = createViewState(document)
+    expect(
+      reduceViewState(state, { type: 'moveTaskFocus', direction: 'down' }, context(document)),
+    ).toBe(state)
+  })
+})
+
+// ===========================================================================
+// PROJECT-023 — cell editing intents (begin / update draft / end)
+// ===========================================================================
+
+describe('PROJECT-023 reducer — beginTaskEdit', () => {
+  it('activates the editor with the canonical initial draft and selects the edited row', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'selectTasks', taskIds: [asTaskId('root'), asTaskId('b')] },
+      context(document),
+    )
+    state = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('a1'), field: 'taskName' },
+      context(document),
+    )
+    expect(state.editing).toEqual({
+      taskId: asTaskId('a1'),
+      field: 'taskName',
+      draft: 'a1', // the fixture names tasks by id
+    })
+    // Activating a cell edit selects exactly the edited row (the MS gesture).
+    expect(state.tasks.taskIds).toEqual([asTaskId('a1')])
+    expect(state.tasks.anchorId).toBe(asTaskId('a1'))
+    expect(state.tasks.focusId).toBe(asTaskId('a1'))
+  })
+
+  it('the duration draft follows the schedule-first precedence from the reducer context', () => {
+    const document = outlineDocument()
+    const scheduled = {
+      projectStart: '2026-08-03T09:00:00.000Z',
+      projectFinish: '2026-08-03T17:00:00.000Z',
+      taskSchedules: {
+        b: {
+          taskId: asTaskId('b'),
+          totalSlack: 0,
+          freeSlack: 0,
+          critical: false,
+          duration: asWorkingMinutes(960),
+          scheduledStart: '2026-08-03T09:00:00.000Z',
+          scheduledFinish: '2026-08-04T17:00:00.000Z',
+        },
+      },
+      diagnostics: [],
+    } as unknown as DerivedSchedule
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('b'), field: 'duration' },
+      { document, schedule: scheduled },
+    )
+    expect(state.editing?.draft).toBe('960')
+    state = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('b'), field: 'start' },
+      { document, schedule: scheduled },
+    )
+    expect(state.editing?.draft).toBe('2026-08-03T09:00:00.000Z')
+  })
+
+  it('summary scheduling fields are deterministic no-ops; the summary NAME is editable', () => {
+    const document = outlineDocument() // root is a summary
+    let state = createViewState(document)
+    for (const field of ['duration', 'start', 'finish'] as const) {
+      const attempted = reduceViewState(
+        state,
+        { type: 'beginTaskEdit', taskId: asTaskId('root'), field },
+        context(document),
+      )
+      expect(attempted).toBe(state) // reference-equal no-op
+    }
+    state = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('root'), field: 'taskName' },
+      context(document),
+    )
+    expect(state.editing?.field).toBe('taskName')
+    expect(state.editing?.taskId).toBe(asTaskId('root'))
+  })
+
+  it('an unknown task is a deterministic no-op', () => {
+    const document = outlineDocument()
+    const state = createViewState(document)
+    expect(
+      reduceViewState(
+        state,
+        { type: 'beginTaskEdit', taskId: asTaskId('ghost'), field: 'taskName' },
+        context(document),
+      ),
+    ).toBe(state)
+  })
+
+  it('beginning a new edit replaces an already-active one (one editor at a time)', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('a'), field: 'taskName' },
+      context(document),
+    )
+    state = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('b'), field: 'duration' },
+      context(document),
+    )
+    expect(state.editing).toEqual({
+      taskId: asTaskId('b'),
+      field: 'duration',
+      draft: '480',
+    })
+  })
+})
+
+describe('PROJECT-023 reducer — updateTaskEditDraft / endTaskEdit', () => {
+  it('updates the draft of the active edit', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('a1'), field: 'taskName' },
+      context(document),
+    )
+    state = reduceViewState(
+      state,
+      { type: 'updateTaskEditDraft', draft: 'a1 renamed' },
+      context(document),
+    )
+    expect(state.editing?.draft).toBe('a1 renamed')
+    // The rest of the state is untouched.
+    expect(state.tasks.taskIds).toEqual([asTaskId('a1')])
+  })
+
+  it('updating without an active edit is a reference-equal no-op', () => {
+    const document = outlineDocument()
+    const state = createViewState(document)
+    expect(
+      reduceViewState(state, { type: 'updateTaskEditDraft', draft: 'x' }, context(document)),
+    ).toBe(state)
+  })
+
+  it('ending drops the editing slice and keeps the selection', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('a1'), field: 'taskName' },
+      context(document),
+    )
+    state = reduceViewState(state, { type: 'endTaskEdit' }, context(document))
+    expect('editing' in state).toBe(false)
+    expect(state.tasks.taskIds).toEqual([asTaskId('a1')])
+    expect(state.tasks.focusId).toBe(asTaskId('a1'))
+  })
+
+  it('ending without an active edit is a reference-equal no-op', () => {
+    const document = outlineDocument()
+    const state = createViewState(document)
+    expect(reduceViewState(state, { type: 'endTaskEdit' }, context(document))).toBe(state)
+  })
+
+  it('reconciliation drops an edit whose task no longer exists', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('a1'), field: 'taskName' },
+      context(document),
+    )
+    expect(state.editing).toBeDefined()
+    // Any intent against a document that lost the edited task reconciles
+    // the dead edit away.
+    const smaller = makeDocument({ tasks: [makeTask({ id: 'root' })] })
+    state = reduceViewState(state, { type: 'expandAll' }, { document: smaller })
+    expect('editing' in state).toBe(false)
+  })
+
+  it('the editing intents are deterministic (3× byte-identical runs)', () => {
+    const document = outlineDocument()
+    const run = (): string => {
+      let state = createViewState(document)
+      state = reduceViewState(
+        state,
+        { type: 'moveTaskFocus', direction: 'down' },
+        context(document),
+      )
+      state = reduceViewState(
+        state,
+        { type: 'beginTaskEdit', taskId: asTaskId('a'), field: 'duration' },
+        context(document),
+      )
+      state = reduceViewState(
+        state,
+        { type: 'updateTaskEditDraft', draft: '960' },
+        context(document),
+      )
+      state = reduceViewState(state, { type: 'endTaskEdit' }, context(document))
+      return JSON.stringify(state)
+    }
+    expect(run()).toBe(run())
+    expect(run()).toBe(run())
   })
 })

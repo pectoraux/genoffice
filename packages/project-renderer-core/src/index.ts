@@ -1,20 +1,22 @@
 /**
  * @genoffice/project-renderer-core — the shared Project renderer boundary
- * (PROJECT-021/022).
+ * (PROJECT-021/022/023).
  *
  * Host-independent projection and control layer over the canonical Project
  * domain: view state + intents + reducer, the document/schedule view
  * projection, deterministic timeline math, structural command builders,
  * the renderer session controller (command application, snapshot
- * undo/redo, injected scheduling), and the PROJECT-022 Gantt view models —
+ * undo/redo, injected scheduling), the PROJECT-022 Gantt view models —
  * the virtualized, synchronized task grid and timeline surfaces (bars,
- * milestones, dependency links) in fraction space. Hosts (Electron
- * desktop, web) render these projections and dispatch these intents; the
- * renderer core owns NO Project semantics — scheduling authority stays
- * with the scheduling engine, semantic mutations stay `ProjectCommand`
- * values through the engine, and this package imports only
- * `@genoffice/project-contracts` and `@genoffice/project-engine`
- * (architecture-lock §3/§9/§11/§13).
+ * milestones, dependency links) in fraction space — and the PROJECT-023
+ * selection/editing surface (keyboard focus navigation, cell-edit
+ * activation, and the deterministic draft → semantic-command commit flow
+ * through the session). Hosts (Electron desktop, web) render these
+ * projections and dispatch these intents; the renderer core owns NO
+ * Project semantics — scheduling authority stays with the scheduling
+ * engine, semantic mutations stay `ProjectCommand` values through the
+ * engine, and this package imports only `@genoffice/project-contracts`
+ * and `@genoffice/project-engine` (architecture-lock §3/§9/§11/§13).
  */
 export {
   type ProjectViewState,
@@ -25,7 +27,7 @@ export {
   formatInstant,
   reconcileViewState,
 } from './state.js'
-export { type ProjectViewIntent, type SelectMode } from './intents.js'
+export { type ProjectViewIntent, type SelectMode, type MoveFocusDirection } from './intents.js'
 export { type ViewReducerContext, reduceViewState } from './reduce.js'
 export {
   type TimeAxisBand,
@@ -111,3 +113,16 @@ export {
   buildGanttView,
   hitTestGantt,
 } from './views/gantt-view.js'
+// ---- PROJECT-023 — selection / editing ----
+export {
+  type EditableTaskField,
+  type TaskEditCommit,
+  type TaskEditInvalidReason,
+  type TaskEditing,
+  EDITABLE_TASK_FIELDS,
+  commitTaskEdit,
+  editableTaskFields,
+  initialTaskEditDraft,
+  isTaskFieldEditable,
+} from './editing.js'
+export { type TaskEditFlowOutcome, commitTaskEditThroughSession } from './edit-flow.js'

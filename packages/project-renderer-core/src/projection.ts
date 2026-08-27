@@ -19,6 +19,17 @@
  * of the canonical `Task`; the only derived values are pure projections of
  * canonical structure (visibility from the collapse set, `resourceNames`
  * from the document's assignment array order).
+ *
+ * PROJECT-023 — selection/edit reflection: each row also carries the
+ * interaction-state projection `selected`/`focused`/`editingField` — a
+ * by-value echo of the view state's selection/focus/editing target joined
+ * onto the row the same way `collapsed` is (pure state projection, lock
+ * §11-clean: no scheduling value is involved). The edit DRAFT is live user
+ * input and stays on `state.editing.draft` — the projection reflects only
+ * the edit TARGET (which row, which field). A task selected but hidden by
+ * collapse is NOT projected as a row (visibility rule) — its selection is
+ * retained in the view state (the documented policy: hiding is not
+ * deselecting) and re-projects when expanded.
  */
 import type {
   DerivedSchedule,
@@ -37,12 +48,14 @@ import type {
   TaskType,
 } from '@genoffice/project-contracts'
 import type { ProjectViewState } from './state.js'
+import type { EditableTaskField } from './editing.js'
 
 /**
  * One visible task row: the projection of a canonical `Task` (identity,
  * structure, labeling) joined with its authoritative `TaskSchedule` (when
- * one exists) and the view state (collapse flag). Rows appear in canonical
- * outline order; a task is hidden iff one of its ancestors is collapsed.
+ * one exists) and the view state (collapse flag, PROJECT-023 selection /
+ * focus / edit-target reflection). Rows appear in canonical outline order;
+ * a task is hidden iff one of its ancestors is collapsed.
  */
 export interface ProjectTaskRow {
   readonly taskId: TaskId
@@ -70,6 +83,20 @@ export interface ProjectTaskRow {
   readonly resourceNames: readonly string[]
   /** Whether this row's subtree is collapsed in the view state. */
   readonly collapsed: boolean
+  /** Whether this row's task is in the view state's task selection
+   * (PROJECT-023 reflection — a pure echo of `state.tasks.taskIds`
+   * membership; hiding by collapse does NOT deselect, so a selected-but-
+   * hidden task keeps its selection in state and re-projects as a selected
+   * row when expanded). */
+  readonly selected: boolean
+  /** Whether this row's task is the keyboard focus
+   * (`state.tasks.focusId` — the moveTaskFocus target). */
+  readonly focused: boolean
+  /** The field of the ACTIVE cell edit targeting this row
+   * (`state.editing.field`), present iff the editing target is this row's
+   * task. The live draft text stays on `state.editing.draft` — the
+   * projection reflects the edit TARGET only. */
+  readonly editingField?: EditableTaskField
   /**
    * The VERBATIM authoritative schedule for this task — the exact
    * `TaskSchedule` object from `DerivedSchedule.taskSchedules[taskId]`
@@ -121,6 +148,10 @@ export function projectDocumentView(
   state: ProjectViewState,
 ): ProjectViewProjection {
   const collapsed = new Set(state.collapsed)
+  const selectedTaskIds = new Set(state.tasks.taskIds)
+  const focusedTaskId = state.tasks.focusId
+  const editingTaskId = state.editing?.taskId
+  const editingField = state.editing?.field
   const parents = parentChainOf(document.tasks)
   const resourceNames = new Map<string, Map<string, string>>()
   for (const assignment of document.assignments) {
@@ -156,6 +187,9 @@ export function projectDocumentView(
       ...(task.deadline !== undefined ? { deadline: task.deadline } : {}),
       resourceNames: names !== undefined ? [...names.values()] : [],
       collapsed: collapsed.has(task.id),
+      selected: selectedTaskIds.has(task.id),
+      focused: focusedTaskId === task.id,
+      ...(editingTaskId === task.id && editingField !== undefined ? { editingField } : {}),
       ...(taskSchedule !== undefined ? { schedule: taskSchedule } : {}),
     })
   }
