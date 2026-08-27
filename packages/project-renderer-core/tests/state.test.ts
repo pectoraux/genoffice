@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { asISODateTime, asTaskId } from '@genoffice/project-contracts'
+import { asISODateTime, asTaskId, type TaskId } from '@genoffice/project-contracts'
 import { createViewState, reconcileViewState, parseInstant, formatInstant } from '../src/index.js'
 import {
   makeDependency,
@@ -8,6 +8,26 @@ import {
   makeTask,
   outlineDocument,
 } from './fixtures.js'
+
+/** The documented `TaskSelection` contract (PROJECT-021 review round 2):
+ * `anchorId`/`focusId` are ALWAYS members of `taskIds` when present —
+ * `anchorId === undefined || taskIds.includes(anchorId)` (and likewise for
+ * `focusId`). Reconciliation must restore this invariant from ANY input,
+ * including externally restored or malformed states. */
+function expectSelectionInvariant(selection: {
+  readonly taskIds: readonly TaskId[]
+  readonly anchorId?: TaskId
+  readonly focusId?: TaskId
+}): void {
+  expect(
+    selection.anchorId === undefined || selection.taskIds.includes(selection.anchorId),
+    `anchorId ${String(selection.anchorId)} must be undefined or a member of the surviving selection`,
+  ).toBe(true)
+  expect(
+    selection.focusId === undefined || selection.taskIds.includes(selection.focusId),
+    `focusId ${String(selection.focusId)} must be undefined or a member of the surviving selection`,
+  ).toBe(true)
+}
 
 describe('PROJECT-021 view state creation', () => {
   it('creates an empty selection/collapse state with a deterministic viewport from the properties window', () => {
@@ -107,6 +127,130 @@ describe('PROJECT-021 view state reconciliation', () => {
     })
     const reconciled = reconcileViewState(collapsedState, afterDeletion)
     expect(reconciled.collapsed).toEqual([]) // `a` is a leaf now — pruned
+  })
+
+  it('drops a LIVE but UNSELECTED anchor (selection membership, not mere document existence)', () => {
+    const document = outlineDocument() // live tasks: root, a, a1, b
+    // `b` exists in the document but is NOT in the selection — a state shape
+    // only external restoration (or malformed input) can produce, and one
+    // the old document-existence check wrongly kept:
+    const state = {
+      ...createViewState(document),
+      tasks: { taskIds: [asTaskId('a')], anchorId: asTaskId('b') },
+    }
+    const reconciled = reconcileViewState(state, document)
+    expect(reconciled.tasks.taskIds).toEqual([asTaskId('a')])
+    expect('anchorId' in reconciled.tasks).toBe(false)
+    expectSelectionInvariant(reconciled.tasks)
+  })
+
+  it('drops a LIVE but UNSELECTED focus the same way', () => {
+    const document = outlineDocument()
+    const state = {
+      ...createViewState(document),
+      tasks: { taskIds: [asTaskId('a')], focusId: asTaskId('b') },
+    }
+    const reconciled = reconcileViewState(state, document)
+    expect(reconciled.tasks.taskIds).toEqual([asTaskId('a')])
+    expect('focusId' in reconciled.tasks).toBe(false)
+    expectSelectionInvariant(reconciled.tasks)
+  })
+
+  it('reconciles anchor/focus when a SELECTED task is deleted (independently, keeping surviving members)', () => {
+    const document = outlineDocument()
+    const state = {
+      ...createViewState(document),
+      tasks: {
+        taskIds: [asTaskId('a'), asTaskId('b')],
+        anchorId: asTaskId('b'), // deleted with the document change
+        focusId: asTaskId('b'),
+      },
+    }
+    // The document loses `b` (subtree deleted + reloaded):
+    const afterDeletion = makeDocument({
+      tasks: [
+        makeTask({ id: 'root', outlineLevel: 1, summary: true, wbs: '1' }),
+        makeTask({
+          id: 'a',
+          parentTaskId: asTaskId('root'),
+          outlineLevel: 2,
+          summary: true,
+          wbs: '1.1',
+        }),
+        makeTask({ id: 'a1', parentTaskId: asTaskId('a'), outlineLevel: 3, wbs: '1.1.1' }),
+      ],
+    })
+    const reconciled = reconcileViewState(state, afterDeletion)
+    expect(reconciled.tasks.taskIds).toEqual([asTaskId('a')])
+    expect('anchorId' in reconciled.tasks).toBe(false)
+    expect('focusId' in reconciled.tasks).toBe(false)
+    expectSelectionInvariant(reconciled.tasks)
+    // Anchor and focus reconcile INDEPENDENTLY: a deleted anchor with a
+    // surviving selected focus keeps the focus (and vice versa).
+    const mixed = reconcileViewState(
+      {
+        ...createViewState(document),
+        tasks: {
+          taskIds: [asTaskId('a'), asTaskId('b')],
+          anchorId: asTaskId('b'), // deleted
+          focusId: asTaskId('a'), // survives, stays selected
+        },
+      },
+      afterDeletion,
+    )
+    expect(mixed.tasks.taskIds).toEqual([asTaskId('a')])
+    expect('anchorId' in mixed.tasks).toBe(false)
+    expect(mixed.tasks.focusId).toBe(asTaskId('a'))
+    expectSelectionInvariant(mixed.tasks)
+  })
+
+  it('restores the invariant from an externally malformed restored state (live anchor/focus outside the selection)', () => {
+    const document = outlineDocument()
+    // The review round-2 counterexample shape: taskIds [a, b] with
+    // anchorId/focusId pointing at live-but-unselected tasks. Mere document
+    // existence checks would keep them — violating "anchorId is always a
+    // member of taskIds" on the state hosts are told to reconcile on restore.
+    const restored = {
+      ...createViewState(document),
+      tasks: {
+        taskIds: [asTaskId('a'), asTaskId('b')],
+        anchorId: asTaskId('root'), // live in the document, NOT selected
+        focusId: asTaskId('a1'), // live in the document, NOT selected
+      },
+    }
+    const reconciled = reconcileViewState(restored, document)
+    expect(reconciled.tasks.taskIds).toEqual([asTaskId('a'), asTaskId('b')])
+    expect('anchorId' in reconciled.tasks).toBe(false)
+    expect('focusId' in reconciled.tasks).toBe(false)
+    expectSelectionInvariant(reconciled.tasks)
+  })
+
+  it('proves the final selection invariant across a battery of malformed/edge states', () => {
+    const document = outlineDocument()
+    const battery: Array<{
+      readonly taskIds: readonly TaskId[]
+      readonly anchorId?: TaskId
+      readonly focusId?: TaskId
+    }> = [
+      // live but unselected anchor+focus:
+      { taskIds: [asTaskId('a')], anchorId: asTaskId('b'), focusId: asTaskId('b') },
+      // anchor/focus with an EMPTY selection (anchor live in the document):
+      { taskIds: [], anchorId: asTaskId('a'), focusId: asTaskId('a') },
+      // everything dead:
+      { taskIds: [asTaskId('gone')], anchorId: asTaskId('gone'), focusId: asTaskId('gone') },
+      // well-formed control (must stay intact):
+      { taskIds: [asTaskId('a'), asTaskId('b')], anchorId: asTaskId('a'), focusId: asTaskId('b') },
+      // mixed live/dead/selected/unselected:
+      {
+        taskIds: [asTaskId('a1'), asTaskId('b'), asTaskId('gone')],
+        anchorId: asTaskId('a'), // live, unselected
+        focusId: asTaskId('root'), // live, unselected
+      },
+    ]
+    for (const tasks of battery) {
+      const reconciled = reconcileViewState({ ...createViewState(document), tasks }, document)
+      expectSelectionInvariant(reconciled.tasks) // the invariant itself, per case
+    }
   })
 
   it('drops dependency and resource selections that no longer exist, preserving order', () => {

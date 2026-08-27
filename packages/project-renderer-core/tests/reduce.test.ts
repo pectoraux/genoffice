@@ -430,5 +430,37 @@ describe('PROJECT-021 reducer — determinism and reconciliation', () => {
     state = reduceViewState(state, { type: 'expandAll' }, { document: smaller })
     expect(state.tasks.taskIds).toEqual([])
     expect(state.collapsed).toEqual([])
+    // The selected (and therefore anchored/focused) task died with the
+    // document change — anchor/focus are reconciled away with it:
+    expect('anchorId' in state.tasks).toBe(false)
+    expect('focusId' in state.tasks).toBe(false)
+  })
+
+  it('restores the anchor/focus selection invariant from a malformed state automatically (every reduction reconciles)', () => {
+    const document = outlineDocument()
+    // A state produced OUTSIDE the reducer (a host restored persisted state
+    // and dispatched before running `reconcileViewState`): the anchor/focus
+    // are LIVE tasks but sit OUTSIDE the selection. Any intent — here the
+    // inert `expandAll` — runs reconciliation, which must restore the
+    // documented invariant `anchorId/focusId ∈ taskIds when present`:
+    const malformed = {
+      ...createViewState(document),
+      tasks: {
+        taskIds: [asTaskId('a')],
+        anchorId: asTaskId('b'), // live in the document, NOT selected
+        focusId: asTaskId('root'), // live in the document, NOT selected
+      },
+    }
+    const state = reduceViewState(malformed, { type: 'expandAll' }, context(document))
+    expect(state.tasks.taskIds).toEqual([asTaskId('a')])
+    expect('anchorId' in state.tasks).toBe(false)
+    expect('focusId' in state.tasks).toBe(false)
+    // The final invariant itself, not just the individual expectations:
+    expect(
+      state.tasks.anchorId === undefined || state.tasks.taskIds.includes(state.tasks.anchorId),
+    ).toBe(true)
+    expect(
+      state.tasks.focusId === undefined || state.tasks.taskIds.includes(state.tasks.focusId),
+    ).toBe(true)
   })
 })

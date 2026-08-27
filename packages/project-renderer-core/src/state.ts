@@ -42,7 +42,10 @@ import type {
  * reducer keeps insertion order deterministically). `anchorId` is the
  * shift-extend anchor and `focusId` the most recently focused task (keyboard
  * navigation, PROJECT-023). Both are optional and always members of
- * `taskIds` when present.
+ * `taskIds` when present — an invariant the reducer maintains by construction
+ * and `reconcileViewState` enforces against the SURVIVING selection (a task
+ * that still exists in the document but is not selected can never be the
+ * anchor or the focus).
  */
 export interface TaskSelection {
   readonly taskIds: readonly TaskId[]
@@ -162,7 +165,11 @@ function initialViewport(document: ProjectDocument, schedule?: DerivedSchedule):
  * order); collapse entries whose task is no longer a SUMMARY (deleted
  * subtree — the engine recomputes `summary` — or a leaf id from restored
  * host state) are pruned the same way, keeping the invariant
- * `collapsed ⊆ summary TaskIds`; anchor/focus follow the task selection;
+ * `collapsed ⊆ summary TaskIds`; the task-selection `anchorId`/`focusId` are
+ * validated against the SURVIVING `tasks.taskIds` (mere existence in the
+ * document is not enough — a live-but-unselected anchor/focus, e.g. from a
+ * malformed externally restored state, is dropped, keeping the documented
+ * `TaskSelection` invariant that both are selection members when present);
  * active view-definition references that vanished are cleared. The viewport
  * is time, not an entity reference, and is left untouched.
  *
@@ -184,12 +191,16 @@ export function reconcileViewState(
   const taskSelection: TaskSelection = {
     taskIds: state.tasks.taskIds.filter((id) => taskIds.has(id)),
   }
+  // Anchor/focus must be members of the SURVIVING selection, not merely
+  // live tasks: a restored/malformed state can carry an anchor that exists
+  // in the document while not being selected.
+  const selectedTaskIds = new Set(taskSelection.taskIds)
   const anchorId =
-    state.tasks.anchorId !== undefined && taskIds.has(state.tasks.anchorId)
+    state.tasks.anchorId !== undefined && selectedTaskIds.has(state.tasks.anchorId)
       ? state.tasks.anchorId
       : undefined
   const focusId =
-    state.tasks.focusId !== undefined && taskIds.has(state.tasks.focusId)
+    state.tasks.focusId !== undefined && selectedTaskIds.has(state.tasks.focusId)
       ? state.tasks.focusId
       : undefined
 

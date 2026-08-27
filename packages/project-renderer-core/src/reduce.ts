@@ -9,9 +9,11 @@
  * stricter rule: `collapsed` contains only SUMMARY task ids (leaves have no
  * subtree to hide), enforced here and in `reconcileViewState`. The
  * reconciled invariants hold after every reduction: selection sets contain
- * only live entity ids, the collapsed set contains only live SUMMARY ids,
- * active view references point at live definitions, and the viewport is a
- * well-formed window.
+ * only live entity ids, the task-selection `anchorId`/`focusId` are members
+ * of the surviving `taskIds` when present (validated against the selection,
+ * not mere document existence), the collapsed set contains only live SUMMARY
+ * ids, active view references point at live definitions, and the viewport is
+ * a well-formed window.
  */
 import type {
   DependencyId,
