@@ -481,4 +481,160 @@ test.describe('Review tab — Protection persists through the canonical pipeline
 
     expect(pageErrors).toEqual([])
   })
+
+  test('6: lock-through-ribbon — a locked cell retains its locked state (architect directive: lock/unlock BOTH through the actual ribbon)', async ({
+    page,
+  }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    // Phase 1 — unlock A2 through the ribbon, protect the sheet, save.
+    // (Verified in depth by test 4; here we establish the unlocked state
+    // we will then RE-LOCK through the ribbon.)
+    const fixture = await buildExcelProtectionFixture()
+    writeFileSync('/tmp/e2e-ribbon-protection-relock.xlsx', fixture)
+    await page.setInputFiles('input[type="file"]', '/tmp/e2e-ribbon-protection-relock.xlsx')
+    await expect(page.getByText('Opened e2e-ribbon-protection-relock.xlsx')).toBeVisible({
+      timeout: 30_000,
+    })
+    await page.waitForTimeout(1500)
+
+    const box = page.locator('[data-testid="excel-name-box"]')
+    await box.click()
+    await box.fill('A2')
+    await box.press('Enter')
+    await page.waitForTimeout(400)
+
+    await page
+      .locator('[data-testid="excel-ribbon"] .excel-ribbon-tab', { hasText: 'Review' })
+      .click()
+    await page.waitForTimeout(200)
+
+    await page.getByRole('button', { name: 'Unlock Cell', exact: true }).click()
+    await expect(page.getByText(/Cells unlocked/)).toBeVisible()
+    await page.getByRole('button', { name: 'Protect Sheet', exact: true }).click()
+    await expect(page.getByText(/Sheet protection will be written on save/)).toBeVisible()
+
+    const phase1SaveReq = page.waitForRequest(
+      (r) => r.url().includes('/api/office/workbooks/save') && r.method() === 'POST',
+    )
+    const phase1Saved = await clickSaveAndCaptureDownload(page, 'Save')
+    await phase1SaveReq
+    // Unlocked marker present in the phase-1 file (A2 editable, rest locked).
+    const phase1Styles = await readZipEntry(phase1Saved, 'xl/styles.xml')
+    expect(phase1Styles).toContain('<protection locked="0"/>')
+    const phase1Sheet = await readZipEntry(phase1Saved, 'xl/worksheets/sheet1.xml')
+    expect(phase1Sheet).toContain('<sheetProtection sheet="1" objects="1" scenarios="1"/>')
+
+    // Phase 2 — reopen the unlocked+protected file, then LOCK A2 back
+    // through the actual ribbon (the button the architect's directive
+    // demands: "lock/unlock through the actual ribbon" — BOTH directions).
+    writeFileSync('/tmp/e2e-ribbon-protection-relock-opened.xlsx', phase1Saved)
+    const reopenResponsePromise = page.waitForResponse(
+      (r) => r.url().includes('/api/office/workbooks/open') && r.request().method() === 'POST',
+    )
+    await page.setInputFiles('input[type="file"]', '/tmp/e2e-ribbon-protection-relock-opened.xlsx')
+    await expect(page.getByText('Opened e2e-ribbon-protection-relock-opened.xlsx')).toBeVisible({
+      timeout: 30_000,
+    })
+    const reopenResponse = await reopenResponsePromise
+    const reopened = (await reopenResponse.json()).snapshot as SnapshotView
+    expect(reopened.sheets[0].sheetProtection).toEqual({ protected: true, hasPassword: false })
+    await page.waitForTimeout(1500)
+
+    // Select A2 again and LOCK it through the ribbon.
+    await box.click()
+    await box.fill('A2')
+    await box.press('Enter')
+    await page.waitForTimeout(400)
+
+    await page
+      .locator('[data-testid="excel-ribbon"] .excel-ribbon-tab', { hasText: 'Review' })
+      .click()
+    await page.waitForTimeout(200)
+    await page.getByRole('button', { name: 'Lock Cell', exact: true }).click()
+    await expect(page.getByText(/Cells locked/)).toBeVisible()
+
+    // The save plan carries the canonical protectionLocked=true style edit.
+    const lockSaveReq = page.waitForRequest(
+      (r) => r.url().includes('/api/office/workbooks/save') && r.method() === 'POST',
+    )
+    const lockSaved = await clickSaveAndCaptureDownload(page, 'Save')
+    const lockReq = await lockSaveReq
+    const lockBody = JSON.parse(lockReq.postData() ?? '{}') as {
+      savePlan: {
+        edits?: Array<{
+          sheetName: string
+          row: number
+          column: number
+          writeValue: boolean
+          style?: { protectionLocked?: boolean }
+        }>
+        sheetProtections?: unknown[]
+      }
+    }
+    const lockEdit = lockBody.savePlan.edits?.find(
+      (e) => e.sheetName === 'Ledger' && e.row === 1 && e.column === 0,
+    )
+    expect(lockEdit, 'A2 carries a journaled style edit').toBeDefined()
+    expect(lockEdit!.writeValue).toBe(false)
+    expect(lockEdit!.style?.protectionLocked).toBe(true)
+    // The sheet protection itself was NOT re-journaled (it is already in
+    // the file — the journal carries only the re-lock style edit).
+    expect(lockBody.savePlan.sheetProtections).toBeUndefined()
+
+    // Saved XLSX: A2 references a LOCKED xf — the OOXML default (absence
+    // of <protection locked="0"/> on the cell's OWN xf = locked). The
+    // previously-unlocked xf record may legally remain in cellXfs as an
+    // orphan (append-mostly styles.xml — Excel itself leaves orphans);
+    // what matters is the xf A2 actually references.
+    const lockStyles = await readZipEntry(lockSaved, 'xl/styles.xml')
+    const lockSheetForXf = await readZipEntry(lockSaved, 'xl/worksheets/sheet1.xml')
+    const a2Match = /<c r="A2"[^>]*\bs="(\d+)"/.exec(lockSheetForXf)
+    expect(a2Match, 'A2 carries an explicit style index after the re-lock edit').not.toBeNull()
+    const xfsBlock = /<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/.exec(lockStyles)?.[1] ?? ''
+    const xfRecords = xfsBlock
+      .split(/<xf\b/)
+      .slice(1)
+      .map((body) => `<xf${body}`)
+    const a2Xf = xfRecords[Number(a2Match?.[1])] ?? '(missing)'
+    expect(
+      a2Xf,
+      'A2 references a LOCKED xf — no locked="0" on the referenced record (locked state retained)',
+    ).not.toContain('locked="0"')
+    const lockSheet = await readZipEntry(lockSaved, 'xl/worksheets/sheet1.xml')
+    expect(lockSheet, 'sheet protection survives the re-lock save').toContain(
+      '<sheetProtection sheet="1" objects="1" scenarios="1"/>',
+    )
+
+    // Reopen: the sheet is still protected, A2 is a locked cell under it —
+    // "a locked cell retains its locked state" while the sheet is protected.
+    writeFileSync('/tmp/e2e-ribbon-protection-relocked.xlsx', lockSaved)
+    const finalReopenPromise = page.waitForResponse(
+      (r) => r.url().includes('/api/office/workbooks/open') && r.request().method() === 'POST',
+    )
+    await page.setInputFiles('input[type="file"]', '/tmp/e2e-ribbon-protection-relocked.xlsx')
+    await expect(page.getByText('Opened e2e-ribbon-protection-relocked.xlsx')).toBeVisible({
+      timeout: 30_000,
+    })
+    const finalReopen = await finalReopenPromise
+    const finalSnapshot = (await finalReopen.json()).snapshot as SnapshotView
+    expect(finalSnapshot.sheets[0].sheetProtection).toEqual({ protected: true, hasPassword: false })
+    // Re-check the referenced-xf chain on the final artifact too.
+    const finalA2 = /<c r="A2"[^>]*\bs="(\d+)"/.exec(
+      await readZipEntry(lockSaved, 'xl/worksheets/sheet1.xml'),
+    )
+    const finalXfs = /<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/.exec(lockStyles)?.[1] ?? ''
+    const finalRecords = finalXfs
+      .split(/<xf\b/)
+      .slice(1)
+      .map((body) => `<xf${body}`)
+    expect(finalRecords[Number(finalA2?.[1])] ?? '(missing)').not.toContain('locked="0"')
+
+    expect(pageErrors).toEqual([])
+  })
 })

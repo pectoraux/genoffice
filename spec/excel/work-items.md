@@ -127,7 +127,15 @@ Evidence (correction, 2026-08-26):
 - Mandatory regression suite (all green): excel-structural (2), excel-formula (7), excel-format (3), excel-browser (1), excel-shell (15), ribbon-data (4 — INCLUDING the architect's sort/formula semantic gate), ribbon-data-validation (7), ribbon-filter (5), ribbon-review-notes (5), ribbon-home-persistence (3), ribbon-insert (1), word-browser (1). Total 47/47 local E2E green.
 - Web unit suite: 197/197 pass. Typecheck: exit 0. Prettier: clean.
 - Frozen surfaces untouched: `git diff --stat -- apps/sheets apps/docs apps/shell packages/platform-electron packages/renderer-bridge` is EMPTY.
-- Workflow state: READY → IMPLEMENTING → PR_OPEN → VERIFYING → ARCHITECT_REVIEW → CHANGES REQUIRED → CORRECTION SUBMITTED (current). NOT VERIFIED — pending independent architect verification of the structural-path correction.
+- Workflow state: READY → IMPLEMENTING → PR_OPEN → VERIFYING → ARCHITECT_REVIEW → CHANGES REQUIRED → CORRECTION SUBMITTED → correction MERGED into main (82a87c9, in current main ancestry). NOT VERIFIED — the architect owns that transition.
+
+Verification debt closure evidence (2026-08-27, independent rerun on main):
+
+- 15-point source audit re-confirmed on current main: pure comparison (`dedupe.ts` zero imports), selection-scoped key, header excluded from the seen-set, descending `deleteRows`, NO `setValues` compaction (architecture guard green), zero-removal no-op, undersized fail-closed.
+- Mandatory regression A (B7 `=B6` → B5 `=B4`): E2E test 1 green in all four layers (live model, save plan, saved XML, reopened snapshot).
+- Mandatory regression B (mixed refs): E2E test 2 green — `$D$6→$D$4`, `A6→A4`, `$A6→$A4`, `A$6→A$4`.
+- NEW independent byte proof `packages/xlsx-gateway/tests/xlsx-dedupe-byte-proof.test.ts` (3 tests, package-level, no browser): survivor `<c>` records remain `<f>` formulas, `s=` style indices travel with survivor rows, unrelated rows/cells and unrelated package parts (styles.xml, sharedStrings.xml, other worksheet) byte-identical, zero-op no-op preserves worksheet bytes verbatim, reopened snapshot carries `=B4`.
+- Deployed E2E vs production `genoffice.vercel.app`: 4/4 green (both mandatory regressions through the live HTTPS → serverless → gateway → bytes path).
 
 ### EXCEL-020 — Sheet Protection / Workbook Protection
 
@@ -148,7 +156,16 @@ Evidence (2026-08-26):
 - Mandatory regression suite (all green, 83 browser E2E through the real HTTP stack): excel-browser (1), excel-shell (15), excel-format (3), excel-formula (7), excel-structural (2), ribbon-data (4 — INCLUDING the architect's sort/formula semantic gate), ribbon-data-validation (7), ribbon-filter (5), ribbon-review-notes (5), ribbon-home-persistence (3), ribbon-insert (1), ribbon-view (3), ribbon-remove-duplicates (4 — the EXCEL-018 regression), ribbon-protection (5), word-browser (1) + word-fidelity/image/table/marks/nested-runs (17).
 - Unit suites: xlsx-gateway 567/567, contractor-core 390 passed + 4 skipped (pre-existing), web 204/204 (197 pre-existing + 7 new architecture guards). Typecheck: web app + contractor-core + xlsx-gateway all exit 0. Prettier: all changed files clean.
 - Frozen surfaces untouched: `git diff --stat -- apps/sheets apps/docs apps/shell packages/platform-electron packages/renderer-bridge` is EMPTY.
-- Workflow state: READY → IMPLEMENTING → PR_OPEN → PENDING ARCHITECT REVIEW (current). NOT VERIFIED — the architect owns the VERIFIED decision.
+- Workflow state: READY → IMPLEMENTING → PR_OPEN (#12) → MERGED (bf70fe9). NOT VERIFIED — the architect owns that transition.
+
+Verification debt closure evidence (2026-08-27, independent rerun on main):
+
+- Gateway roundtrip 22/22 (element parsers incl. legacy hash + modern algorithm hash at both levels, read integration, write round-trips, no-op preservation, fail-closed unprotect on both password forms); route validation 12/12; architecture guards 7/7.
+- Read-path source audit: `hasPassword` covers BOTH password forms at BOTH levels; `SheetProtectionError` fail-closed on password-bearing unprotect at sheet level, workbook level, and protected ranges.
+- Lock/unlock BOTH directions through the REAL ribbon: E2E test 4 (unlock) + NEW test 6 (lock — re-lock A2 through the ribbon: journaled `protectionLocked:true` style edit, no redundant `sheetProtections` re-journal, A2 references a LOCKED xf — no `locked="0"` on the referenced record — sheet protection survives, reopen carries protected+locked state). The acceptance condition is the referenced XF state, per the architect's directive.
+- Password fail-closed (E2E test 5): refusal up front, journal clean, no destructive save, original password XML survives verbatim.
+- No-op/toggle-back: toggling protection back to the file's original state drops the pending mutation (architecture-guarded `recordSheetProtection` semantics; E2E test 3).
+- Browser E2E 6/6 local + 6/6 deployed vs production `genoffice.vercel.app`.
 
 ### EXCEL-021 — Tables
 
@@ -172,7 +189,13 @@ Evidence (2026-08-26):
 - Frozen surfaces untouched: `git diff --stat -- apps/sheets apps/docs apps/shell packages/platform-electron packages/renderer-bridge` is EMPTY.
 - CI (run 32989308325 on 257f54b AND run 32990749832 on the evidence commit 563975d — manually dispatched; the pull_request event scheduled no run): **web gate GREEN on both** — typecheck on @contractor/web + @contractor/web-host + @contractor/core, unit suites, and the FULL 89-test browser E2E through the real HTTP stack (all 6 ribbon-table tests + the flipped ribbon-insert individually confirmed in the log). The test job's Lint failure is exactly the documented pre-existing 351 errors (all in frozen apps/docs/pdf/sheets/slides, non-office web screens, and contractor-core commercial domain — ZERO EXCEL-021 files); the e2e job's 10 failures are ALL in the frozen Electron shell suite (contractor/browser-e2e + sheets-* desktop specs, `sandboxed_renderer` launch errors — the same pre-existing condition PR #12 documented; the WEB browser E2E lives in the green web job).
 - Production-build evidence: all 6 table E2E tests pass against the BUILT bundle (`npx vite build` + `vite preview` on :5178 with the dev-server API on :5179, `playwright.preview.config.ts`, 41.1s) — the feature works against the production-served artifact, not just the Vite dev server.
-- Workflow state: READY → IMPLEMENTING → PR_OPEN (#16) → PENDING ARCHITECT REVIEW (current). NOT VERIFIED — the architect owns the VERIFIED decision.
+- Workflow state: READY → IMPLEMENTING → PR_OPEN (#16) → MERGED (e3d4311). NOT VERIFIED — the architect owns that transition.
+
+Verification debt closure evidence (2026-08-27, independent rerun on main):
+
+- Gateway table roundtrip 17/17 (rels-resolved metadata, theme/custom-style palettes, fail-closed per sheet, create→save→reopen, no-op byte preservation); route validation 14/14; architecture guards 9/9.
+- E2E 6/6: import metadata + file-native delete refusal, create → typed wire → `xl/tables/table1.xml` + `<tableParts>` + rel + content-type override → reopen, session-table delete = no-op bytes, structural row insert grows ref + header-row delete fails closed, table-owned filter refuses ordinary filter commands, unrelated edit preserves table parts byte-for-byte.
+- Browser E2E 6/6 local + 6/6 deployed vs production `genoffice.vercel.app`.
 
 ### EXCEL-022 — Images / Drawings
 
@@ -180,8 +203,7 @@ Objective: Import existing worksheet images and supported drawing metadata, rend
 Dependencies: EXCEL-009, EXCEL-021.
 Required verification: media bytes, relationships, anchor position, dimensions, deletion, no-op preservation.
 
-Status: IMPLEMENTING (local implementation complete; PR pending — the sandbox
-lacks GitHub push credentials).
+Status: MERGED (PR #20 @ f5e805d → cb1fff6; both architect blockers fixed pre-merge: public `toBuilder().buildAsync()` read surface + absolute-anchor fail-closed omission). NOT VERIFIED — the architect owns that transition.
 
 Implementation summary:
 
@@ -223,11 +245,27 @@ Implementation summary:
   no media-part manipulation in `apps/web/src` (architecture tests guard
   all of it).
 
+Verification debt closure evidence (2026-08-27, independent rerun on main):
+
+- Public-API audit: ZERO `_image` / private-facade reaches in `apps/web/src`; the image module uses only `FOverGridImage.toBuilder().buildAsync()` (architecture-guarded); the remaining `as unknown as` casts in the runtime are documented public-facade type-narrowing (numfmt/freeze/undo-prototype), none in the image/chart layer.
+- Gateway image tests 20/20 (read path incl. anchor modeling + drawingIndex parity + rotation + unsupported/missing media skip + per-sheet fail-closed + multi-sheet + no-op byte preservation; delete cascade incl. shared rels, shared media via two rels, cross-drawing media, final-image removal, content-type cleanup, unrelated media survival); route validation 19/19; architecture guards green (no drawing/relationship XML in apps/web, type-only gateway imports, canonical visual wire types, private-internals ban).
+- E2E 13/13: import/render, move, resize, insert (full canonical part set), delete cascade, multi-image isolation, save/reopen, no-op byte-for-byte (drawings/rels/media/content-types), relationship chain validity, one-cell fail-closed (renders, refuses edits), multi-sheet + JPEG round-trip, absolute-anchor omission (never relocated).
+- Browser E2E 13/13 local + 13/13 deployed vs production `genoffice.vercel.app`.
+
 ### EXCEL-023 — Charts
 
 Objective: Import supported charts, render them through the shared visual layer, create/edit/delete supported chart types, and persist `chartEdits`.
 Dependencies: EXCEL-022.
 Required verification: chart type, source ranges, dimensions, series, style, reopen.
+Status: MERGED (PR #23 @ c9a02df → ef9ffb6 "Merge EXCEL-023 Charts"). NOT VERIFIED — the architect owns that transition.
+
+Verification debt closure evidence (2026-08-27, independent rerun on main):
+
+- Gateway chart tests 91/91 (chart reader read fidelity + omission cases + byte preservation + locator parity; the full applyChartEdit envelope incl. fail-closed cases); route validation 18/18 (chartEdits wire family + widened visualAdditions exactly-one-payload); architecture guards 6/6 (no chart OOXML in apps/web, canonical families, no private internals, pure-domain-only value imports, ribbon wiring, read/save path wiring).
+- Canonical path audit: the browser never touches chart OOXML — XLSX → gateway chart reader → `WorksheetState.charts` → HTTP → typed browser chart state → `chartEdits`/`visualEdits`/`visualAdditions.chart` → gateway → XLSX (forbidden-pattern scans clean).
+- E2E 9/9 covering the 15 scenarios + fail-closed proofs: import/render with stable identity + typed source ranges, move + resize through `visualEdits`, property edits through `chartEdits` round-trip, create from selection → file-native reopen, delete cascade (chart part removed, unrelated chart survives), no-op byte preservation, unsupported structures omitted (never relocated, bytes preserved), absolute anchors omitted, one-cell move-but-refuse-resize.
+- Dirty-state reconfirmation: a chart edit alone marks the workbook dirty and enables Save (no cell-edit crutch) — E2E-proven.
+- Browser E2E 9/9 local + 9/9 deployed vs production `genoffice.vercel.app` (Excel content identical from ef9ffb61e through the current production deployment).
 
 ### EXCEL-024 — Conditional Formatting
 

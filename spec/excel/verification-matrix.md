@@ -104,9 +104,11 @@ Required:
 - save/reopen;
 - browser + production E2E.
 
-Status: IMPLEMENTING — local verification complete (browser E2E 12/12
-through the real HTTP stack; production E2E and byte inspection remain
-POST-MERGE steps, exactly like EXCEL-018/020/021).
+Status: MERGED (PR #20). Local verification complete AND the post-merge
+steps are now complete (2026-08-27): browser E2E 13/13 locally + 13/13
+against production `genoffice.vercel.app`, ZIP-entry byte inspection in
+suite, independent rerun of gateway (20/20) + route (19/19) + architecture
+guards on current main. Awaiting the architect's VERIFIED decision.
 
 Evidence (local):
 
