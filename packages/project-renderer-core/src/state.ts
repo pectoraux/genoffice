@@ -6,7 +6,9 @@
  * of the timeline is visible, and which canonical view/table/filter/group
  * definitions are active. Desktop (Electron) and web hosts drive the exact
  * same state shape through the same intent reducer (`./reduce.js`), so the
- * two hosts cannot drift apart (R-009).
+ * two hosts cannot drift apart (R-009). The collapsed set carries the
+ * invariant `collapsed ⊆ summary TaskIds` (collapse is a summary-tree
+ * operation), enforced by the reducer and by `reconcileViewState`.
  *
  * Architecture-lock §11 (renderer rule): renderer state may cache projections
  * of canonical state but may NOT own authoritative task dates, dependencies,
@@ -73,7 +75,14 @@ export interface ProjectViewState {
   readonly dependencies: readonly DependencyId[]
   /** Selected resource ids (subset of the document's resources). */
   readonly resources: readonly ResourceId[]
-  /** Collapsed summary-task ids (subset of the document's tasks). */
+  /** Collapsed SUMMARY-task ids. The documented invariant is
+   * `collapsed ⊆ summary TaskIds`: a leaf has no subtree to hide, so it can
+   * never be collapsed. Enforced by the reducer (leaf collapse intents are
+   * deterministic no-ops) and by `reconcileViewState` (which also prunes
+   * entries whose task became a leaf — e.g. its subtree was deleted and the
+   * engine recomputed `summary` — or entries restored from persisted host
+   * state), so the invariant holds after every reduction AND after external
+   * state restoration. (Subset of the document's tasks, always.) */
   readonly collapsed: readonly TaskId[]
   /** The visible timeline window. */
   readonly viewport: TimelineViewport
@@ -150,19 +159,25 @@ function initialViewport(document: ProjectDocument, schedule?: DerivedSchedule):
 /**
  * Reconciles a view state against a document: every entity reference that no
  * longer exists is dropped (deterministically, preserving the surviving
- * order); anchor/focus follow the task selection; active view-definition
- * references that vanished are cleared. The viewport is time, not an entity
- * reference, and is left untouched.
+ * order); collapse entries whose task is no longer a SUMMARY (deleted
+ * subtree — the engine recomputes `summary` — or a leaf id from restored
+ * host state) are pruned the same way, keeping the invariant
+ * `collapsed ⊆ summary TaskIds`; anchor/focus follow the task selection;
+ * active view-definition references that vanished are cleared. The viewport
+ * is time, not an entity reference, and is left untouched.
  *
  * Hosts call this after ANY document replacement (session command, undo,
  * redo, file load) so the cached projections never reference dead entities —
  * the `reduceViewState` reducer applies it automatically after every intent.
+ * Hosts restoring a persisted view state MUST run it once before first use
+ * (it is the security net for states produced outside the reducer).
  */
 export function reconcileViewState(
   state: ProjectViewState,
   document: ProjectDocument,
 ): ProjectViewState {
   const taskIds = new Set(document.tasks.map((task) => task.id))
+  const summaryIds = new Set(document.tasks.filter((task) => task.summary).map((task) => task.id))
   const dependencyIds = new Set(document.dependencies.map((dependency) => dependency.id))
   const resourceIds = new Set(document.resources.map((resource) => resource.id))
 
@@ -186,7 +201,7 @@ export function reconcileViewState(
     },
     dependencies: state.dependencies.filter((id) => dependencyIds.has(id)),
     resources: state.resources.filter((id) => resourceIds.has(id)),
-    collapsed: state.collapsed.filter((id) => taskIds.has(id)),
+    collapsed: state.collapsed.filter((id) => summaryIds.has(id)),
     viewport: state.viewport,
     ...(state.activeViewId !== undefined &&
     document.views.some((view) => view.id === state.activeViewId)

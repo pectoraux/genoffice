@@ -104,6 +104,7 @@ describe('PROJECT-021 architecture — package boundaries', () => {
       'ProjectTaskRow',
       'ProjectViewProjection',
       'buildCreateTaskCommand',
+      'buildCreateTaskInSiblingGroupCommand',
       'buildIndentCommand',
       'buildOutdentCommand',
       'buildDeleteSelectionCommands',

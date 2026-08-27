@@ -47,6 +47,7 @@ export {
 export {
   type TaskInsertPosition,
   buildCreateTaskCommand,
+  buildCreateTaskInSiblingGroupCommand,
   buildDeleteSelectionCommands,
   buildIndentCommand,
   buildOutdentCommand,

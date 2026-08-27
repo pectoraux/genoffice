@@ -196,3 +196,27 @@ export function outlineDocument(): ProjectDocument {
     ],
   })
 }
+
+/** A canonical outline with a THREE-sibling group (p > a1, a2, a3) and two
+ * roots — the non-last-anchor counterexample fixture for the CreateTask
+ * insert-position semantics: `a2` and `root1` are anchors that are NOT the
+ * last member of their sibling group, so an append lands after a3/root2
+ * respectively (PROJECT-021 review round 1). */
+export function multiSiblingDocument(): ProjectDocument {
+  return makeDocument({
+    tasks: [
+      makeTask({ id: 'root1', outlineLevel: 1, summary: true, wbs: '1' }),
+      makeTask({
+        id: 'p',
+        parentTaskId: asTaskId('root1'),
+        outlineLevel: 2,
+        summary: true,
+        wbs: '1.1',
+      }),
+      makeTask({ id: 'a1', parentTaskId: asTaskId('p'), outlineLevel: 3, wbs: '1.1.1' }),
+      makeTask({ id: 'a2', parentTaskId: asTaskId('p'), outlineLevel: 3, wbs: '1.1.2' }),
+      makeTask({ id: 'a3', parentTaskId: asTaskId('p'), outlineLevel: 3, wbs: '1.1.3' }),
+      makeTask({ id: 'root2', outlineLevel: 1, wbs: '2' }),
+    ],
+  })
+}

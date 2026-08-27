@@ -5,10 +5,13 @@
  * produces the same next state. Hosts dispatch `ProjectViewIntent` values;
  * the reducer validates every entity reference against the live document and
  * ignores (deterministically — the state is returned unchanged) any intent
- * that references an entity that does not exist. The reconciled invariant
- * holds after every reduction: selection/collapse sets contain only live
- * entity ids, active view references point at live definitions, and the
- * viewport is a well-formed window.
+ * that references an entity that does not exist. Collapse intents carry a
+ * stricter rule: `collapsed` contains only SUMMARY task ids (leaves have no
+ * subtree to hide), enforced here and in `reconcileViewState`. The
+ * reconciled invariants hold after every reduction: selection sets contain
+ * only live entity ids, the collapsed set contains only live SUMMARY ids,
+ * active view references point at live definitions, and the viewport is a
+ * well-formed window.
  */
 import type {
   DependencyId,
@@ -115,6 +118,12 @@ export function reduceViewState(
 ): ProjectViewState {
   const document = context.document
   const exists = (taskId: TaskId): boolean => document.tasks.some((task) => task.id === taskId)
+  /** Collapse is a summary-tree operation: the documented state invariant is
+   * `collapsed ⊆ summary TaskIds` — a leaf task has no subtree to hide, so
+   * collapse intents referencing leaves are deterministic no-ops just like
+   * unknown ids. */
+  const isSummary = (taskId: TaskId): boolean =>
+    document.tasks.some((task) => task.id === taskId && task.summary)
 
   let next: ProjectViewState
   switch (intent.type) {
@@ -164,7 +173,9 @@ export function reduceViewState(
       break
     }
     case 'toggleCollapse': {
-      if (!exists(intent.taskId)) return state
+      // Summary-only: a leaf or unknown id is a deterministic no-op (the
+      // state is returned unchanged, reference-equal).
+      if (!isSummary(intent.taskId)) return state
       next = {
         ...state,
         collapsed: state.collapsed.includes(intent.taskId)
@@ -174,7 +185,9 @@ export function reduceViewState(
       break
     }
     case 'setCollapsed': {
-      const valid = [...new Set(intent.taskIds)].filter(exists)
+      // Summary-only: leaf ids are ignored (they can never be collapsed;
+      // removal requests for them are no-ops by the same invariant).
+      const valid = [...new Set(intent.taskIds)].filter(isSummary)
       next = {
         ...state,
         collapsed: intent.collapsed

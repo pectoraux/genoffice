@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { asISODateTime, asTaskId } from '@genoffice/project-contracts'
 import { createViewState, reduceViewState } from '../src/index.js'
-import { makeDocument, makeTask, outlineDocument } from './fixtures.js'
+import { makeDocument, makeTask, multiSiblingDocument, outlineDocument } from './fixtures.js'
 
 const context = (document = outlineDocument()) => ({ document })
 
@@ -188,6 +188,78 @@ describe('PROJECT-021 reducer — collapse', () => {
     state = reduceViewState(state, { type: 'collapseAll' }, context(document))
     expect(state.collapsed).toEqual([asTaskId('root'), asTaskId('a')])
     state = reduceViewState(state, { type: 'expandAll' }, context(document))
+    expect(state.collapsed).toEqual([])
+  })
+
+  it('toggleCollapse on a LEAF task is a deterministic no-op (collapsed ⊆ summaries)', () => {
+    const document = outlineDocument() // leaves: a1, b; summaries: root, a
+    const state = createViewState(document)
+    for (const leaf of [asTaskId('a1'), asTaskId('b')]) {
+      const unchanged = reduceViewState(
+        state,
+        { type: 'toggleCollapse', taskId: leaf },
+        context(document),
+      )
+      expect(unchanged).toBe(state) // reference-equal: the state is returned untouched
+    }
+  })
+
+  it('setCollapsed ignores LEAF ids in both directions (collapsed ⊆ summaries)', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      {
+        type: 'setCollapsed',
+        taskIds: [asTaskId('root'), asTaskId('a1'), asTaskId('b')],
+        collapsed: true,
+      },
+      context(document),
+    )
+    expect(state.collapsed).toEqual([asTaskId('root')]) // leaves filtered out
+    // Removal requests naming leaves are no-ops under the same invariant:
+    state = reduceViewState(
+      state,
+      { type: 'setCollapsed', taskIds: [asTaskId('b')], collapsed: false },
+      context(document),
+    )
+    expect(state.collapsed).toEqual([asTaskId('root')])
+  })
+
+  it('collapseAll selects exactly the summaries — leaves can never enter the set', () => {
+    const document = multiSiblingDocument() // summaries: root1, p; leaves: a1, a2, a3, root2
+    const state = reduceViewState(
+      createViewState(document),
+      { type: 'collapseAll' },
+      context(document),
+    )
+    expect(state.collapsed).toEqual([asTaskId('root1'), asTaskId('p')])
+    for (const leaf of [asTaskId('a1'), asTaskId('a2'), asTaskId('a3'), asTaskId('root2')]) {
+      expect(state.collapsed).not.toContain(leaf)
+    }
+  })
+
+  it('reconciles a collapsed summary that became a LEAF (subtree deleted, summary recomputed)', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'toggleCollapse', taskId: asTaskId('a') },
+      context(document),
+    )
+    expect(state.collapsed).toEqual([asTaskId('a')])
+    // The document loses a's subtree: the engine recomputed `summary`, so `a`
+    // is now a leaf and can no longer stay in the collapsed set.
+    const afterDeletion = makeDocument({
+      tasks: [
+        makeTask({ id: 'root', outlineLevel: 1, summary: true, wbs: '1' }),
+        makeTask({ id: 'a', parentTaskId: asTaskId('root'), outlineLevel: 2, wbs: '1.1' }),
+        makeTask({ id: 'b', parentTaskId: asTaskId('root'), outlineLevel: 2, wbs: '1.2' }),
+      ],
+    })
+    // The reducer applies reconciliation automatically on the next intent
+    // dispatched against the replaced document — the leaf `a` is pruned:
+    state = reduceViewState(state, { type: 'clearSelection' }, { document: afterDeletion })
     expect(state.collapsed).toEqual([])
   })
 })

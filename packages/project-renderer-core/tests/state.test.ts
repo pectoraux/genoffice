@@ -67,7 +67,7 @@ describe('PROJECT-021 view state reconciliation', () => {
         anchorId: asTaskId('gone'),
         focusId: asTaskId('a'),
       },
-      collapsed: [asTaskId('gone'), asTaskId('b')],
+      collapsed: [asTaskId('gone'), asTaskId('b'), asTaskId('a')],
       dependencies: [],
       resources: [],
     }
@@ -75,7 +75,38 @@ describe('PROJECT-021 view state reconciliation', () => {
     expect(reconciled.tasks.taskIds).toEqual([asTaskId('a')])
     expect('anchorId' in reconciled.tasks).toBe(false)
     expect(reconciled.tasks.focusId).toBe(asTaskId('a'))
-    expect(reconciled.collapsed).toEqual([asTaskId('b')])
+    // `gone` does not exist and `b` is a LEAF (collapsed ⊆ summaries);
+    // only the surviving summary `a` stays:
+    expect(reconciled.collapsed).toEqual([asTaskId('a')])
+  })
+
+  it('prunes collapsed LEAF entries even when the task still exists (collapsed ⊆ summaries)', () => {
+    const document = outlineDocument() // summaries: root, a; leaves: a1, b
+    // A restored host state that predates the invariant (persisted view
+    // state is host-owned and may be stale — PROJECT-021 persistence rule):
+    const restored = {
+      ...createViewState(document),
+      collapsed: [asTaskId('b'), asTaskId('root'), asTaskId('a1')],
+    }
+    const reconciled = reconcileViewState(restored, document)
+    expect(reconciled.collapsed).toEqual([asTaskId('root')]) // leaves pruned
+  })
+
+  it('prunes a collapsed summary whose subtree was deleted (engine recomputed summary → leaf)', () => {
+    const document = outlineDocument()
+    const collapsedState = {
+      ...createViewState(document),
+      collapsed: [asTaskId('a')], // `a` is a summary here (a > a1)
+    }
+    const afterDeletion = makeDocument({
+      tasks: [
+        makeTask({ id: 'root', outlineLevel: 1, summary: true, wbs: '1' }),
+        makeTask({ id: 'a', parentTaskId: asTaskId('root'), outlineLevel: 2, wbs: '1.1' }),
+        makeTask({ id: 'b', parentTaskId: asTaskId('root'), outlineLevel: 2, wbs: '1.2' }),
+      ],
+    })
+    const reconciled = reconcileViewState(collapsedState, afterDeletion)
+    expect(reconciled.collapsed).toEqual([]) // `a` is a leaf now — pruned
   })
 
   it('drops dependency and resource selections that no longer exist, preserving order', () => {

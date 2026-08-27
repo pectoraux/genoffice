@@ -84,41 +84,71 @@ export function defaultNewTask(identity: { id: TaskId; uid: number }): Task {
   }
 }
 
-/** Where a new task is inserted: as the last child of `parentId`, as the
- * sibling after `afterTaskId`, or as the last root task when neither is
- * given. `afterTaskId` wins when both are provided (they are alternative
- * gestures); `undefined` fields are omitted so the canonical shape stays
- * clean. */
-export interface TaskInsertPosition {
-  readonly parentId?: TaskId
-  readonly afterTaskId?: TaskId
-}
+/**
+ * Where a renderer-created task is appended. The canonical `CreateTask`
+ * command (PROJECT-007) ALWAYS places a new task as the LAST child of its
+ * parent — or as the last root task: the frozen command union has NO
+ * insertion index/position field, so "insert immediately after a specific
+ * sibling" is NOT expressible. This type deliberately models exactly the two
+ * positions the engine can execute (a discriminated union, so the API cannot
+ * promise a row-position insert it cannot deliver); the renderer core does
+ * not invent a second insertion model (lock §9/§11).
+ */
+export type TaskInsertPosition =
+  /** Append as the LAST root task (after every existing root). */
+  | { readonly kind: 'lastRoot' }
+  /** Append as the LAST child of `parentId` — after every existing sibling
+   * of that parent, never between two existing siblings. The engine is the
+   * validation authority: a nonexistent `parentId` surfaces as the engine's
+   * `MISSING_PARENT` rejection through the session, not a builder error. */
+  | { readonly kind: 'lastChildOf'; readonly parentId: TaskId }
 
 /**
  * Builds the `CreateTask` command for a new task at the given position:
  * identity allocated deterministically from the document, canonical
- * creation defaults, and the parent wiring derived from the position
- * (afterTaskId → the same parent as the anchor task; parentId → the named
- * parent). The engine recomputes all derived fields and enforces every
- * semantic rule on acceptance.
+ * creation defaults, and the parent wiring from the explicit position.
+ * The engine recomputes all derived fields and enforces every semantic
+ * rule on acceptance.
  */
 export function buildCreateTaskCommand(
   document: ProjectDocument,
-  position: TaskInsertPosition = {},
+  position: TaskInsertPosition = { kind: 'lastRoot' },
 ): ProjectCommand {
   const identity = nextTaskIdentity(document)
   const task = defaultNewTask(identity)
-  if (position.afterTaskId !== undefined) {
-    const anchor = document.tasks.find((candidate) => candidate.id === position.afterTaskId)
-    if (anchor !== undefined && anchor.parentTaskId !== undefined) {
-      return { type: 'CreateTask', task: { ...task, parentTaskId: anchor.parentTaskId } }
-    }
-    return { type: 'CreateTask', task }
-  }
-  if (position.parentId !== undefined) {
+  if (position.kind === 'lastChildOf') {
     return { type: 'CreateTask', task: { ...task, parentTaskId: position.parentId } }
   }
   return { type: 'CreateTask', task }
+}
+
+/**
+ * Builds the `CreateTask` command for the outline gesture "create a new
+ * task in this row's sibling group": the new task joins the ANCHOR's
+ * sibling group — the same parent as the anchor (the root level when the
+ * anchor is a root task). The executable position is append-as-LAST-member
+ * of that group: the new task lands after the anchor's LAST sibling, NOT
+ * immediately after the anchor — the frozen `CreateTask` command cannot
+ * express a row-position insert between existing siblings, and the
+ * renderer core never simulates one (it computes the position ONCE here so
+ * two hosts cannot diverge over the anchor→parent mapping).
+ *
+ * Returns `undefined` when the anchor does not exist (a disabled gesture —
+ * the same contract as `buildIndentCommand`/`buildOutdentCommand`; the
+ * host never invents a position).
+ */
+export function buildCreateTaskInSiblingGroupCommand(
+  document: ProjectDocument,
+  anchorTaskId: TaskId,
+): ProjectCommand | undefined {
+  const anchor = document.tasks.find((candidate) => candidate.id === anchorTaskId)
+  if (anchor === undefined) return undefined
+  return buildCreateTaskCommand(
+    document,
+    anchor.parentTaskId !== undefined
+      ? { kind: 'lastChildOf', parentId: anchor.parentTaskId }
+      : { kind: 'lastRoot' },
+  )
 }
 
 /**
