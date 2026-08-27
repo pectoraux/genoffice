@@ -62,10 +62,21 @@ export type MenuCommandId =
   | 'view.collapse'
   | 'view.expand'
 
-/** The result of the native open flow: the chosen path and its raw bytes. */
+/**
+ * The result of a bounded native read: capped raw bytes, or the transport
+ * error (oversized / missing / unreadable). Errors are VALUES, never
+ * throws — and the error variant carries NO bytes, so the renderer can
+ * NEVER receive uncapped file contents: one `NativeReadResult` is the only
+ * shape file content crosses the bridge in, on every read surface.
+ */
+export type NativeReadResult =
+  { readonly ok: true; readonly bytes: Uint8Array } | { readonly ok: false; readonly error: string }
+
+/** The result of the native open flow: the chosen path plus its bounded
+ * read (null = the user cancelled the dialog). */
 export interface OpenFileSelection {
   readonly path: string
-  readonly bytes: Uint8Array
+  readonly read: NativeReadResult
 }
 
 /** The unsaved-changes dialog answer. */
@@ -84,12 +95,13 @@ export interface DesktopAppInfo {
  * under jsdom with an in-memory fake.
  */
 export interface ProjectDesktopBridge {
-  /** Native open dialog (`.gproj` / MSPDI XML filters) + file read. */
+  /** Native open dialog (`.gproj` / MSPDI XML filters) + the bounded read. */
   pickOpenFile(): Promise<OpenFileSelection | null>
   /** Native save dialog; returns the chosen path or null (cancelled). */
   pickSaveFile(defaultName: string): Promise<string | null>
-  /** Reads raw bytes at an absolute path (argv / second-instance opens). */
-  readFile(path: string): Promise<Uint8Array>
+  /** The bounded read at an absolute path (argv / second-instance opens).
+   * Read errors are returned, never thrown — and never uncapped bytes. */
+  readFile(path: string): Promise<NativeReadResult>
   /** Writes raw bytes atomically-enough for the desktop flow; errors are
    * returned, never thrown, so the renderer's status surface can show them. */
   writeFile(path: string, bytes: Uint8Array): Promise<{ ok: boolean; error?: string }>

@@ -386,6 +386,14 @@ export function createProjectDesktopApp(deps: AppDependencies): ProjectDesktopAp
     )
   }
 
+  /** A failed host read (oversized/missing/unreadable): the current
+   * document survives untouched — the failed read's bytes never existed
+   * on this side of the bridge. */
+  function failOpen(message: string): void {
+    state = { ...state, status: { kind: 'error', text: `Open failed: ${message}` } }
+    render()
+  }
+
   /** Saves; returns whether the document is now persisted. */
   async function saveFlow(saveAs: boolean): Promise<boolean> {
     let path = state.filePath
@@ -437,7 +445,11 @@ export function createProjectDesktopApp(deps: AppDependencies): ProjectDesktopAp
       if (!(await confirmUnsaved())) return
       const selection = await bridge.pickOpenFile()
       if (selection === null) return
-      openPath(selection.path, selection.bytes)
+      if (!selection.read.ok) {
+        failOpen(selection.read.error)
+        return
+      }
+      openPath(selection.path, selection.read.bytes)
       return
     }
     await saveFlow(action === 'saveAs')
@@ -505,16 +517,15 @@ export function createProjectDesktopApp(deps: AppDependencies): ProjectDesktopAp
     bridge.onCloseRequested(() => void handleCloseRequested())
     bridge.onOpenRequested(async (path) => {
       if (!(await confirmUnsaved())) return
-      try {
-        const bytes = await bridge.readFile(path)
-        openPath(path, bytes)
-      } catch (error) {
-        state = {
-          ...state,
-          status: { kind: 'error', text: `Open failed: ${String(error)}` },
-        }
-        render()
+      // Read errors are values (the bridge contract): an oversized,
+      // missing, or unreadable path surfaces the transport error and the
+      // current document survives — uncapped bytes never arrive here.
+      const read = await bridge.readFile(path)
+      if (!read.ok) {
+        failOpen(read.error)
+        return
       }
+      openPath(path, read.bytes)
     })
     render()
   }

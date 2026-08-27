@@ -16,6 +16,7 @@ import { fitViewport } from '@genoffice/project-renderer-core'
 import type {
   DiscardChoice,
   MenuCommandId,
+  NativeReadResult,
   OpenFileSelection,
   ProjectDesktopBridge,
 } from '../../src/shared/ipc.js'
@@ -27,11 +28,17 @@ const flush = async (): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-/** The in-memory bridge fake: config-driven behavior, observable calls. */
+/** The in-memory bridge fake: config-driven behavior, observable calls.
+ * The read surfaces mirror the REAL contract: `NativeReadResult` values
+ * (errors are values, never throws — the real main process returns the
+ * bounded-read outcome for every read, so the fake's `readFile` never
+ * rejects and never fabricates uncapped bytes). */
 interface BridgeConfig {
   readonly pickOpenFile?: () => Promise<OpenFileSelection | null>
   readonly pickSavePath?: string | null
   readonly discardChoice?: DiscardChoice
+  /** Overrides the in-memory readFile behavior (default: files map / ENOENT). */
+  readonly readFile?: (path: string) => NativeReadResult
 }
 
 function fakeBridge(config: BridgeConfig = {}) {
@@ -39,6 +46,7 @@ function fakeBridge(config: BridgeConfig = {}) {
   const calls = {
     pickOpenFile: 0,
     pickSaveFile: 0,
+    readFile: [] as string[],
     writeFile: [] as string[],
     confirmDiscard: [] as string[],
     approveClose: 0,
@@ -53,9 +61,13 @@ function fakeBridge(config: BridgeConfig = {}) {
       return config.pickSavePath ?? null
     },
     readFile: async (path) => {
+      calls.readFile.push(path)
+      if (config.readFile) return config.readFile(path)
       const bytes = files.get(path)
-      if (bytes === undefined) throw new Error(`ENOENT: ${path}`)
-      return bytes
+      if (bytes === undefined) {
+        return { ok: false, error: `ENOENT: no such file or directory, open '${path}'` }
+      }
+      return { ok: true, bytes }
     },
     writeFile: async (path, bytes) => {
       calls.writeFile.push(path)
@@ -325,7 +337,10 @@ describe('open through the bridge + canonical adapter', () => {
     const source = newProjectDocument('Opened Fixture')
     const exported = exportDocumentBytes(source, 'gproj')
     const { bridge, calls } = fakeBridge({
-      pickOpenFile: async () => ({ path: '/tmp/opened.gproj', bytes: exported.bytes }),
+      pickOpenFile: async () => ({
+        path: '/tmp/opened.gproj',
+        read: { ok: true, bytes: exported.bytes },
+      }),
     })
     const app = createProjectDesktopApp({ bridge, root: mount() })
     app.start()
@@ -340,7 +355,7 @@ describe('open through the bridge + canonical adapter', () => {
     const { bridge } = fakeBridge({
       pickOpenFile: async () => ({
         path: '/tmp/broken.gproj',
-        bytes: new TextEncoder().encode('not a project'),
+        read: { ok: true, bytes: new TextEncoder().encode('not a project') },
       }),
       discardChoice: 'discard',
     })
@@ -356,7 +371,7 @@ describe('open through the bridge + canonical adapter', () => {
   it('the argv open path (onOpenRequested) loads through readFile', async () => {
     const source = newProjectDocument('Argv Doc')
     const exported = exportDocumentBytes(source, 'gproj')
-    const { bridge, files } = fakeBridge()
+    const { bridge, files, calls } = fakeBridge()
     files.set('/tmp/argv.gproj', exported.bytes)
     let openHandler: ((path: string) => void) | undefined
     const app = createProjectDesktopApp({
@@ -371,8 +386,82 @@ describe('open through the bridge + canonical adapter', () => {
     app.start()
     expect(openHandler).toBeDefined()
     await openHandler!('/tmp/argv.gproj')
+    expect(calls.readFile).toEqual(['/tmp/argv.gproj'])
     expect(app.state.filePath).toBe('/tmp/argv.gproj')
     expect(document.querySelector('[data-testid="file-label"]')?.textContent).toBe('argv.gproj')
+  })
+
+  it('an oversized picker read surfaces the transport cap error and keeps the document', async () => {
+    // The picker selected a file over the transport cap: the bridge returns
+    // the bounded-read ERROR (no bytes ever crossed), and the current
+    // document survives by reference.
+    const { bridge, calls } = fakeBridge({
+      pickOpenFile: async () => ({
+        path: '/tmp/oversized.gproj',
+        read: { ok: false, error: 'File exceeds the 104857600 byte limit' },
+      }),
+      discardChoice: 'discard',
+    })
+    const app = createProjectDesktopApp({ bridge, root: mount() })
+    app.start()
+    key(app, 'Insert')
+    const documentBefore = app.state.session.document
+    await app.execute({ kind: 'file', action: 'open' })
+    expect(calls.pickOpenFile).toBe(1)
+    expect(statusText()).toContain('Open failed')
+    expect(statusText()).toContain('File exceeds the 104857600 byte limit')
+    // The renderer never received content: the session is untouched.
+    expect(app.state.session.document).toBe(documentBefore)
+    expect(rows()).toHaveLength(1)
+    expect(app.state.filePath).toBe(null)
+  })
+
+  it('an oversized argv read (onOpenRequested) surfaces the cap error, session untouched', async () => {
+    const { bridge, calls } = fakeBridge({
+      readFile: () => ({ ok: false, error: 'File exceeds the 104857600 byte limit' }),
+      discardChoice: 'discard',
+    })
+    let openHandler: ((path: string) => void) | undefined
+    const app = createProjectDesktopApp({
+      bridge: {
+        ...bridge,
+        onOpenRequested: (handler) => {
+          openHandler = handler
+        },
+      },
+      root: mount(),
+    })
+    app.start()
+    key(app, 'Insert')
+    const documentBefore = app.state.session.document
+    await openHandler!('/tmp/oversized-argv.gproj')
+    expect(calls.readFile).toEqual(['/tmp/oversized-argv.gproj'])
+    expect(statusText()).toContain('Open failed')
+    expect(statusText()).toContain('File exceeds the 104857600 byte limit')
+    expect(app.state.session.document).toBe(documentBefore)
+    expect(rows()).toHaveLength(1)
+  })
+
+  it('a missing argv path surfaces the read error (ENOENT) without touching the session', async () => {
+    const { bridge, calls } = fakeBridge()
+    let openHandler: ((path: string) => void) | undefined
+    const app = createProjectDesktopApp({
+      bridge: {
+        ...bridge,
+        onOpenRequested: (handler) => {
+          openHandler = handler
+        },
+      },
+      root: mount(),
+    })
+    app.start()
+    const documentBefore = app.state.session.document
+    await openHandler!('/tmp/definitely-missing.gproj')
+    expect(calls.readFile).toEqual(['/tmp/definitely-missing.gproj'])
+    expect(statusText()).toContain('Open failed')
+    expect(statusText()).toContain('ENOENT')
+    expect(app.state.session.document).toBe(documentBefore)
+    expect(document.querySelector('[data-testid="empty-state"]')).not.toBeNull()
   })
 })
 

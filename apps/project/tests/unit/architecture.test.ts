@@ -23,6 +23,7 @@
 import { describe, expect, it } from 'vitest'
 import mainIndex from '../../src/main/index.ts?raw'
 import mainMenu from '../../src/main/menu.ts?raw'
+import boundedRead from '../../src/main/bounded-read.ts?raw'
 import preloadIndex from '../../src/preload/index.ts?raw'
 import sharedIpc from '../../src/shared/ipc.ts?raw'
 import bindings from '../../src/renderer/bindings.ts?raw'
@@ -44,6 +45,7 @@ const rendererSources: Record<string, string> = {
 const allHostSources: Record<string, string> = {
   'main/index.ts': mainIndex,
   'main/menu.ts': mainMenu,
+  'main/bounded-read.ts': boundedRead,
   'preload/index.ts': preloadIndex,
   'shared/ipc.ts': sharedIpc,
   'renderer/bindings.ts': bindings,
@@ -219,6 +221,49 @@ describe('the bridge and the IPC contract stay in lockstep', () => {
   it('the preload exposes exactly the contextBridge surface', () => {
     expect(preloadIndex.includes('contextBridge.exposeInMainWorld')).toBe(true)
     expect((preloadIndex.match(/ipcRenderer\.invoke/g) ?? []).length).toBe(6)
+  })
+})
+
+describe('the canonical bounded native read (PROJECT-027 correction)', () => {
+  it('every native read routes through the ONE bounded helper (both IPC surfaces)', () => {
+    expect(mainIndex.includes('boundedReadFile(')).toBe(true)
+    // Exactly two call sites: the pickOpenFile handler and the readFile
+    // (argv/second-instance) handler — the two read surfaces share one policy.
+    expect((mainIndex.match(/boundedReadFile\(/g) ?? []).length).toBe(2)
+  })
+
+  it('the raw Node read primitive is not imported anywhere in the host main', () => {
+    // With the raw readFile import gone, no handler can bypass the cap.
+    expect(/import\s*\{[^}]*\breadFile\b[^}]*\}\s*from\s*'node:fs\/promises'/.test(mainIndex)).toBe(
+      false,
+    )
+    expect(/\breadFile\(/.test(mainIndex)).toBe(false)
+  })
+
+  it('the transport cap is defined exactly once (bounded-read.ts)', () => {
+    expect(boundedRead.includes('export const MAX_FILE_BYTES')).toBe(true)
+    for (const [name, source] of Object.entries(allHostSources)) {
+      if (name === 'main/bounded-read.ts') continue
+      expect(
+        source.includes('MAX_FILE_BYTES ='),
+        `${name} must not re-define the transport cap (the helper owns it)`,
+      ).toBe(false)
+    }
+  })
+
+  it('the bounded helper is pure Node transport (no Electron, no @genoffice)', () => {
+    expect(/from 'electron'/.test(boundedRead)).toBe(false)
+    expect(/from '@genoffice\//.test(boundedRead)).toBe(false)
+  })
+
+  it('userData is installed BEFORE the single-instance lock is requested', () => {
+    // The lock is keyed on the userData path: installing the path after the
+    // lock request would key every scratch/isolated profile's lock on the
+    // REAL profile (the review finding — E2E isolation would be fictional).
+    const setPathAt = mainIndex.indexOf("app.setPath('userData'")
+    const lockAt = mainIndex.indexOf('app.requestSingleInstanceLock()')
+    expect(setPathAt).toBeGreaterThanOrEqual(0)
+    expect(lockAt).toBeGreaterThan(setPathAt)
   })
 })
 

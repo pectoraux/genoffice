@@ -3,11 +3,12 @@
  *
  * NATIVE TRANSPORT ONLY (architecture-lock §3): this process owns the
  * window/lifecycle integration, the native menu (activation forwarding),
- * the native file dialogs, raw filesystem reads/writes, and the window
- * close guard. It NEVER imports a `@genoffice/project-*` package and never
- * sees a `ProjectDocument` — documents cross the boundary as raw bytes and
- * the canonical file adapters run renderer-side (the discipline suite
- * asserts the import surface).
+ * the native file dialogs, size-capped raw filesystem reads/writes (every
+ * read crosses the ONE canonical bounded helper — bounded-read.ts), and
+ * the window close guard. It NEVER imports a `@genoffice/project-*`
+ * package and never sees a `ProjectDocument` — documents cross the
+ * boundary as raw bytes and the canonical file adapters run renderer-side
+ * (the discipline suite asserts the import surface).
  *
  * Close guard: the window 'close' event is prevented once and forwarded to
  * the renderer, which owns the dirty state and the save flow. The renderer
@@ -15,18 +16,15 @@
  * renderer cannot veto shutdown — the guard auto-approves in that case.
  */
 import { BrowserWindow, Menu, app, dialog, ipcMain, shell } from 'electron'
-import { readFile, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { PROJECT_FILE_FILTERS, PROJECT_IPC } from '../shared/ipc.js'
 import type { MenuCommandId } from '../shared/ipc.js'
+import { MAX_FILE_BYTES, boundedReadFile } from './bounded-read.js'
 import { projectMenuTemplate, sendMenuCommand } from './menu.js'
 
 /** File extensions the host opens (matches the canonical adapters). */
 const OPEN_EXTENSIONS = new Set(['gproj', 'xml'])
-
-/** The maximum size the host will read or write (defense in depth; the
- * canonical adapters carry their own caps — this is transport hygiene). */
-const MAX_FILE_BYTES = 100 * 1024 * 1024
 
 let mainWindow: BrowserWindow | null = null
 /** Set once the renderer approved a pending close (close-guard handshake). */
@@ -110,7 +108,8 @@ function createWindow(): void {
 
 /** Registers the native-transport IPC handlers (once per app lifetime). */
 function registerIpcHandlers(): void {
-  // Native open dialog + raw read. Returns null when the user cancelled.
+  // Native open dialog + the canonical bounded read. Returns null when the
+  // user cancelled; read errors (oversized/missing/unreadable) are values.
   ipcMain.handle(PROJECT_IPC.pickOpenFile, async () => {
     const focused = BrowserWindow.getFocusedWindow() ?? mainWindow
     if (focused === null) return null
@@ -121,11 +120,7 @@ function registerIpcHandlers(): void {
     })
     const path = selection.filePaths[0]
     if (selection.canceled || path === undefined) return null
-    const bytes = await readFile(path)
-    if (bytes.byteLength > MAX_FILE_BYTES) {
-      return { path, error: `File exceeds the ${MAX_FILE_BYTES} byte limit` }
-    }
-    return { path, bytes }
+    return { path, read: await boundedReadFile(path) }
   })
 
   // Native save dialog: path selection only (bytes come from the renderer).
@@ -140,7 +135,9 @@ function registerIpcHandlers(): void {
     return selection.canceled || selection.filePath === undefined ? null : selection.filePath
   })
 
-  ipcMain.handle(PROJECT_IPC.readFile, async (_event, path: string) => readFile(path))
+  // The argv / second-instance read path — the SAME canonical bounded read
+  // as the picker path (one transport policy; no uncapped read surface).
+  ipcMain.handle(PROJECT_IPC.readFile, async (_event, path: string) => boundedReadFile(path))
 
   ipcMain.handle(PROJECT_IPC.writeFile, async (_event, path: string, bytes: Uint8Array) => {
     try {
@@ -184,6 +181,17 @@ function registerIpcHandlers(): void {
   })
 }
 
+// Profile/E2E isolation FIRST: the single-instance lock is keyed on the
+// userData path, so the path must be installed BEFORE the lock is
+// requested — a scratch dir then carries its own isolated lock and a
+// second launch with a DIFFERENT dir runs independently. (Installing the
+// path after the lock would key the lock on the real profile and let E2E
+// runs collide with each other and with a running install — the review
+// finding; the discipline suite pins this ordering.)
+if (process.env.GENOFFICE_PROJECT_USER_DATA !== undefined) {
+  app.setPath('userData', process.env.GENOFFICE_PROJECT_USER_DATA)
+}
+
 // Single instance: a second launch forwards its document argv to this one.
 if (!app.requestSingleInstanceLock()) {
   app.quit()
@@ -196,11 +204,6 @@ if (!app.requestSingleInstanceLock()) {
       mainWindow.focus()
     }
   })
-
-  // E2E scratch isolation (the shell's GENOFFICE_USER_DATA pattern).
-  if (process.env.GENOFFICE_PROJECT_USER_DATA !== undefined) {
-    app.setPath('userData', process.env.GENOFFICE_PROJECT_USER_DATA)
-  }
 
   app.whenReady().then(() => {
     registerIpcHandlers()

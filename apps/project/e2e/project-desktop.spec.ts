@@ -13,14 +13,16 @@
  * slack, and over-allocation asserted here were derived by the real
  * scheduler, not chosen by hand.
  */
-import { existsSync, readFileSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { closeApp, launchProjectApp } from './launch'
-import { writeE2EFixture } from './fixtures'
+import { closeApp, launchProjectApp, spawnSecondInstance } from './launch'
+import { writeE2EFixture, writePaddedE2EFixture } from './fixtures'
 import { gprojFileAdapter } from '@genoffice/project-file'
+import { MAX_FILE_BYTES } from '../src/main/bounded-read.js'
 
 /** The canonical fixture values (derived by the real scheduler). */
 const T1_START = '2026-01-05 09:00'
@@ -34,6 +36,22 @@ const rowOf = (page: Page, taskId: string) =>
 const cellOf = (page: Page, taskId: string, column: string) =>
   page.locator(`[data-testid="task-row"][data-task-id="${taskId}"] [data-column="${column}"]`)
 const statusText = (page: Page) => page.locator('[data-testid="status-text"]')
+
+/** The transport cap message the bounded helper emits (asserted verbatim
+ * wherever a read is refused). */
+const CAP_ERROR = `File exceeds the ${MAX_FILE_BYTES} byte limit`
+
+/** Padded fixtures are expensive (size-exact real documents); build each
+ * size once per suite run and reuse the on-disk file (read-only usage). */
+const paddedFixtures = new Map<number, Promise<string>>()
+function paddedFixture(totalBytes: number, name: string): Promise<string> {
+  let cached = paddedFixtures.get(totalBytes)
+  if (cached === undefined) {
+    cached = writePaddedE2EFixture(totalBytes, name)
+    paddedFixtures.set(totalBytes, cached)
+  }
+  return cached
+}
 
 /** Dispatches a native menu item click through the REAL application menu. */
 async function clickMenuItem(app: ElectronApplication, id: string): Promise<void> {
@@ -523,6 +541,187 @@ test.describe('E12 — determinism of the rendered app', () => {
         }
         return clone.innerHTML
       })
+    }
+  })
+})
+
+test.describe('E13 — bounded native reads (the single transport cap)', () => {
+  test('an OVERSIZED argv document is refused: the cap error surfaces, nothing loads', async () => {
+    // The oversized file is a VALID document (padded JSON): if its bytes had
+    // crossed the IPC boundary it would have loaded. It must not — the
+    // renderer can never receive uncapped file contents.
+    const oversized = await paddedFixture(MAX_FILE_BYTES + 1, 'oversized.gproj')
+    expect(statSync(oversized).size).toBe(MAX_FILE_BYTES + 1)
+    const { app, page } = await launchProjectApp({ openFile: oversized })
+    try {
+      await expect(statusText(page)).toContainText('Open failed')
+      await expect(statusText(page)).toContainText(CAP_ERROR)
+      await expect(page.locator('[data-testid="empty-state"]')).toBeVisible()
+      await expect(rows(page)).toHaveCount(0)
+      await expect(page.locator('[data-testid="file-label"]')).toHaveText('Untitled')
+    } finally {
+      await closeApp(app)
+    }
+  })
+
+  test('a read at EXACTLY the cap succeeds and delivers exactly the cap', async () => {
+    const boundary = await paddedFixture(MAX_FILE_BYTES, 'boundary.gproj')
+    expect(statSync(boundary).size).toBe(MAX_FILE_BYTES)
+    const { app, page } = await launchProjectApp()
+    try {
+      // The boundary READ through the REAL transport (the preload-exposed
+      // bridge → IPC → the main-process canonical bounded read): ok with
+      // EXACTLY the cap's bytes delivered into the renderer. Driving the
+      // bridge keeps this proof about the TRANSPORT layer: the .gproj
+      // adapter's pure-TS UTF-8 decode is per-byte and cannot parse a
+      // 100 MiB document in bounded memory (a pre-existing project-file
+      // characteristic, out of this increment's scope and unchanged by
+      // the correction — the adapter's own input cap admits the size, so
+      // a future decoder fast-path would make the full load work).
+      const read = await page.evaluate(async (path) => {
+        const bridge = (
+          window as unknown as {
+            projectDesktop: {
+              readFile(
+                filePath: string,
+              ): Promise<{ ok: boolean; bytes?: Uint8Array; error?: string }>
+            }
+          }
+        ).projectDesktop
+        const result = await bridge.readFile(path)
+        return result.ok
+          ? { ok: true, len: result.bytes!.byteLength }
+          : { ok: false, error: result.error }
+      }, boundary)
+      expect(read).toEqual({ ok: true, len: MAX_FILE_BYTES })
+      // The app itself stays healthy after the boundary transfer.
+      await expect(statusText(page)).toHaveText('Ready')
+    } finally {
+      await closeApp(app)
+    }
+  })
+
+  test('an OVERSIZED picker selection is refused; the current document survives', async () => {
+    const fixture = await writeE2EFixture()
+    const oversized = await paddedFixture(MAX_FILE_BYTES + 1, 'oversized.gproj')
+    const { app, page } = await launchProjectApp({ openFile: fixture })
+    try {
+      await expect(rows(page)).toHaveCount(4)
+      await stubOpenDialog(app, oversized)
+      await clickMenuItem(app, 'file.open')
+      await expect(statusText(page)).toContainText('Open failed')
+      await expect(statusText(page)).toContainText(CAP_ERROR)
+      // The current document survives untouched (no bytes crossed).
+      await expect(rows(page)).toHaveCount(4)
+      await expect(page.locator('[data-testid="file-label"]')).toHaveText('e2e-build.gproj')
+    } finally {
+      await closeApp(app)
+    }
+  })
+
+  test('a missing argv path surfaces the read error (ENOENT), nothing loads', async () => {
+    const missing = join(tmpdir(), 'genoffice-project-e2e-missing', 'nope.gproj')
+    const { app, page } = await launchProjectApp({ openFile: missing })
+    try {
+      await expect(statusText(page)).toContainText('Open failed')
+      await expect(statusText(page)).toContainText('ENOENT')
+      await expect(page.locator('[data-testid="empty-state"]')).toBeVisible()
+      await expect(rows(page)).toHaveCount(0)
+    } finally {
+      await closeApp(app)
+    }
+  })
+
+  test('a directory argv path is refused as unreadable (EISDIR), never loaded', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'genoffice-project-e2e-dir-'))
+    const directoryPath = join(dir, 'unreadable.gproj')
+    await mkdir(directoryPath)
+    const { app, page } = await launchProjectApp({ openFile: directoryPath })
+    try {
+      await expect(statusText(page)).toContainText('Open failed')
+      await expect(statusText(page)).toContainText('EISDIR')
+      await expect(rows(page)).toHaveCount(0)
+    } finally {
+      await closeApp(app)
+    }
+  })
+})
+
+test.describe('E14 — single-instance lock isolation', () => {
+  test('a second instance defers (no window) and forwards its argv document to the first', async () => {
+    // ONE shared scratch userData dir: both instances key their lock on it.
+    const shared = await mkdtemp(join(tmpdir(), 'genoffice-project-e2e-shared-'))
+    const doc = await writeE2EFixture('forwarded.gproj')
+    const first = await launchProjectApp({ userDataDir: shared })
+    try {
+      await expect(first.page.locator('[data-testid="empty-state"]')).toBeVisible()
+      // Instance B: same dir, a document in argv. It must exit (it deferred
+      // to A's lock — and never created a window of its own).
+      const code = await spawnSecondInstance({ userDataDir: shared, openFile: doc })
+      expect(code).toBe(0)
+      // B's document arrived in A through the real second-instance → IPC →
+      // bounded-read → adapter → renderer pipeline.
+      await expect(rows(first.page)).toHaveCount(4)
+      await expect(first.page.locator('[data-testid="file-label"]')).toHaveText('forwarded.gproj')
+      await expect(cellOf(first.page, 't1', 'finish')).toHaveText(T1_FINISH_960)
+      // A kept EXACTLY one window (B never opened one).
+      const windows = await first.app.evaluate(
+        ({ BrowserWindow }) => BrowserWindow.getAllWindows().length,
+      )
+      expect(windows).toBe(1)
+    } finally {
+      await closeApp(first.app)
+    }
+  })
+
+  test('a second instance forwards an OVERSIZED document: the cap error surfaces in the first', async () => {
+    const shared = await mkdtemp(join(tmpdir(), 'genoffice-project-e2e-shared-'))
+    const oversized = await paddedFixture(MAX_FILE_BYTES + 1, 'oversized.gproj')
+    const first = await launchProjectApp({ userDataDir: shared })
+    try {
+      await expect(first.page.locator('[data-testid="empty-state"]')).toBeVisible()
+      const code = await spawnSecondInstance({ userDataDir: shared, openFile: oversized })
+      expect(code).toBe(0)
+      // The forwarded read crossed the SAME canonical bounded helper: the
+      // cap error surfaces in A and the empty project survives.
+      await expect(statusText(first.page)).toContainText('Open failed')
+      await expect(statusText(first.page)).toContainText(CAP_ERROR)
+      await expect(rows(first.page)).toHaveCount(0)
+      await expect(first.page.locator('[data-testid="file-label"]')).toHaveText('Untitled')
+    } finally {
+      await closeApp(first.app)
+    }
+  })
+
+  test('two launches with SEPARATE scratch dirs run independently (isolated locks)', async () => {
+    // The discriminating scenario for the ordering correction: with the
+    // userData path installed BEFORE the lock request, each scratch dir
+    // carries its OWN lock — both instances stay alive simultaneously.
+    // (With the path installed after the lock, the second launch would have
+    // keyed its lock on the REAL profile, deferred, and quit.)
+    const docA = await writeE2EFixture('independent-a.gproj')
+    const docB = await writeE2EFixture('independent-b.gproj')
+    const first = await launchProjectApp({ openFile: docA })
+    const second = await launchProjectApp({ openFile: docB })
+    try {
+      await expect(first.page.locator('[data-testid="file-label"]')).toHaveText(
+        'independent-a.gproj',
+      )
+      await expect(second.page.locator('[data-testid="file-label"]')).toHaveText(
+        'independent-b.gproj',
+      )
+      await expect(rows(first.page)).toHaveCount(4)
+      await expect(rows(second.page)).toHaveCount(4)
+      // Each instance owns exactly one window; neither deferred nor died.
+      expect(
+        await first.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length),
+      ).toBe(1)
+      expect(
+        await second.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length),
+      ).toBe(1)
+    } finally {
+      await closeApp(second.app)
+      await closeApp(first.app)
     }
   })
 })
