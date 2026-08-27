@@ -1,10 +1,7 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 
-import {
-  applyCellEditsToXlsx,
-  readBasicWorkbook,
-} from '../src/gateway/xlsx-gateway'
+import { applyCellEditsToXlsx, readBasicWorkbook } from '../src/gateway/xlsx-gateway'
 import type { CellEdit } from '../src/index.js'
 import type { WorkbookVisualEdit } from '../src/types.js'
 
@@ -167,9 +164,7 @@ function barChartXml(
     (options.valAxisScaling ?? '') +
     '</c:scaling>' +
     `<c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/>${valTitle}${valAxisNumFmt}` +
-    (options.valMajorUnit !== undefined
-      ? `<c:majorUnit val="${options.valMajorUnit}"/>`
-      : '') +
+    (options.valMajorUnit !== undefined ? `<c:majorUnit val="${options.valMajorUnit}"/>` : '') +
     '<c:crossAx val="111"/></c:valAx>' +
     '</c:plotArea>' +
     legend +
@@ -201,9 +196,7 @@ function pieChartXml(
       .map(
         (ser) =>
           ser +
-          (options.explosion !== undefined
-            ? `<c:explosion val="${options.explosion}"/>`
-            : ''),
+          (options.explosion !== undefined ? `<c:explosion val="${options.explosion}"/>` : ''),
       )
       .join('') +
     '<c:firstSliceAng val="0"/>' +
@@ -372,20 +365,17 @@ describe('chart read: canonical parseSheetCharts', () => {
   it('reads title, legend, axis titles, explicit axis bounds, and label flags', async () => {
     const buffer = await buildChartFixture({
       chartParts: {
-        'xl/charts/chart1.xml': barChartXml(
-          [seriesXml('Revenue', [10, 20, 30])],
-          {
-            title: 'Quarterly Sales',
-            legendPos: 'b',
-            dLbls:
-              '<c:dLbls><c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showPercent val="0"/></c:dLbls>',
-            catTitle: 'Quarter',
-            valTitle: 'USD',
-            valAxisScaling: '<c:min val="0"/><c:max val="100"/>',
-            valMajorUnit: 20,
-            valNumFmt: { formatCode: '#,##0', sourceLinked: false },
-          },
-        ),
+        'xl/charts/chart1.xml': barChartXml([seriesXml('Revenue', [10, 20, 30])], {
+          title: 'Quarterly Sales',
+          legendPos: 'b',
+          dLbls:
+            '<c:dLbls><c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showPercent val="0"/></c:dLbls>',
+          catTitle: 'Quarter',
+          valTitle: 'USD',
+          valAxisScaling: '<c:min val="0"/><c:max val="100"/>',
+          valMajorUnit: 20,
+          valNumFmt: { formatCode: '#,##0', sourceLinked: false },
+        }),
       },
     })
     const imported = await readBasicWorkbook(buffer)
@@ -476,10 +466,7 @@ describe('chart read: canonical parseSheetCharts', () => {
       seriesXml('Cost', [5, 8, 11]) +
       '<c:axId val="111"/><c:axId val="222"/></c:barChart>' +
       '<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>' +
-      seriesXml('Margin', [5, 12, 19]).replace(
-        '<c:idx val="0"/>',
-        '<c:idx val="2"/>',
-      ) +
+      seriesXml('Margin', [5, 12, 19]).replace('<c:idx val="0"/>', '<c:idx val="2"/>') +
       '<c:marker val="1"/><c:axId val="111"/><c:axId val="333"/></c:lineChart>' +
       '<c:catAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222"/></c:catAx>' +
       '<c:valAx><c:axId val="222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/><c:crossAx val="111"/></c:valAx>' +
@@ -493,11 +480,7 @@ describe('chart read: canonical parseSheetCharts', () => {
     expect(chart).toBeDefined()
     if (!chart) return
     expect(chart.chart.chartTypes).toEqual(['barChart', 'lineChart'])
-    expect(chart.chart.series.map((series) => series.name)).toEqual([
-      'Revenue',
-      'Cost',
-      'Margin',
-    ])
+    expect(chart.chart.series.map((series) => series.name)).toEqual(['Revenue', 'Cost', 'Margin'])
     expect(chart.chart.secondaryYAxis).toBeDefined()
   })
 
@@ -695,9 +678,7 @@ describe('chart read: locator integration with the save families', () => {
       ],
     })
     const mutated = await mutate(buffer, {
-      visualEdits: [
-        { drawingPath: 'xl/drawings/drawing1.xml', drawingIndex: 0, remove: true },
-      ],
+      visualEdits: [{ drawingPath: 'xl/drawings/drawing1.xml', drawingIndex: 0, remove: true }],
     })
     const entries = await listEntries(mutated.buffer)
     expect(entries).not.toContain('xl/charts/chart1.xml')

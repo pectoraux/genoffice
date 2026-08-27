@@ -1188,6 +1188,7 @@ Stage Summary:
 - Workflow state: CHANGES REQUESTED → corrections pushed, awaiting architect re-review of the actual diff. NOT VERIFIED — the architect owns that transition.
 
 ---
+
 Task ID: EXCEL-023-audit
 Agent: Z.ai (Implementation Operator)
 Task: Phase A forensic audit for EXCEL-023 (Charts) — mandatory before implementation.
@@ -1201,6 +1202,7 @@ Q1 — Canonical chart model: packages/xlsx-gateway/src/domain/chart-visual.ts (
 Q2 — WorkbookChartEdit (packages/xlsx-gateway/src/types.ts:123-143): chartPath locator + title?, chartType? ('column'|'bar'|'line'|'area'|'pie'|'doughnut'), seriesColors?, legend?, dataLabels?/dataLabelPosition?/dataLabelFormat?, axisTitles?, pointColors?, grouping?, gridlines?, valueAxis? {min,max|null}, gapWidthPct?, holeSizePct?, explosionPct?, pointExplosions?, seriesSet? (full replacement), series? (index-keyed). Desktop Zod mirror: apps/sheets/src/shared/desktop-api.ts:943-999 (bounded: title<=255, gapWidth 0-500, holeSize 10-90, explosion 0-400, series color keys 0-999).
 
 Q3 — Gateway capability matrix:
+
 - READ charts: NO. readBasicWorkbook (xlsx-gateway.ts:425-568) parses cells/styles/merges/rowHeights/colWidths/freeze/filter/dv/notes/tables/images/protection — zero chart handling. No parseChart/readChart function exists anywhere in the gateway (verified by search). The DESKTOP reads file charts through its RUST SIDECAR (session.metadata.visuals → buildWorkbookFile, apps/sheets/src/main/sheets-save-adapter.ts:416) — outside this repo's TS read path, unavailable to web.
 - CREATE charts: YES. SheetVisualAddition.chart?: ChartAdd (xlsx-gateway.ts:792; xlsx-drawing-add.ts:33-63). buildChartXml (xlsx-drawing-add.ts:409) supports 9 types: column/bar/line/area/pie/scatter/radar/doughnut/combo (combo = clustered columns + last series line on secondary axis). Writes chart part + drawing part + drawing rels + worksheet drawing rel + [Content_Types] overrides; returns AddedVisualLocator (worksheetPath/drawingPath/drawingIndex — xlsx-gateway.ts:149-153; NO chartPath yet).
 - EDIT charts: YES. applyChartEdit (xlsx-chart.ts:33, 997 lines): title, type conversion within CONVERTIBLE_PLOTS [barChart, lineChart, areaChart, pieChart, doughnutChart] (refuses scatter), seriesSet/series rewrite with refs+caches, series/point colors, legend, plot-level data labels (+position/format), axis titles, grouping (stacked/percentStacked/clustered), gridlines, value-axis bounds, gapWidth, holeSize, explosion/pointExplosions. Fail-closed: ChartEditError outside the envelope.
@@ -1226,6 +1228,7 @@ Q11 — Wire family decision: chartEdits needs its own semantic wire family (key
 Q12 — WorksheetState additions: dedicated `charts?: readonly SheetChartInfo[]` field (mirrors EXCEL-022's images pattern; does NOT touch demo visuals). SheetChartInfo = { drawingPath, drawingIndex (anchor locator, ALL anchors counted for parity), chartPath, anchorType 'two-cell'|'one-cell', anchor: DrawingAnchor, chart: ChartVisualState }.
 
 Q13 — Fail-closed classification:
+
 - absoluteAnchor charts: omitted from browser model, bytes preserved (EXCEL-022 precedent; visualEdits already refuses absolute moves).
 - 3-D plots (bar3DChart, pie3DChart, line3DChart, surface, bubble, stock, ofPie etc.): per-chart omission — not in the canonical model.
 - chartEx / pivotChart extension parts (c15:, cx:): per-chart omission.

@@ -533,7 +533,6 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   const [chartRenderSeq, setChartRenderSeq] = useState(0)
   const [chartPanelMode, setChartPanelMode] = useState<'create' | 'edit' | null>(null)
   const chartVersion = useChartStoreVersion(chartStoreRef.current)
-  void chartVersion
   // Echo for the ribbon's Protect Sheet / Protect Workbook buttons —
   // recomputed whenever the journal, the file state, or the ACTIVE SHEET
   // changes (the runtime's ActiveSheetChanged subscription re-renders the
@@ -774,6 +773,34 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   useEffect(() => {
     reinstallActiveSheetCharts()
   }, [reinstallActiveSheetCharts, chartRenderSeq, runtime, activeSheetName])
+
+  // ── EXCEL-023: the chart journal feeds the editor's dirty gate, and the
+  //    Chart Design pane follows the selection (desktop ChartPanels
+  //    parity). A pending semantic edit (recordChartEdit from the pane), a
+  //    session creation, a geometry change, or a removal marks the workbook
+  //    unsaved exactly like a cell edit — Save must never stay disabled
+  //    while the journal still holds work. Selecting a chart frame opens
+  //    the pane in edit mode; closing it stays closed until a different
+  //    chart is selected.
+  const chartSelectionKey = chartStoreRef.current.selection
+  const chartSelectionRef = useRef<string | null>(null)
+  useEffect(() => {
+    const store = chartStoreRef.current
+    if (
+      store.edits.size > 0 ||
+      store.sessionAdds.size > 0 ||
+      store.dirty.size > 0 ||
+      store.removals.size > 0
+    ) {
+      setDirty(true)
+    }
+  }, [chartVersion])
+  useEffect(() => {
+    if (chartSelectionKey !== chartSelectionRef.current) {
+      chartSelectionRef.current = chartSelectionKey
+      if (chartSelectionKey !== null) setChartPanelMode('edit')
+    }
+  }, [chartSelectionKey, chartVersion])
 
   /**
    * Review → Protect Sheet / Unprotect Sheet (EXCEL-020). Desktop parity
@@ -2008,9 +2035,10 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   //    visualAdditions.chart family; nothing touches the file before
   //    then. The anchor defaults to two columns right of the selection
   //    (desktop buildChartVisual parity).
-  const chartSelection = useCallback(():
-    | { values: readonly (readonly ChartGridValue[])[]; label: string }
-    | null => {
+  const chartSelection = useCallback((): {
+    values: readonly (readonly ChartGridValue[])[]
+    label: string
+  } | null => {
     const rt = runtimeRef.current
     const wb = rt?.univerAPI.getActiveWorkbook()
     const range = wb?.getActiveRange()
@@ -2180,13 +2208,14 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           store={chartStoreRef.current}
           mode={chartPanelMode}
           selection={
-            chartStoreRef.current.selection !== null
-              ? { key: chartStoreRef.current.selection, isSession: false }
+            chartSelectionKey !== null
+              ? {
+                  key: chartSelectionKey,
+                  isSession: chartStoreRef.current.sessionAdds.has(chartSelectionKey),
+                }
               : null
           }
-          selectionValues={
-            chartPanelMode === 'create' ? (chartSelection()?.values ?? null) : null
-          }
+          selectionValues={chartPanelMode === 'create' ? (chartSelection()?.values ?? null) : null}
           selectionRangeLabel={chartSelection()?.label ?? ''}
           onInsert={handleChartInsertFromPanel}
           onClose={() => setChartPanelMode(null)}

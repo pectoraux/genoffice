@@ -2563,10 +2563,7 @@ function expectSheetVisualAddition(value: unknown, index: number): SheetVisualAd
     )
   }
   if (!hasImage && !hasChart) {
-    throw new OfficeValidationError(
-      'validation',
-      `${field} needs an image or a chart payload`,
-    )
+    throw new OfficeValidationError('validation', `${field} needs an image or a chart payload`)
   }
   const sheetName = expectString(value.sheetName, `${field}.sheetName`)
   const anchor = expectDrawingAnchor(value.anchor, `${field}.anchor`)
@@ -2746,12 +2743,7 @@ function expectChartAddSeries(value: unknown, field: string): ChartAddSeries {
     const out: Record<string, number> = {}
     for (const [key, entry] of Object.entries(value.pointExplosions)) {
       expectChartIndexKey(key, `${field}.pointExplosions key "${key}"`)
-      out[key] = expectBoundedInteger(
-        entry,
-        0,
-        400,
-        `${field}.pointExplosions["${key}"]`,
-      )
+      out[key] = expectBoundedInteger(entry, 0, 400, `${field}.pointExplosions["${key}"]`)
     }
     pointExplosions = out
   }
@@ -2785,12 +2777,7 @@ function expectChartAddSeries(value: unknown, field: string): ChartAddSeries {
   }
 }
 
-function expectBoundedInteger(
-  value: unknown,
-  min: number,
-  max: number,
-  field: string,
-): number {
+function expectBoundedInteger(value: unknown, min: number, max: number, field: string): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
     throw new OfficeValidationError(
       'validation',
@@ -3083,9 +3070,7 @@ function expectChartSeriesEdit(value: unknown, field: string): ChartSeriesEdit {
     throw new OfficeValidationError('validation', `${field} needs a name or data`)
   }
   for (const key of Object.keys(value)) {
-    if (
-      !['index', 'name', 'valuesRef', 'values', 'categoriesRef', 'categories'].includes(key)
-    ) {
+    if (!['index', 'name', 'valuesRef', 'values', 'categoriesRef', 'categories'].includes(key)) {
       throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
     }
   }

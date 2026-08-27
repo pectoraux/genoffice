@@ -446,7 +446,11 @@ function VerticalAxis({
   )
 }
 
-function SeriesLegend({ seriesList }: { readonly seriesList: readonly ChartSeries[] }): React.JSX.Element {
+function SeriesLegend({
+  seriesList,
+}: {
+  readonly seriesList: readonly ChartSeries[]
+}): React.JSX.Element {
   return (
     <div className="chart-legend">
       {seriesList.map((series, index) => (
@@ -541,7 +545,14 @@ function BarChartSvg({
         {bounds.ticks.map((tick, index) => (
           <g key={`vt-${index}`}>
             {gridlines !== false && (
-              <line x1={plotX(tick)} y1="12" x2={plotX(tick)} y2="298" stroke="#e3e3e3" strokeWidth="1" />
+              <line
+                x1={plotX(tick)}
+                y1="12"
+                x2={plotX(tick)}
+                y2="298"
+                stroke="#e3e3e3"
+                strokeWidth="1"
+              />
             )}
             <text x={plotX(tick)} y="10" textAnchor="middle" className="chart-axis-label">
               {formatAxisValue(tick, axisNumberFormat)}
@@ -709,7 +720,10 @@ function BarChartSvg({
                 )
               })()}
             <text x={62 + columnWidth * index + columnWidth / 2} y="298" textAnchor="middle">
-              {truncateLabel(categories[index] ?? String(index + 1), categoryLabelBudget(visibleCount))}
+              {truncateLabel(
+                categories[index] ?? String(index + 1),
+                categoryLabelBudget(visibleCount),
+              )}
             </text>
           </g>
         )
@@ -908,7 +922,12 @@ function AreaChartSvg({
                 fill={seriesColor(series, seriesIndex)}
                 opacity="0.75"
               />
-              <polyline points={upperPoints.join(' ')} fill="none" stroke={seriesColor(series, seriesIndex)} strokeWidth="2" />
+              <polyline
+                points={upperPoints.join(' ')}
+                fill="none"
+                stroke={seriesColor(series, seriesIndex)}
+                strokeWidth="2"
+              />
             </g>
           )
         }
@@ -953,11 +972,7 @@ function RadarChartSvg({
   const cx = 300
   const cy = 168
   const r = 118
-  const maximum = Math.max(
-    ...seriesList.flatMap((series) => [...series.values]),
-    0,
-    1,
-  )
+  const maximum = Math.max(...seriesList.flatMap((series) => [...series.values]), 0, 1)
   const vertex = (index: number, radius: number): [number, number] => {
     const theta = (index / count) * 2 * Math.PI
     return [cx + Math.sin(theta) * radius, cy - Math.cos(theta) * radius]
@@ -1061,7 +1076,14 @@ function ScatterChartSvg({
       {boundsX.ticks.map((tick, index) => (
         <g key={index}>
           {xAxis?.majorGridlines && (
-            <line x1={plotX(tick)} y1="40" x2={plotX(tick)} y2="280" stroke="#e3e3e3" strokeWidth="1" />
+            <line
+              x1={plotX(tick)}
+              y1="40"
+              x2={plotX(tick)}
+              y2="280"
+              stroke="#e3e3e3"
+              strokeWidth="1"
+            />
           )}
           <text x={plotX(tick)} y="296" textAnchor="middle" className="chart-axis-label">
             {formatScatterTick(tick, xFormat)}
@@ -1325,11 +1347,7 @@ function PieChartSvg({
 /// The chart body dispatcher — desktop ChartVisual family dispatch. The
 /// chart parameter is the canonical domain ChartVisualState (file charts
 /// carry the pending-edit overlay already; session creations build one).
-export function ChartSvg({
-  chart,
-}: {
-  readonly chart: ChartVisualState
-}): React.JSX.Element {
+export function ChartSvg({ chart }: { readonly chart: ChartVisualState }): React.JSX.Element {
   const populated = chart.series.filter((series) => series.values.length > 0)
   const primarySeries = populated[0]
   if (!primarySeries) {
@@ -1464,11 +1482,7 @@ function walkMarker(
   return { index, offset }
 }
 
-function markerSpan(
-  from: Marker,
-  to: Marker,
-  sizeOf: (index: number) => number,
-): number {
+function markerSpan(from: Marker, to: Marker, sizeOf: (index: number) => number): number {
   const span = to.offset - from.offset
   const low = Math.min(from.index, to.index)
   const high = Math.max(from.index, to.index)
@@ -1621,7 +1635,6 @@ export function anchorResized(
   return next
 }
 
-
 // ── Interactive floating chart frame ─────────────────────────────────
 
 const MIN_FRAME_PIXELS = 24
@@ -1723,7 +1736,10 @@ function ChartFrame({
             spec.anchorType === 'one-cell'
               ? { widthPx: spec.widthPx, heightPx: spec.heightPx }
               : undefined
-          onGeometryCommit(chartKey, anchorMoved(geometry, spec.anchor, current.dx, current.dy, fixedSize))
+          onGeometryCommit(
+            chartKey,
+            anchorMoved(geometry, spec.anchor, current.dx, current.dy, fixedSize),
+          )
         } else if (spec.anchorType !== 'one-cell') {
           onGeometryCommit(
             chartKey,
@@ -1855,12 +1871,7 @@ function ChartFrame({
  * installs its charts through the exact same pair.
  */
 export interface ChartWorksheetFacade {
-  getRange(
-    row: number,
-    column: number,
-    numRows: number,
-    numColumns: number,
-  ): unknown
+  getRange(row: number, column: number, numRows: number, numColumns: number): unknown
   getColumnWidth(column: number): number
   getRowHeight(row: number): number
   getMaxRows(): number
@@ -1925,9 +1936,12 @@ export function installSheetChart(
     Math.max(1, toRow + 1 - fromRow),
     Math.max(1, toColumn + 1 - fromColumn),
   )
+  // Two-cell anchors size from the live marker span; the explicit a:ext
+  // pixel size applies to ONE-CELL charts only (their to markers carry
+  // no size — desktop anchor semantics).
   const frame = anchorFrame(geometry, spec.anchor, {
-    widthPx: spec.widthPx,
-    heightPx: spec.heightPx,
+    widthPx: spec.anchorType === 'one-cell' ? spec.widthPx : undefined,
+    heightPx: spec.anchorType === 'one-cell' ? spec.heightPx : undefined,
   })
   const layout =
     frame.width >= MIN_FRAME_PIXELS / 2 && frame.height >= MIN_FRAME_PIXELS / 2
@@ -1938,7 +1952,7 @@ export function installSheetChart(
           marginX: frame.marginX,
           marginY: frame.marginY,
         }
-  const componentKey = `web-chart-${id}`
+  const componentKey = `web-chart-${sanitizeFloatId(id)}`
   const registration = host.univerAPI.registerComponent(componentKey, () => (
     <ChartFrame
       chartKey={id}
@@ -1948,7 +1962,9 @@ export function installSheetChart(
       onStructureChange={host.onStructureChange}
     />
   ))
-  const floating = ws.addFloatDomToRange(range, { componentKey }, layout, id)
+  // The float DOM id must be DOM-safe: the canonical locator key carries
+  // `:`, `/`, and `#` which break Univer's internal drawing/DOM lookups.
+  const floating = ws.addFloatDomToRange(range, { componentKey }, layout, sanitizeFloatId(id))
   if (floating === undefined || floating === null) {
     registration.dispose()
     return null
@@ -1968,6 +1984,13 @@ function worksheetGeometryOf(ws: ChartWorksheetFacade): WorksheetGeometry {
     maxColumns: ws.getMaxColumns(),
     maxRows: ws.getMaxRows(),
   }
+}
+
+/// DOM-safe float/component id for a canonical locator key (the key's
+/// `:`, `/`, `#` break Univer's internal drawing and DOM id lookups —
+/// the desktop likewise uses plain `${sessionId}-${visual.id}` ids).
+function sanitizeFloatId(key: string): string {
+  return key.replace(/[^A-Za-z0-9_-]/g, '_')
 }
 
 /// A session creation's ChartAdd rendered as the canonical domain state

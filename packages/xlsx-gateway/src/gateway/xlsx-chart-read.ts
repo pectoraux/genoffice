@@ -22,7 +22,11 @@
 /// through a zero-marker approximation. The anchor still counts toward
 /// drawingIndex parity.
 
-import type { ChartAxisInfoState, ChartSeriesVisualState, ChartVisualState } from '../domain/chart-visual.js'
+import type {
+  ChartAxisInfoState,
+  ChartSeriesVisualState,
+  ChartVisualState,
+} from '../domain/chart-visual.js'
 import type { DrawingAnchor } from './xlsx-drawing-add.js'
 
 export class ChartReadError extends Error {}
@@ -362,8 +366,7 @@ export function parseChartXml(chartXml: string): ChartVisualState | null {
   const valAxes = [...chartXml.matchAll(/<c:valAx>([\s\S]*?)<\/c:valAx>/g)]
   const xAxis = catAx !== null ? parseAxisInfo(catAx[2] ?? '') : undefined
   const yAxis = valAxes[0] !== undefined ? parseAxisInfo(valAxes[0][1] ?? '') : undefined
-  const secondaryYAxis =
-    valAxes[1] !== undefined ? parseAxisInfo(valAxes[1][1] ?? '') : undefined
+  const secondaryYAxis = valAxes[1] !== undefined ? parseAxisInfo(valAxes[1][1] ?? '') : undefined
   const axisTitles =
     xAxis !== undefined || yAxis !== undefined
       ? {
@@ -384,8 +387,7 @@ export function parseChartXml(chartXml: string): ChartVisualState | null {
     ...(dataLabelFormat !== undefined ? { dataLabelFormat } : {}),
     ...(grouping !== undefined ? { grouping: grouping as ChartVisualState['grouping'] } : {}),
     ...(yAxis !== undefined ? { gridlines: yAxis.majorGridlines } : {}),
-    ...(yAxis !== undefined &&
-    (yAxis.min !== undefined || yAxis.max !== undefined)
+    ...(yAxis !== undefined && (yAxis.min !== undefined || yAxis.max !== undefined)
       ? {
           valueAxis: {
             ...(yAxis.min !== undefined ? { min: yAxis.min } : {}),
@@ -532,9 +534,7 @@ function parseLineColor(serXml: string): string | undefined {
 }
 
 /// c:dPt entries → per-point fills (idx + spPr fill), ascending by idx.
-function parsePointColors(
-  serXml: string,
-): { index: number; color: string }[] | undefined {
+function parsePointColors(serXml: string): { index: number; color: string }[] | undefined {
   const entries: { index: number; color: string }[] = []
   for (const dpt of serXml.matchAll(/<c:dPt>[\s\S]*?<\/c:dPt>/g)) {
     const idx = Number(/<c:idx val="(\d+)"/.exec(dpt[0])?.[1])
@@ -548,9 +548,7 @@ function parsePointColors(
 }
 
 /// c:dPt c:explosion → per-slice explosion overrides, ascending by idx.
-function parsePointExplosions(
-  serXml: string,
-): { index: number; pct: number }[] | undefined {
+function parsePointExplosions(serXml: string): { index: number; pct: number }[] | undefined {
   const entries: { index: number; pct: number }[] = []
   for (const dpt of serXml.matchAll(/<c:dPt>[\s\S]*?<\/c:dPt>/g)) {
     const idx = Number(/<c:idx val="(\d+)"/.exec(dpt[0])?.[1])
@@ -611,7 +609,9 @@ function parseAxisInfo(axisXml: string): ChartAxisInfoState {
   }
 }
 
-function parseTitleStyle(titleElement: string | undefined):
+function parseTitleStyle(
+  titleElement: string | undefined,
+):
   | { size?: number | undefined; bold?: boolean | undefined; color?: string | undefined }
   | undefined {
   if (titleElement === undefined) return undefined

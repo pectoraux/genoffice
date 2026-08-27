@@ -753,14 +753,50 @@ body {
   z-index: 3;
 }
 
-.chart-handle.handle-nw { top: -4px; left: -4px; cursor: nwse-resize; }
-.chart-handle.handle-n { top: -4px; left: 50%; margin-left: -3.5px; cursor: ns-resize; }
-.chart-handle.handle-ne { top: -4px; right: -4px; cursor: nesw-resize; }
-.chart-handle.handle-e { top: 50%; margin-top: -3.5px; right: -4px; cursor: ew-resize; }
-.chart-handle.handle-se { bottom: -4px; right: -4px; cursor: nwse-resize; }
-.chart-handle.handle-s { bottom: -4px; left: 50%; margin-left: -3.5px; cursor: ns-resize; }
-.chart-handle.handle-sw { bottom: -4px; left: -4px; cursor: nesw-resize; }
-.chart-handle.handle-w { top: 50%; margin-top: -3.5px; left: -4px; cursor: ew-resize; }
+.chart-handle.handle-nw {
+  top: -4px;
+  left: -4px;
+  cursor: nwse-resize;
+}
+.chart-handle.handle-n {
+  top: -4px;
+  left: 50%;
+  margin-left: -3.5px;
+  cursor: ns-resize;
+}
+.chart-handle.handle-ne {
+  top: -4px;
+  right: -4px;
+  cursor: nesw-resize;
+}
+.chart-handle.handle-e {
+  top: 50%;
+  margin-top: -3.5px;
+  right: -4px;
+  cursor: ew-resize;
+}
+.chart-handle.handle-se {
+  bottom: -4px;
+  right: -4px;
+  cursor: nwse-resize;
+}
+.chart-handle.handle-s {
+  bottom: -4px;
+  left: 50%;
+  margin-left: -3.5px;
+  cursor: ns-resize;
+}
+.chart-handle.handle-sw {
+  bottom: -4px;
+  left: -4px;
+  cursor: nesw-resize;
+}
+.chart-handle.handle-w {
+  top: 50%;
+  margin-top: -3.5px;
+  left: -4px;
+  cursor: ew-resize;
+}
 
 /* ── EXCEL-023: Chart Design pane ───────────────────────────────────── */
 

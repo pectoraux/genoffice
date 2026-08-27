@@ -100,7 +100,9 @@ export function ChartPanel({
         </header>
         <div className="chart-panel-section">
           <strong>Data range</strong>
-          <code data-testid="chart-panel-range">{selectionRangeLabel || 'Select a data range first'}</code>
+          <code data-testid="chart-panel-range">
+            {selectionRangeLabel || 'Select a data range first'}
+          </code>
           {parsed !== null ? (
             <p className="chart-panel-hint" data-testid="chart-panel-parsed">
               {parsed.series.length} series, {parsed.categories.length} categories
@@ -301,8 +303,8 @@ export function ChartPanel({
         ))}
       </div>
       <p className="chart-panel-hint">
-        Edits journal through the canonical chartEdits save family — the file&apos;s chart XML
-        is written by the xlsx-gateway on save.
+        Edits journal through the canonical chartEdits save family — the file&apos;s chart XML is
+        written by the xlsx-gateway on save.
       </p>
     </div>
   )

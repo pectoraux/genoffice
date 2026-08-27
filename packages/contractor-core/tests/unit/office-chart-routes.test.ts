@@ -43,7 +43,9 @@ const ANCHOR = {
   toColumnOffset: 0,
 }
 
-function canonicalChartAddition(): Record<string, unknown> {
+function canonicalChartAddition(): Record<string, unknown> & {
+  chart: Record<string, unknown>
+} {
   return {
     sheetName: 'Data',
     anchor: { ...ANCHOR },
@@ -160,9 +162,7 @@ describe('workbooks/save chartAdditions (visualAdditions.chart) validation', () 
           ...canonicalChartAddition(),
           chart: {
             ...canonicalChartAddition().chart,
-            series: [
-              { name: 'S', categories: ['a'], values: [1], color: '4472C4' },
-            ],
+            series: [{ name: 'S', categories: ['a'], values: [1], color: '4472C4' }],
           },
         },
       ],

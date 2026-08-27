@@ -894,10 +894,7 @@ describe('architecture: EXCEL-023 Charts uses the canonical wire families', () =
         chartsContent,
       ),
     ).toBe(true)
-    const clientContent = readFileSync(
-      join(WEB_ROOT, 'src', 'api', 'office-client.ts'),
-      'utf8',
-    )
+    const clientContent = readFileSync(join(WEB_ROOT, 'src', 'api', 'office-client.ts'), 'utf8')
     expect(clientContent).toContain('chartEdits?:')
     expect(clientContent).toContain('WorkbookChartEdit')
   })
@@ -931,9 +928,8 @@ describe('architecture: EXCEL-023 Charts uses the canonical wire families', () =
     const offenders = violations.filter(
       (f) =>
         !f.content.includes("from '@genoffice/xlsx-gateway/src/domain/chart-visual.js'") ||
-        nonCommentLines(f.content).some(
-          (line) =>
-            /^import\s+\{[^}]*\}\s+from\s+'@genoffice\/xlsx-gateway'/.test(line.trim()),
+        nonCommentLines(f.content).some((line) =>
+          /^import\s+\{[^}]*\}\s+from\s+'@genoffice\/xlsx-gateway'/.test(line.trim()),
         ),
     )
     expect(offenders.map((v) => v.rel)).toEqual([])

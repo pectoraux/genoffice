@@ -1,21 +1,19 @@
 /**
  * REAL browser E2E — Insert tab (Phase 4 Inc. 3; EXCEL-021 flipped Table;
- * EXCEL-022 flipped Picture).
+ * EXCEL-022 flipped Picture; EXCEL-023 flipped Chart).
  *
  * Verifies the Insert tab's control wiring: Picture is ENABLED since
  * EXCEL-022 (the visualAdditions family is on the wire;
- * ribbon-images.spec.ts proves the full round-trip). Chart remains
- * VISIBLY DISABLED (per spec: "a disabled button is preferable to a fake
- * feature") — the wire save plan still does not expose the chartEdits
- * family (EXCEL-023). Table is ENABLED since EXCEL-021.
+ * ribbon-images.spec.ts proves the full round-trip). Chart is ENABLED
+ * since EXCEL-023 (the chartEdits family + visualAdditions.chart are on
+ * the wire; ribbon-charts.spec.ts proves the full round-trip). Table is
+ * ENABLED since EXCEL-021.
  */
 import { test, expect } from '@playwright/test'
 import { loginAsDemoOwner, gotoHashRoute, waitForGridCanvas } from './helpers'
 
-test.describe('Insert tab — disabled-by-design controls', () => {
-  test('Chart is disabled with documented reason; Picture and Table are enabled', async ({
-    page,
-  }) => {
+test.describe('Insert tab — wired controls', () => {
+  test('Chart, Picture and Table are enabled with documented actions', async ({ page }) => {
     test.setTimeout(120_000)
     const pageErrors: string[] = []
     page.on('pageerror', (err) => pageErrors.push(String(err)))
@@ -39,13 +37,14 @@ test.describe('Insert tab — disabled-by-design controls', () => {
     const deleteBtn = page.getByRole('button', { name: /Delete Table/i })
     await expect(deleteBtn).toBeEnabled()
 
-    // Chart — must be disabled with a title naming chartEdits /
-    // visualAdditions.
+    // Chart — ENABLED since EXCEL-023: the chartEdits family +
+    // visualAdditions.chart are on the wire (the canonical round-trip is
+    // proven in ribbon-charts.spec.ts).
     const chartBtn = page.getByRole('button', { name: /^Chart/ }).first()
-    await expect(chartBtn).toBeDisabled()
+    await expect(chartBtn).toBeEnabled()
     const chartTitle = await chartBtn.getAttribute('title')
-    expect(chartTitle, 'Chart title names the architectural reason').toMatch(
-      /chartEdits|visualAdditions/,
+    expect(chartTitle, 'Chart title names the insert action').toContain(
+      'insert a chart from the selected data range',
     )
 
     // Picture — ENABLED since EXCEL-022: the visualAdditions (image
