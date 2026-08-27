@@ -138,3 +138,14 @@ PROJECT-020 (import compatibility diagnostics) adds NO new package and NO new pa
 ```
 
 `@genoffice/project-file` STILL does not statically depend on `@genoffice/project-scheduling`: the compatibility pipelines take the scheduler as an INJECTED, structurally-typed runner (`CompatibilityScheduleRunner` — `schedule` from the scheduling package is assignable without importing it), preserving the accepted edge and its static guards (a discipline test asserts the compatibility sources contain no scheduling-package reference, no `node:`/React/Electron imports, no `localeCompare`, and no clock/randomness). The host package's `importMppFromFileWithCompatibility` composes the full production pipeline with `buildCompatibilityReport` (host → foundation direction only). The work-item edge `015 + 018 → 020` completes; `020 → 047` carries forward with PROJECT-047's golden-file suite building on the canonical compatibility contract this increment defines.
+
+## Package dependency edges (PROJECT-021)
+
+PROJECT-021 (shared renderer core) implements the reserved `@genoffice/project-renderer-core` package boundary (architecture-lock §3). It adds NO new workspace package (the placeholder package exists since PROJECT-001) and changes no existing edge:
+
+```text
+@genoffice/project-renderer-core → @genoffice/project-contracts (types + brand helpers)
+@genoffice/project-renderer-core → @genoffice/project-engine (applyProjectCommand, hierarchy utilities)
+```
+
+The work-item dependency `002 + 003 + 006 → 021` is honored exactly like the accepted project-file precedent: `DerivedSchedule` is a CONTRACTS type (the renderer core consumes schedule values typed by contracts), and the scheduling FUNCTION is injected as a structurally-typed `ScheduleRunner` — the package does NOT statically depend on `@genoffice/project-scheduling` (the strongest form of architecture-lock §3's "no scheduling authority": the package is structurally incapable of scheduling; every schedule value it holds was produced by the injected authority). Tests import `schedule` from the scheduling package at the TEST layer only, proving session/schedule integration with the real authority while the package dependency stays two-edged (asserted by the discipline suite's raw-source scan AND the extended CI foundation boundary grep, which now also covers `packages/project-renderer-core`). The renderer core equally never imports `@genoffice/project-file` / `@genoffice/project-mpp-host` (host-specific file/transport stays outside the renderer — R-009; documents arrive already-canonical). CI grows 19 → 21 steps (`Typecheck project-renderer-core`, `Test project-renderer-core`). The work-item chain `021 → 022 → 023 → 024` opens; complete views remain unauthorized until acceptance of this increment.
