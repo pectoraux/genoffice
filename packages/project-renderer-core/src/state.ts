@@ -39,6 +39,7 @@ import type {
   DerivedSchedule,
 } from '@genoffice/project-contracts'
 import type { TaskEditing } from './editing.js'
+import type { DependencyEditing } from './dependency-editing.js'
 
 /**
  * Task selection. `taskIds` is the ordered selection (first-occurrence order
@@ -100,6 +101,14 @@ export interface ProjectViewState {
    * flow (`./edit-flow.js`) always ends it; `reconcileViewState` drops it
    * when the edited task no longer exists. */
   readonly editing?: TaskEditing
+  /** The active dependency edit (PROJECT-024): the edited (dependency,
+   * field — type or lag) plus the canonical draft text. The same contract
+   * as `editing`: at most one dependency edit is active (an active task
+   * edit and an active dependency edit never coexist — beginning either
+   * ends the other), the commit flow (`./edit-flow.js`) always ends it, and
+   * `reconcileViewState` drops it when the edited dependency no longer
+   * exists. */
+  readonly dependencyEditing?: DependencyEditing
   /** Active canonical view definition (document-declared `ProjectView`). */
   readonly activeViewId?: ProjectViewId
   /** Active canonical table definition (document-declared `ProjectTable`). */
@@ -230,6 +239,10 @@ export function reconcileViewState(
     viewport: state.viewport,
     ...(state.editing !== undefined && taskIds.has(state.editing.taskId)
       ? { editing: state.editing }
+      : {}),
+    ...(state.dependencyEditing !== undefined &&
+    dependencyIds.has(state.dependencyEditing.dependencyId)
+      ? { dependencyEditing: state.dependencyEditing }
       : {}),
     ...(state.activeViewId !== undefined &&
     document.views.some((view) => view.id === state.activeViewId)

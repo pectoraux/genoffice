@@ -8,14 +8,14 @@
  * pointer hit-testing resolves to the entity the host then selects through
  * the standard intents; mutations through the session reconcile the
  * selection deterministically (creation keeps it, indent/outdent keep it
- * verbatim); and commands the engine does not implement surface
- * UNSUPPORTED_COMMAND with the document and selection untouched.
+ * verbatim); and malformed command values surface UNSUPPORTED_COMMAND (the
+ * runtime safety net) with the document and selection untouched.
  *
  * The scheduling authority is the REAL package at the test layer only (the
  * accepted PROJECT-021 precedent).
  */
 import { describe, expect, it } from 'vitest'
-import { asDependencyId, asTaskId } from '@genoffice/project-contracts'
+import { asTaskId } from '@genoffice/project-contracts'
 import type { ProjectCommand, ProjectDocument } from '@genoffice/project-contracts'
 import { schedule } from '@genoffice/project-scheduling'
 import {
@@ -354,7 +354,7 @@ describe('PROJECT-023 integration — selection through the command/session pipe
     expect(projection.rows.find((row) => row.taskId === asTaskId('a3'))!.selected).toBe(true)
   })
 
-  it('an UNSUPPORTED command (AddDependency) is rejected with the document and selection untouched', () => {
+  it('a malformed command value is rejected with the document and selection untouched (UNSUPPORTED_COMMAND runtime safety net)', () => {
     const document = twoLeafDocument()
     const session = createRendererSession(document, { schedule })
     let state = createViewState(document, session.schedule)
@@ -364,16 +364,11 @@ describe('PROJECT-023 integration — selection through the command/session pipe
       { document, schedule: session.schedule },
     )
 
-    const command: ProjectCommand = {
-      type: 'AddDependency',
-      dependency: {
-        id: asDependencyId('d-new'),
-        predecessorId: asTaskId('a'),
-        successorId: asTaskId('b'),
-        type: 'FS',
-        lagMinutes: 0,
-      },
-    }
+    // PROJECT-024 implemented the frozen dependency commands, so the
+    // UNSUPPORTED_COMMAND path now guards only malformed command VALUES
+    // arriving through untyped boundaries (the pre-024 suite used
+    // AddDependency as its unimplemented example).
+    const command = { type: 'NonsenseCommand' } as unknown as ProjectCommand
     const outcome = applyRendererCommand(session, command)
     expect(outcome.result.accepted).toBe(false)
     expect(outcome.result.diagnostics[0]!.code).toBe('UNSUPPORTED_COMMAND')

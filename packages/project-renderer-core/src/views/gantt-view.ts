@@ -57,7 +57,10 @@ export function buildGanttView(
   return {
     rowWindow,
     taskGrid: buildTaskGrid(document, projection, rowWindow),
-    timeline: buildTimeline(document, projection, state.viewport, rowWindow),
+    // PROJECT-024: the full state (not just the viewport) flows into the
+    // timeline so the dependency-link surface carries the interaction-state
+    // reflection (selected/editingField) alongside its geometry.
+    timeline: buildTimeline(document, projection, state.viewport, rowWindow, state),
   }
 }
 

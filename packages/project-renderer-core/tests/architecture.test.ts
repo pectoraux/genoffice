@@ -79,7 +79,14 @@ describe('PROJECT-021 architecture — package boundaries', () => {
     const intentsSource = srcModules['../src/intents.ts'] ?? ''
     const editingSource = srcModules['../src/editing.ts'] ?? ''
     const editFlowSource = srcModules['../src/edit-flow.ts'] ?? ''
-    for (const source of [stateSource, intentsSource, editingSource, editFlowSource]) {
+    const dependencyEditingSource = srcModules['../src/dependency-editing.ts'] ?? ''
+    for (const source of [
+      stateSource,
+      intentsSource,
+      editingSource,
+      editFlowSource,
+      dependencyEditingSource,
+    ]) {
       // No scheduling-derived types or field declarations anywhere in the
       // interaction-state modules (comment prose quoting the lock is fine;
       // declarations are not).
@@ -197,6 +204,48 @@ describe('PROJECT-021 architecture — package boundaries', () => {
     // state, reconciled when its task dies.
     const state = srcModules['../src/state.ts'] ?? ''
     expect(state).toContain('readonly editing?: TaskEditing')
+  })
+
+  it('exposes the PROJECT-024 dependency-editing surface from the index (builders, editing model, commit flow)', () => {
+    const index = srcModules['../src/index.ts'] ?? ''
+    for (const symbol of [
+      'type AddDependencyOptions',
+      'type EditableDependencyField',
+      'type DependencyEditing',
+      'type DependencyEditCommit',
+      'type DependencyEditInvalidReason',
+      'type DependencyEditFlowOutcome',
+      'DEFAULT_DEPENDENCY_TYPE',
+      'DEFAULT_DEPENDENCY_LAG_MINUTES',
+      'DEPENDENCY_TYPE_CODES',
+      'EDITABLE_DEPENDENCY_FIELDS',
+      'editableDependencyFields',
+      'initialDependencyEditDraft',
+      'commitDependencyEdit',
+      'commitDependencyEditThroughSession',
+      'buildAddDependencyCommand',
+      'buildRemoveDependencySelectionCommands',
+      'nextDependencyIdentity',
+    ]) {
+      expect(index).toContain(symbol)
+    }
+    // The dependency-editing intents exist on the frozen intent union.
+    const intents = srcModules['../src/intents.ts'] ?? ''
+    for (const intent of [
+      "type: 'beginDependencyEdit'",
+      "type: 'updateDependencyEditDraft'",
+      "type: 'endDependencyEdit'",
+    ]) {
+      expect(intents).toContain(intent)
+    }
+    // The dependency-editing state slice is an additive optional field of
+    // the view state, reconciled when its link dies.
+    const state = srcModules['../src/state.ts'] ?? ''
+    expect(state).toContain('readonly dependencyEditing?: DependencyEditing')
+    // The link view model carries the interaction-state reflection.
+    const dependencies = srcModules['../src/views/dependencies.ts'] ?? ''
+    expect(dependencies).toContain('readonly selected: boolean')
+    expect(dependencies).toContain('readonly editingField?: EditableDependencyField')
   })
 
   it('keeps the view models free of pixel/DOM APIs (fraction space only)', () => {

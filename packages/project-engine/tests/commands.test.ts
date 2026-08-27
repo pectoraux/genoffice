@@ -530,13 +530,17 @@ describe('PROJECT-007 command determinism', () => {
     expect(JSON.stringify(restored.document)).toBe(JSON.stringify(base))
   })
 
-  it('rejects unimplemented command types deterministically', () => {
+  it('rejects malformed command values deterministically (the runtime safety net)', () => {
     const base = canonicalizeDocument(
       makeDocument({ tasks: [makeTask({ id: 'a' }), makeTask({ id: 'b' })] }),
     )
+    // The frozen command union is fully implemented as of PROJECT-024, so
+    // the UNSUPPORTED_COMMAND path now guards only against malformed command
+    // VALUES arriving through untyped boundaries (the pre-024 engine used
+    // the same diagnostic for the then-unimplemented dependency members).
     expectRejected(
       base,
-      { type: 'AddDependency', dependency: makeDependency('d1', 'a', 'b', 'FS') },
+      { type: 'NonsenseCommand' } as unknown as Parameters<typeof applyProjectCommand>[1],
       'UNSUPPORTED_COMMAND',
     )
   })

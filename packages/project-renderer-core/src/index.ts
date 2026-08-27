@@ -1,6 +1,6 @@
 /**
  * @genoffice/project-renderer-core — the shared Project renderer boundary
- * (PROJECT-021/022/023).
+ * (PROJECT-021/022/023/024).
  *
  * Host-independent projection and control layer over the canonical Project
  * domain: view state + intents + reducer, the document/schedule view
@@ -8,15 +8,19 @@
  * the renderer session controller (command application, snapshot
  * undo/redo, injected scheduling), the PROJECT-022 Gantt view models —
  * the virtualized, synchronized task grid and timeline surfaces (bars,
- * milestones, dependency links) in fraction space — and the PROJECT-023
+ * milestones, dependency links) in fraction space — the PROJECT-023
  * selection/editing surface (keyboard focus navigation, cell-edit
  * activation, and the deterministic draft → semantic-command commit flow
- * through the session). Hosts (Electron desktop, web) render these
- * projections and dispatch these intents; the renderer core owns NO
- * Project semantics — scheduling authority stays with the scheduling
- * engine, semantic mutations stay `ProjectCommand` values through the
- * engine, and this package imports only `@genoffice/project-contracts`
- * and `@genoffice/project-engine` (architecture-lock §3/§9/§11/§13).
+ * through the session), and the PROJECT-024 dependency-editing surface
+ * (deterministic link-identity allocation and creation defaults, link
+ * selection/editing intents, the dependency draft → semantic-command
+ * commit flow, and the dependency-link interaction-state reflection).
+ * Hosts (Electron desktop, web) render these projections and dispatch these
+ * intents; the renderer core owns NO Project semantics — scheduling
+ * authority stays with the scheduling engine, semantic mutations stay
+ * `ProjectCommand` values through the engine, and this package imports only
+ * `@genoffice/project-contracts` and `@genoffice/project-engine`
+ * (architecture-lock §3/§9/§11/§13).
  */
 export {
   type ProjectViewState,
@@ -126,3 +130,24 @@ export {
   isTaskFieldEditable,
 } from './editing.js'
 export { type TaskEditFlowOutcome, commitTaskEditThroughSession } from './edit-flow.js'
+// ---- PROJECT-024 — dependency editing ----
+export {
+  type AddDependencyOptions,
+  DEFAULT_DEPENDENCY_LAG_MINUTES,
+  DEFAULT_DEPENDENCY_TYPE,
+  buildAddDependencyCommand,
+  buildRemoveDependencySelectionCommands,
+  nextDependencyIdentity,
+} from './commands.js'
+export {
+  type DependencyEditCommit,
+  type DependencyEditInvalidReason,
+  type DependencyEditing,
+  type EditableDependencyField,
+  DEPENDENCY_TYPE_CODES,
+  EDITABLE_DEPENDENCY_FIELDS,
+  commitDependencyEdit,
+  editableDependencyFields,
+  initialDependencyEditDraft,
+} from './dependency-editing.js'
+export { type DependencyEditFlowOutcome, commitDependencyEditThroughSession } from './edit-flow.js'

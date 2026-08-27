@@ -1,6 +1,8 @@
 import type {
   Assignment,
   ConstraintType,
+  Dependency,
+  DependencyType,
   LevelingDiagnostic,
   LevelingOptions,
   ProjectCommand,
@@ -1040,6 +1042,327 @@ function mutateForSetTaskFinish(
 }
 
 /**
+ * PROJECT-024 — dependency editing.
+ *
+ * The four frozen dependency commands over the canonical dependency graph.
+ * Every semantic rule stays engine-side (lock §9): the renderer core builds
+ * command VALUES (identity allocation, defaults, gesture guards) and the
+ * engine is the single validation authority — reference validity, self
+ * links, integer lag, duplicate links, the summary↔own-descendant rule, and
+ * cycle rejection all fire here (the same diagnostic codes the document
+ * validator reports, surfaced as single crisp rejections) with the
+ * post-command validator as the safety net. Dependencies carry NO derived
+ * fields, so accepted mutations are pure array edits (append / filter /
+ * map) in canonical document order; the scheduler remains the sole
+ * scheduling authority (the host re-schedules after every accepted command
+ * and the derived dates move exactly as `schedule()` derives them).
+ */
+
+/** The frozen dependency-type domain (runtime guard for command payloads —
+ * the union type cannot stop a malformed value at a boundary). */
+const DEPENDENCY_TYPES: readonly DependencyType[] = ['FS', 'SS', 'FF', 'SF']
+
+/** Whether `candidate` is a descendant of `ancestor` in the task hierarchy
+ * (parent-chain walk — the summary↔own-descendant dependency rule). Pure and
+ * deterministic; mirrors the validator's check. */
+function isTaskDescendantOf(
+  document: ProjectDocument,
+  candidate: TaskId,
+  ancestor: TaskId,
+): boolean {
+  const parentByTask = new Map<TaskId, TaskId>()
+  for (const task of document.tasks) {
+    if (task.parentTaskId !== undefined) parentByTask.set(task.id, task.parentTaskId)
+  }
+  let current = parentByTask.get(candidate)
+  let guard = 0
+  while (current !== undefined && guard < 10_000) {
+    guard += 1
+    if (current === ancestor) return true
+    current = parentByTask.get(current)
+  }
+  return false
+}
+
+/** Whether `target` is reachable from `source` over the document's existing
+ * dependency edges (any type — the raw-edge graph the validator's Kahn check
+ * uses). Adding predecessor→successor creates a cycle iff the successor
+ * already reaches the predecessor. Deterministic breadth-first traversal in
+ * canonical edge order. */
+function hasDependencyPath(document: ProjectDocument, source: TaskId, target: TaskId): boolean {
+  const adjacency = new Map<TaskId, TaskId[]>()
+  for (const dependency of document.dependencies) {
+    const list = adjacency.get(dependency.predecessorId)
+    if (list === undefined) adjacency.set(dependency.predecessorId, [dependency.successorId])
+    else list.push(dependency.successorId)
+  }
+  const visited = new Set<TaskId>()
+  const queue: TaskId[] = [source]
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    if (current === target) return true
+    if (visited.has(current)) continue
+    visited.add(current)
+    for (const next of adjacency.get(current) ?? []) queue.push(next)
+  }
+  return false
+}
+
+function mutateForAddDependency(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'AddDependency' },
+): Mutation {
+  const dependency = command.dependency
+  if (document.dependencies.some((existing) => existing.id === dependency.id)) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'DUPLICATE_DEPENDENCY_ID',
+          message: `Dependency ${dependency.id} already exists`,
+        },
+      ],
+    }
+  }
+  const predecessor = findTask(document, dependency.predecessorId)
+  const successor = findTask(document, dependency.successorId)
+  if (predecessor === undefined || successor === undefined) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'MISSING_TASK_REFERENCE',
+          message: `Dependency ${dependency.id} references a missing task`,
+        },
+      ],
+    }
+  }
+  if (dependency.predecessorId === dependency.successorId) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'SELF_DEPENDENCY',
+          message: `Dependency ${dependency.id} cannot reference the same task`,
+        },
+      ],
+    }
+  }
+  if (!Number.isInteger(dependency.lagMinutes)) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'INVALID_LAG',
+          message: `Dependency ${dependency.id} has a non-integer lag`,
+        },
+      ],
+    }
+  }
+  if (
+    document.dependencies.some(
+      (existing) =>
+        existing.predecessorId === dependency.predecessorId &&
+        existing.successorId === dependency.successorId &&
+        existing.type === dependency.type,
+    )
+  ) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'DUPLICATE_DEPENDENCY_LINK',
+          message: `Dependency ${dependency.id} duplicates a link between ${dependency.predecessorId} and ${dependency.successorId}`,
+        },
+      ],
+    }
+  }
+  if (
+    isTaskDescendantOf(document, dependency.successorId, dependency.predecessorId) ||
+    isTaskDescendantOf(document, dependency.predecessorId, dependency.successorId)
+  ) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'SUMMARY_DEPENDENCY',
+          message: `Dependency between ${dependency.predecessorId} and ${dependency.successorId} connects a summary task with its own descendant`,
+        },
+      ],
+    }
+  }
+  // Adding predecessor→successor cycles iff the successor already reaches
+  // the predecessor over the existing edges (Kahn-equivalent, single-edge
+  // incremental form — matches the validator's whole-graph check).
+  if (hasDependencyPath(document, dependency.successorId, dependency.predecessorId)) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'DEPENDENCY_CYCLE',
+          message: 'Dependency graph contains a cycle',
+        },
+      ],
+    }
+  }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks,
+      dependencies: [...document.dependencies, dependency],
+      affectedTaskIds: [dependency.predecessorId, dependency.successorId],
+      inverse: { type: 'RemoveDependency', dependencyId: dependency.id },
+    },
+  }
+}
+
+function mutateForRemoveDependency(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'RemoveDependency' },
+): Mutation {
+  const dependency = document.dependencies.find((existing) => existing.id === command.dependencyId)
+  if (dependency === undefined) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'MISSING_DEPENDENCY',
+          message: `Dependency ${command.dependencyId} does not exist`,
+        },
+      ],
+    }
+  }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks,
+      dependencies: document.dependencies.filter(
+        (existing) => existing.id !== command.dependencyId,
+      ),
+      affectedTaskIds: [dependency.predecessorId, dependency.successorId],
+      // The full record rides the inverse so undo restores the link exactly
+      // (id, endpoints, type, and lag) without a host snapshot.
+      inverse: { type: 'AddDependency', dependency },
+    },
+  }
+}
+
+function mutateForChangeDependencyType(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'ChangeDependencyType' },
+): Mutation {
+  const dependency = document.dependencies.find((existing) => existing.id === command.dependencyId)
+  if (dependency === undefined) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'MISSING_DEPENDENCY',
+          message: `Dependency ${command.dependencyId} does not exist`,
+        },
+      ],
+    }
+  }
+  if (!DEPENDENCY_TYPES.includes(command.dependencyType)) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'INVALID_DEPENDENCY_TYPE',
+          message: `Dependency ${command.dependencyId} type ${command.dependencyType} is not one of FS, SS, FF, SF`,
+        },
+      ],
+    }
+  }
+  // A type change re-keys the link (pred, succ, type): reject when another
+  // dependency already owns the target key. A same-type change keeps the
+  // key and is an accepted idempotent write (the SetTaskDuration precedent —
+  // the renderer's noChange check keeps no-ops from ever being dispatched).
+  if (
+    command.dependencyType !== dependency.type &&
+    document.dependencies.some(
+      (existing) =>
+        existing.id !== dependency.id &&
+        existing.predecessorId === dependency.predecessorId &&
+        existing.successorId === dependency.successorId &&
+        existing.type === command.dependencyType,
+    )
+  ) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'DUPLICATE_DEPENDENCY_LINK',
+          message: `Dependency ${dependency.id} duplicates a link between ${dependency.predecessorId} and ${dependency.successorId}`,
+        },
+      ],
+    }
+  }
+  const updated: Dependency = { ...dependency, type: command.dependencyType }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks,
+      dependencies: document.dependencies.map((existing) =>
+        existing.id === command.dependencyId ? updated : existing,
+      ),
+      affectedTaskIds: [dependency.predecessorId, dependency.successorId],
+      inverse: {
+        type: 'ChangeDependencyType',
+        dependencyId: command.dependencyId,
+        dependencyType: dependency.type,
+      },
+    },
+  }
+}
+
+function mutateForChangeLag(
+  document: ProjectDocument,
+  command: ProjectCommand & { type: 'ChangeLag' },
+): Mutation {
+  const dependency = document.dependencies.find((existing) => existing.id === command.dependencyId)
+  if (dependency === undefined) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'MISSING_DEPENDENCY',
+          message: `Dependency ${command.dependencyId} does not exist`,
+        },
+      ],
+    }
+  }
+  const lag = command.lagMinutes
+  if (!Number.isFinite(lag) || !Number.isInteger(lag)) {
+    return {
+      kind: 'rejected',
+      diagnostics: [
+        {
+          code: 'INVALID_LAG',
+          message: `Dependency ${command.dependencyId} lag ${lag} is not an integer working-minute value`,
+        },
+      ],
+    }
+  }
+  const updated: Dependency = { ...dependency, lagMinutes: lag }
+  return {
+    kind: 'accepted',
+    outcome: {
+      tasks: document.tasks,
+      dependencies: document.dependencies.map((existing) =>
+        existing.id === command.dependencyId ? updated : existing,
+      ),
+      affectedTaskIds: [dependency.predecessorId, dependency.successorId],
+      inverse: {
+        type: 'ChangeLag',
+        dependencyId: command.dependencyId,
+        lagMinutes: dependency.lagMinutes,
+      },
+    },
+  }
+}
+
+/**
  * PROJECT-013 LevelResources.
  *
  * The canonical resource-leveling command. The engine delegates to the pure
@@ -1232,19 +1555,38 @@ export function applyProjectCommand(
       case 'SetTaskFinish':
         mutation = mutateForSetTaskFinish(document, command)
         break
+      case 'AddDependency':
+        mutation = mutateForAddDependency(document, command)
+        break
+      case 'RemoveDependency':
+        mutation = mutateForRemoveDependency(document, command)
+        break
+      case 'ChangeDependencyType':
+        mutation = mutateForChangeDependencyType(document, command)
+        break
+      case 'ChangeLag':
+        mutation = mutateForChangeLag(document, command)
+        break
       case 'LevelResources':
         mutation = mutateForLevelResources(document, command)
         break
-      default:
+      default: {
+        // Statically unreachable (the frozen command union is fully
+        // implemented as of PROJECT-024) but kept as the deterministic
+        // runtime safety net: a malformed command value arriving through an
+        // untyped boundary is rejected with the same UNSUPPORTED_COMMAND
+        // diagnostic the pre-024 engine used for unimplemented members.
+        const malformed = command as { type: string }
         mutation = {
           kind: 'rejected',
           diagnostics: [
             {
               code: 'UNSUPPORTED_COMMAND',
-              message: `Command ${command.type} is not implemented by the hierarchy command executor`,
+              message: `Command ${malformed.type} is not implemented by the hierarchy command executor`,
             },
           ],
         }
+      }
     }
 
     if (mutation.kind === 'rejected') {
