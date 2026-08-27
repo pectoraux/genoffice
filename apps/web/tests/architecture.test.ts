@@ -227,6 +227,29 @@ describe('architecture: apps/web has zero Electron / Node API imports', () => {
     ).toBe(true)
   })
 
+  // ARCHITECT REVIEW (PR #20, blocker 1): the browser image module must
+  // reach Univer only through the PUBLIC facade surface — no `as unknown
+  // as` casts and no private internals (`_image`, private transform
+  // fields). Geometry reads go through toBuilder().buildAsync(), the
+  // same public surface the facade's own setters build commands on.
+  it('apps/web/src/office/sheet-images.ts has NO private-Univer-internals access', () => {
+    const imagesPath = join(WEB_ROOT, 'src', 'office', 'sheet-images.ts')
+    expect(existsSync(imagesPath), `${imagesPath} should exist`).toBe(true)
+    const lines = readFileSync(imagesPath, 'utf8')
+      .split('\n')
+      .map((line, index) => ({ line, number: index + 1 }))
+      .filter(({ line }) => !line.trim().startsWith('//') && !line.trim().startsWith('*'))
+    const violations = lines.filter(({ line }) => /\bas unknown as\b|._image\b/.test(line))
+    expect(
+      violations.map((v) => `${v.number}: ${v.line.trim()}`),
+      'sheet-images.ts must use only the public facade surface',
+    ).toEqual([])
+    // The public read adapter must be present (toBuilder + buildAsync).
+    const content = readFileSync(imagesPath, 'utf8')
+    expect(content).toContain('toBuilder()')
+    expect(content).toContain('buildAsync()')
+  })
+
   it('apps/web/src filter surfaces use ONLY the canonical typed SheetFilterState', () => {
     // The filter journal/save code must reference the canonical gateway type,
     // not a locally-declared duplicate of the filter model.

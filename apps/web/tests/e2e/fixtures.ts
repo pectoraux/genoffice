@@ -3012,6 +3012,27 @@ export async function buildExcelOneCellImageFixture(): Promise<Buffer> {
   })
 }
 
+/**
+ * One absoluteAnchor picture — omitted from the browser model (architect
+ * review, PR #20 blocker 2): fixed-sheet geometry has no two-cell
+ * representation, so the reader must fail closed and never relocate it.
+ */
+export async function buildExcelAbsoluteImageFixture(): Promise<Buffer> {
+  return buildSheetImageFixture({
+    sheets: [
+      {
+        name: 'Data',
+        images: {
+          anchors: [{ kind: 'absoluteAnchor', embedId: 'rId1', name: 'Absolute' }],
+          rels: [IMAGE_REL('rId1', 'image1.png')],
+        },
+      },
+    ],
+    media: { 'xl/media/image1.png': buildSolidPng(16, 16, [40, 120, 160]) },
+    contentTypes: PNG_DEFAULT,
+  })
+}
+
 /** Read a ZIP entry as raw bytes (binary-safe). */
 export async function readZipEntryBytes(buffer: Buffer, path: string): Promise<Buffer | null> {
   const zip = await JSZip.loadAsync(buffer)

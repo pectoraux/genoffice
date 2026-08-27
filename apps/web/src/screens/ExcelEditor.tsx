@@ -1351,7 +1351,10 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             const wb = rt.univerAPI.getActiveWorkbook()
             const ws = wb?.getSheetByName(sheet.name)
             if (wb && ws) {
-              const imageWs = ws as unknown as ImageWorksheetFacade
+              // The augmented FWorksheet type (sheets-drawing/facade
+              // import above) structurally satisfies the adapter — no
+              // casts, no private internals.
+              const imageWs: ImageWorksheetFacade = ws
               for (const info of sheet.images) {
                 try {
                   imageInstallingRef.current = true
@@ -1485,15 +1488,15 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         const worksheetByName = (sheetName: string): ImageWorksheetFacade | null => {
           const wb = runtimeRef.current?.univerAPI.getActiveWorkbook()
           const ws = wb?.getSheetByName(sheetName)
-          return (ws as unknown as ImageWorksheetFacade) ?? null
+          return ws ?? null
         }
-        const visualEdits = collectImageVisualEdits(
+        const visualEdits = await collectImageVisualEdits(
           worksheetByName,
           fileImagesRef.current,
           imageDirtyRef.current,
           imageRemovalsRef.current,
         )
-        const visualAdditions = collectImageVisualAdditions(
+        const visualAdditions = await collectImageVisualAdditions(
           worksheetByName,
           imageAddsRef.current,
           imageRemovalsRef.current,
@@ -1732,7 +1735,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     const scale = Math.min(1, 480 / Math.max(1, width))
     const widthPx = Math.max(16, Math.round(width * scale))
     const heightPx = Math.max(16, Math.round(height * scale))
-    const imageWs = ws as unknown as ImageWorksheetFacade
+    const imageWs: ImageWorksheetFacade = ws
     const placement = {
       column,
       columnOffsetPx: 0,
@@ -2722,7 +2725,7 @@ async function revertImageToBaseline(
     const wb = runtime.univerAPI.getActiveWorkbook()
     const ws = wb?.getSheetByName(sheetName)
     if (!wb || !ws) return
-    const imageWs = ws as unknown as ImageWorksheetFacade
+    const imageWs: ImageWorksheetFacade = ws
     const baseline =
       info.anchorType === 'two-cell'
         ? placementFromAnchor(imageWs, info.anchor)
@@ -2747,7 +2750,7 @@ async function revertImageToBaseline(
     try {
       if (live !== undefined) {
         try {
-          ;(live as unknown as { remove(): boolean }).remove()
+          live.remove()
         } catch {
           // Already gone — install below recreates it.
         }
@@ -2763,12 +2766,12 @@ async function revertImageToBaseline(
       // restore (it settles asynchronously); verify the final placement
       // once it had time, and reinstall again if the ghost edit landed.
       await new Promise((resolve) => window.setTimeout(resolve, 350))
-      const current = readLivePlacement(imageWs, id)
+      const current = await readLivePlacement(imageWs, id)
       if (current === null || current.column !== baseline.column || current.row !== baseline.row) {
         const ghost = imageWs.getImages().find((entry) => entry.getId() === id)
         if (ghost !== undefined) {
           try {
-            ;(ghost as unknown as { remove(): boolean }).remove()
+            ghost.remove()
           } catch {
             /* best-effort */
           }

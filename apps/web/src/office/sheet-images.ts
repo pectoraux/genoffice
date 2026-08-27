@@ -17,8 +17,10 @@
  * from Univer's live model, and the gateway serializes them verbatim.
  */
 
+import { ImageSourceType } from '@univerjs/core'
 import type { SheetImageInfo, WorkbookVisualEdit } from '@genoffice/xlsx-gateway'
 import type { DrawingAnchor, SheetVisualAddition } from '@genoffice/xlsx-gateway'
+import type { ISheetImage } from '@univerjs/sheets-drawing'
 
 /** 1 CSS px = 9525 EMU at 96 dpi (ECMA-376 default). */
 export const EMU_PER_PX = 9525
@@ -172,6 +174,26 @@ export function anchorFromPlacement(
 /** Minimal structural view of a live over-grid image (FOverGridImage). */
 export interface OverGridImageFacade {
   getId(): string
+  /** Public removal (the facade's documented remove()). */
+  remove(): boolean
+  /** Public geometry read surface — see BuiltImageGeometry. */
+  toBuilder(): { buildAsync(): Promise<BuiltImageGeometry> }
+}
+
+/**
+ * EXPLICIT ADAPTER (architect review, PR #20 blocker 1) over the PUBLIC
+ * builder return: `FOverGridImage.toBuilder().buildAsync()` hands back the
+ * live image data — the same public surface the facade's own
+ * setPositionAsync / setSizeAsync build their commands on. The narrow
+ * typed view below reads only what the public type surface guarantees:
+ * the maintained two-cell transform (pixel offsets). No private Univer
+ * internals (`_image`, casts) are touched anywhere in this module.
+ */
+export interface BuiltImageGeometry {
+  readonly sheetTransform?: {
+    readonly from?: { column?: number; columnOffset?: number; row?: number; rowOffset?: number }
+    readonly to?: { column?: number; columnOffset?: number; row?: number; rowOffset?: number }
+  }
 }
 
 /** Minimal structural view of a Univer facade worksheet. */
@@ -185,9 +207,22 @@ export interface ImageWorksheetFacade {
   getImages(): OverGridImageFacade[]
 }
 
+/**
+ * The install payload for the builder's PUBLIC setImage(): the identity
+ * and source fields the install path provides. `Partial<ISheetImage>`
+ * because Univer's own documented example omits the derived transform
+ * fields (the builder computes them); the `Pick` set is exactly what the
+ * install path must supply.
+ */
+export type OverGridImageParam = Partial<ISheetImage> &
+  Pick<
+    ISheetImage,
+    'drawingId' | 'drawingType' | 'imageSourceType' | 'source' | 'unitId' | 'subUnitId'
+  >
+
 /** The builder surface the install path uses. */
 export interface OverGridImageBuilderFacade {
-  setImage(image: Record<string, unknown>): unknown
+  setImage(image: OverGridImageParam): unknown
   setColumn(column: number): unknown
   setRow(row: number): unknown
   setColumnOffset(offset: number): unknown
@@ -223,7 +258,7 @@ export async function insertOverGridImage(
     // DrawingTypeEnum.DRAWING_IMAGE — 0.
     drawingType: 0,
     // ImageSourceType.BASE64 — the data-URL source form.
-    imageSourceType: 'BASE64',
+    imageSourceType: ImageSourceType.BASE64,
     source: options.dataUrl,
     unitId: options.unitId,
     subUnitId: worksheet.getSheetId(),
@@ -240,39 +275,27 @@ export async function insertOverGridImage(
 }
 
 /**
- * Reads a live image's placement through the facade. FOverGridImage
- * flattens the underlying ISheetImage's from-position onto its interface
- * (`column`, `columnOffset`, `row`, `rowOffset`, `width`, `height` —
- * pixel offsets); the private `_image` carry-through is read defensively
- * for the maintained sheetTransform when present. Returns null when the
- * image is no longer on the sheet.
+ * Reads a live image's placement through the PUBLIC facade surface:
+ * `toBuilder().buildAsync()` returns the live image data, whose
+ * sheetTransform carries the maintained from/to markers (pixel
+ * offsets). The width/height derive from the live grid between the
+ * markers — deterministic and exactly how the install path sized the
+ * image. Returns null when the image is no longer on the sheet or its
+ * geometry is not fully readable (nothing journals — fail closed).
  */
-export function readLivePlacement(
+export async function readLivePlacement(
   worksheet: ImageWorksheetFacade,
   id: string,
-): OverGridPlacement | null {
+): Promise<OverGridPlacement | null> {
   const image = worksheet.getImages().find((entry) => entry.getId() === id)
   if (image === undefined) return null
-  const carrier = image as unknown as {
-    column?: number
-    columnOffset?: number
-    row?: number
-    rowOffset?: number
-    width?: number
-    height?: number
-    _image?: {
-      sheetTransform?: {
-        from?: { column?: number; columnOffset?: number; row?: number; rowOffset?: number }
-        to?: { column?: number; columnOffset?: number; row?: number; rowOffset?: number }
-      }
-    }
-  }
-  const from = carrier._image?.sheetTransform?.from
-  const to = carrier._image?.sheetTransform?.to
-  const column = from?.column ?? carrier.column
-  const columnOffsetPx = from?.columnOffset ?? carrier.columnOffset
-  const row = from?.row ?? carrier.row
-  const rowOffsetPx = from?.rowOffset ?? carrier.rowOffset
+  const data = await image.toBuilder().buildAsync()
+  const from = data.sheetTransform?.from
+  const to = data.sheetTransform?.to
+  const column = from?.column
+  const columnOffsetPx = from?.columnOffset
+  const row = from?.row
+  const rowOffsetPx = from?.rowOffset
   if (
     column === undefined ||
     columnOffsetPx === undefined ||
@@ -281,8 +304,8 @@ export function readLivePlacement(
   ) {
     return null
   }
-  let widthPx = carrier.width
-  let heightPx = carrier.height
+  let widthPx: number | undefined
+  let heightPx: number | undefined
   if (to !== undefined && to.column !== undefined && to.row !== undefined) {
     const toColumnOffsetPx = to.columnOffset ?? 0
     const toRowOffsetPx = to.rowOffset ?? 0
@@ -320,8 +343,11 @@ export function readLivePlacement(
  * Reads the canonical edit anchor for a live image, or null when the
  * image is gone. THE save-side adapter: plain typed data out.
  */
-export function readLiveAnchor(worksheet: ImageWorksheetFacade, id: string): DrawingAnchor | null {
-  const placement = readLivePlacement(worksheet, id)
+export async function readLiveAnchor(
+  worksheet: ImageWorksheetFacade,
+  id: string,
+): Promise<DrawingAnchor | null> {
+  const placement = await readLivePlacement(worksheet, id)
   if (placement === null) return null
   return anchorFromPlacement(worksheet, placement)
 }
@@ -375,12 +401,12 @@ export interface AddedVisualLocator {
  * resized file images. Anchors are read from the LIVE Univer model so
  * multiple consecutive interactions collapse into one final-state edit.
  */
-export function collectImageVisualEdits(
+export async function collectImageVisualEdits(
   worksheetByName: (sheetName: string) => ImageWorksheetFacade | null,
   fileImages: ReadonlyMap<string, FileImageEntry>,
   dirty: ReadonlySet<string>,
   removals: ReadonlySet<string>,
-): WorkbookVisualEdit[] {
+): Promise<WorkbookVisualEdit[]> {
   const edits: WorkbookVisualEdit[] = []
   for (const id of removals) {
     const entry = fileImages.get(id)
@@ -397,7 +423,7 @@ export function collectImageVisualEdits(
     if (entry === undefined) continue
     const worksheet = worksheetByName(entry.sheetName)
     if (worksheet === null) continue
-    const anchor = readLiveAnchor(worksheet, id)
+    const anchor = await readLiveAnchor(worksheet, id)
     if (anchor === null) continue
     edits.push({
       drawingPath: entry.info.drawingPath,
@@ -414,16 +440,16 @@ export function collectImageVisualEdits(
  * from the LIVE model so post-insert moves persist at their final
  * position.
  */
-export function collectImageVisualAdditions(
+export async function collectImageVisualAdditions(
   worksheetByName: (sheetName: string) => ImageWorksheetFacade | null,
   adds: readonly SessionImageAdd[],
   removals: ReadonlySet<string>,
-): SheetVisualAddition[] {
+): Promise<SheetVisualAddition[]> {
   const additions: SheetVisualAddition[] = []
   for (const add of adds) {
     if (removals.has(add.id)) continue
     const worksheet = worksheetByName(add.sheetName)
-    const anchor = worksheet === null ? null : readLiveAnchor(worksheet, add.id)
+    const anchor = worksheet === null ? null : await readLiveAnchor(worksheet, add.id)
     additions.push({
       sheetName: add.sheetName,
       anchor: anchor ?? add.anchor,

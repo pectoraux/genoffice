@@ -36,6 +36,7 @@ import {
   buildExcelMultiSheetImageFixture,
   buildExcelJpegImageFixture,
   buildExcelOneCellImageFixture,
+  buildExcelAbsoluteImageFixture,
   readZipEntry,
   readZipEntryBytes,
   listZipEntries,
@@ -52,7 +53,7 @@ interface ImageSnapshotView {
     images?: Array<{
       drawingPath: string
       drawingIndex: number
-      anchorType: 'two-cell' | 'one-cell' | 'absolute'
+      anchorType: 'two-cell' | 'one-cell'
       anchor: Record<string, number>
       mediaType: string
       dataUrl: string
@@ -89,7 +90,7 @@ async function openFixture(page: Page, bytes: Buffer, path: string): Promise<Ima
 /** Reads the live over-grid images of a sheet through the exposed runtime. */
 async function liveImages(page: Page, sheetName: string): Promise<LiveImageView[]> {
   return page.evaluate(
-    ({ name }) => {
+    async ({ name }) => {
       const w = window as {
         __genofficeExcelRuntime?: {
           univerAPI: {
@@ -97,12 +98,16 @@ async function liveImages(page: Page, sheetName: string): Promise<LiveImageView[
               getSheetByName(sheetName: string): {
                 getImages(): Array<{
                   getId(): string
-                  _image?: {
-                    source?: string
-                    sheetTransform?: {
-                      from?: { column?: number; row?: number }
-                      to?: { column?: number; row?: number }
-                    }
+                  // PUBLIC geometry read — same surface the app code uses
+                  // (toBuilder().buildAsync()); no private internals.
+                  toBuilder(): {
+                    buildAsync(): Promise<{
+                      source?: string
+                      sheetTransform?: {
+                        from?: { column?: number; row?: number }
+                        to?: { column?: number; row?: number }
+                      }
+                    }>
                   }
                 }>
               }
@@ -116,14 +121,26 @@ async function liveImages(page: Page, sheetName: string): Promise<LiveImageView[
       if (!wb) throw new Error('no active workbook')
       const ws = wb.getSheetByName(name)
       if (!ws) throw new Error(`sheet ${name} not found`)
-      return ws.getImages().map((image) => ({
-        id: image.getId(),
-        source: image._image?.source ?? '',
-        fromColumn: image._image?.sheetTransform?.from?.column ?? -1,
-        fromRow: image._image?.sheetTransform?.from?.row ?? -1,
-        toColumn: image._image?.sheetTransform?.to?.column ?? -1,
-        toRow: image._image?.sheetTransform?.to?.row ?? -1,
-      }))
+      const views: Array<{
+        id: string
+        source: string
+        fromColumn: number
+        fromRow: number
+        toColumn: number
+        toRow: number
+      }> = []
+      for (const image of ws.getImages()) {
+        const data = await image.toBuilder().buildAsync()
+        views.push({
+          id: image.getId(),
+          source: data.source ?? '',
+          fromColumn: data.sheetTransform?.from?.column ?? -1,
+          fromRow: data.sheetTransform?.from?.row ?? -1,
+          toColumn: data.sheetTransform?.to?.column ?? -1,
+          toRow: data.sheetTransform?.to?.row ?? -1,
+        })
+      }
+      return views
     },
     { name: sheetName },
   )
@@ -682,5 +699,45 @@ test.describe('Insert tab — Images persist through the canonical pipeline', ()
     expect(drawingSaved).toEqual(drawingFixture)
     const contentTypes = await readZipEntry(saved, '[Content_Types].xml')
     expect(contentTypes).toContain('Extension="jpeg"')
+  })
+
+  test('15: an absolute-anchored image is omitted, never relocated (fail closed)', async ({
+    page,
+  }) => {
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    // Architect review (PR #20, blocker 2): absolute geometry cannot be
+    // represented in the two-cell wire model. The reader must fail closed
+    // — omit the picture from the browser model entirely and leave the
+    // file untouched. A zero-marker approximation would silently
+    // relocate the picture to (0,0), which is exactly what must NOT
+    // happen.
+    const fixture = await buildExcelAbsoluteImageFixture()
+    const snapshot = await openFixture(page, fixture, '/tmp/e2e-ribbon-images-absolute.xlsx')
+    expect(snapshot.sheets[0]?.images ?? []).toHaveLength(0)
+
+    // Nothing renders over the grid.
+    const live = await liveImages(page, 'Data')
+    expect(live).toHaveLength(0)
+
+    // Dirty via a cell edit (image state untouched), then save: the
+    // absolute anchor XML and its media bytes survive byte-for-byte.
+    await page.keyboard.press('Control+Home')
+    await page.waitForTimeout(200)
+    await page.locator('#genoffice-web-excel').click({ position: { x: 320, y: 8 } })
+    await page.keyboard.type('abs')
+    await page.keyboard.press('Enter')
+    await expect(page.getByText('● Unsaved changes')).toBeVisible({ timeout: 10_000 })
+    const saved = await clickSaveAndCaptureDownload(page, 'Save')
+    expect(await readZipEntryBytes(saved, 'xl/drawings/drawing1.xml')).toEqual(
+      await readZipEntryBytes(fixture, 'xl/drawings/drawing1.xml'),
+    )
+    expect(await readZipEntryBytes(saved, 'xl/media/image1.png')).toEqual(
+      await readZipEntryBytes(fixture, 'xl/media/image1.png'),
+    )
+    const drawing = await readZipEntry(saved, 'xl/drawings/drawing1.xml')
+    expect(drawing).toContain('<xdr:pos x="47625" y="9525"/>')
   })
 })

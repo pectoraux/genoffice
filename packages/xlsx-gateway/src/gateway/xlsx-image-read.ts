@@ -13,6 +13,16 @@
 /// parity with the desktop sidecar (the index counts EVERY anchor
 /// element in document order, exactly like visuals.rs and
 /// xlsx-drawing-edit.ts).
+///
+/// ARCHITECT REVIEW (PR #20, blocker 2): absolute-anchored pictures are
+/// OMITTED from the browser model. Their fixed-sheet geometry (xdr:pos +
+/// xdr:ext, EMU from the sheet origin) cannot be represented in the
+/// two-cell wire model, and approximating it with a zero marker would
+/// silently relocate the picture. Fail closed: the picture never
+/// surfaces, stays untouched in the file, and a no-op save preserves
+/// its drawing XML and media byte-for-byte. The anchor still counts
+/// toward drawingIndex parity (omitted anchors keep later locators
+/// stable).
 
 import type { DrawingAnchor } from './xlsx-drawing-add'
 
@@ -41,15 +51,17 @@ const ANCHOR_PATTERN = /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S
 /// `drawingPath` + `drawingIndex` are the canonical edit locator (the same
 /// pair the desktop sidecar emits); the browser echoes them back in
 /// visualEdits. `anchor` carries raw OOXML marker geometry (EMU offsets);
-/// two-cell images get their pixel size from the live grid, one-cell and
-/// absolute images carry the explicit `widthPx`/`heightPx` derived from
-/// a:ext (documented conversion: 1 px = 9525 EMU at 96 dpi).
+/// two-cell images get their pixel size from the live grid, one-cell
+/// images carry the explicit `widthPx`/`heightPx` derived from a:ext
+/// (documented conversion: 1 px = 9525 EMU at 96 dpi). Absolute-anchored
+/// pictures are never surfaced (see the module docs) — the union has no
+/// 'absolute' member by design.
 export interface SheetImageInfo {
   readonly drawingPath: string
   readonly drawingIndex: number
-  readonly anchorType: 'two-cell' | 'one-cell' | 'absolute'
+  readonly anchorType: 'two-cell' | 'one-cell'
   readonly anchor: DrawingAnchor
-  /// One-cell / absolute pictures: explicit a:ext size in px (rounded).
+  /// One-cell pictures: explicit a:ext size in px (rounded).
   readonly widthPx?: number | undefined
   readonly heightPx?: number | undefined
   /// a:xfrm/@rot in degrees clockwise, when present.
@@ -104,11 +116,15 @@ export async function parseSheetImages(
     anchorIndex += 1
     const anchorXml = match[0]
     const kind = match[1]
+    if (kind === 'absoluteAnchor') {
+      // Fail closed (architect review, PR #20 blocker 2): an absolute
+      // picture's fixed-sheet geometry has no two-cell representation —
+      // omit it rather than relocate it to a zero marker. The index
+      // already counted above, so later anchors keep their locators.
+      continue
+    }
     if (!anchorXml.includes('<xdr:pic')) continue
-    const parsed = parsePictureAnchor(
-      anchorXml,
-      kind as 'twoCellAnchor' | 'oneCellAnchor' | 'absoluteAnchor',
-    )
+    const parsed = parsePictureAnchor(anchorXml, kind as 'twoCellAnchor' | 'oneCellAnchor')
     if (parsed === null) {
       // An <xdr:pic> without a readable r:embed or markers — skip the
       // picture, but the anchor index still counted above.
@@ -196,7 +212,7 @@ async function parseImageRelationships(
 }
 
 interface ParsedPictureAnchor {
-  readonly anchorType: 'two-cell' | 'one-cell' | 'absolute'
+  readonly anchorType: 'two-cell' | 'one-cell'
   readonly anchor: DrawingAnchor
   readonly widthPx?: number | undefined
   readonly heightPx?: number | undefined
@@ -207,7 +223,7 @@ interface ParsedPictureAnchor {
 
 function parsePictureAnchor(
   anchorXml: string,
-  kind: 'twoCellAnchor' | 'oneCellAnchor' | 'absoluteAnchor',
+  kind: 'twoCellAnchor' | 'oneCellAnchor',
 ): ParsedPictureAnchor | null {
   const embedId = /<a:blip\b[^>]*\br:embed="([^"]+)"/.exec(anchorXml)?.[1]
   if (embedId === undefined) return null
@@ -216,19 +232,6 @@ function parsePictureAnchor(
   const extMatch = /<a:ext\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/.exec(anchorXml)
   const widthPx = extMatch !== null ? Math.round(Number(extMatch[1]) / EMU_PER_PX) : undefined
   const heightPx = extMatch !== null ? Math.round(Number(extMatch[2]) / EMU_PER_PX) : undefined
-  if (kind === 'absoluteAnchor') {
-    // Absolute pictures render at their fixed position; editing them is
-    // fail-closed (the canonical edit family refuses absolute anchors).
-    return {
-      anchorType: 'absolute',
-      anchor: zeroAnchor(),
-      ...(widthPx !== undefined ? { widthPx } : {}),
-      ...(heightPx !== undefined ? { heightPx } : {}),
-      ...(rot !== undefined ? { rotationDeg: Number(rot) / 60000 } : {}),
-      ...(name !== undefined && name !== '' ? { name } : {}),
-      embedId,
-    }
-  }
   const from = parseMarker(anchorXml, 'from')
   if (from === null) return null
   if (kind === 'oneCellAnchor') {
@@ -288,19 +291,6 @@ function parseMarker(
     return null
   }
   return { fromRow: row, fromColumn: col, fromRowOffset: rowOff, fromColumnOffset: colOff }
-}
-
-function zeroAnchor(): DrawingAnchor {
-  return {
-    fromRow: 0,
-    fromColumn: 0,
-    fromRowOffset: 0,
-    fromColumnOffset: 0,
-    toRow: 0,
-    toColumn: 0,
-    toRowOffset: 0,
-    toColumnOffset: 0,
-  }
 }
 
 function extensionOf(path: string): string {

@@ -325,14 +325,52 @@ describe('image read: canonical parseSheetImages', () => {
     expect(images[0]?.heightPx).toBe(10)
   })
 
-  it('models absolute anchors as read-only absolute geometry', async () => {
+  it('omits absolute-anchored pictures (fail closed — never relocated)', async () => {
     const buffer = await buildImageFixture({
       anchors: [{ kind: 'absoluteAnchor', embedId: 'rId1', ext: { cx: 95250, cy: 95250 } }],
     })
     const images = (await readBasicWorkbook(buffer)).snapshot.sheets[0]?.images ?? []
+    // Architect review (PR #20, blocker 2): absolute geometry has no
+    // two-cell representation — the picture must NOT surface (a zero
+    // marker would silently relocate it). It stays untouched in the file.
+    expect(images).toHaveLength(0)
+  })
+
+  it('keeps drawingIndex parity across an omitted absolute anchor', async () => {
+    const buffer = await buildImageFixture({
+      anchors: [
+        { kind: 'absoluteAnchor', embedId: 'rId1', ext: { cx: 95250, cy: 95250 } },
+        { kind: 'twoCellAnchor', embedId: 'rId2' },
+      ],
+      rels: [
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>',
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image2.png"/>',
+      ],
+      media: {
+        'xl/media/image1.png': PNG_BYTES,
+        'xl/media/image2.png': PNG_BYTES,
+      },
+    })
+    const images = (await readBasicWorkbook(buffer)).snapshot.sheets[0]?.images ?? []
+    // The absolute anchor still counts toward the document-order index,
+    // so the following two-cell picture keeps its edit locator.
     expect(images).toHaveLength(1)
-    expect(images[0]?.anchorType).toBe('absolute')
-    expect(images[0]?.widthPx).toBe(10)
+    expect(images[0]?.anchorType).toBe('two-cell')
+    expect(images[0]?.drawingIndex).toBe(1)
+  })
+
+  it('preserves an absolute-anchored picture byte-for-byte through a no-op save', async () => {
+    const buffer = await buildImageFixture({
+      anchors: [{ kind: 'absoluteAnchor', embedId: 'rId1', ext: { cx: 95250, cy: 95250 } }],
+    })
+    const saved = await saveWithVisualEdits(buffer, [])
+    const before = await readEntry(buffer, 'xl/drawings/drawing1.xml')
+    const after = await readEntry(saved.buffer, 'xl/drawings/drawing1.xml')
+    expect(after).toBe(before)
+    expect(after).toContain('<xdr:pos x="47625" y="9525"/>')
+    const mediaBefore = await readEntryBytes(buffer, 'xl/media/image1.png')
+    const mediaAfter = await readEntryBytes(saved.buffer, 'xl/media/image1.png')
+    expect(mediaAfter?.equals(mediaBefore ?? Buffer.alloc(0))).toBe(true)
   })
 
   it('reads rotation in degrees when a:xfrm carries rot', async () => {
