@@ -850,3 +850,116 @@ describe('architecture: EXCEL-021 Tables uses the canonical wire families', () =
     expect(content).toContain('SheetTableAddition')
   })
 })
+
+// ── EXCEL-023 (Insert → Chart / chart edit): the browser is a thin typed
+//    client for the chart surface too — it renders the gateway's canonical
+//    ChartVisualState and journals through the chartEdits /
+//    visualAdditions / visualEdits wire families; ALL chart OOXML work
+//    stays in the xlsx-gateway. Charts render through the app's own SVG
+//    components floated via Univer's PUBLIC registerComponent +
+//    addFloatDomToRange facades (Univer 0.25.1 ships no chart plugin —
+//    the desktop's exact rendering architecture).
+describe('architecture: EXCEL-023 Charts uses the canonical wire families', () => {
+  const webFiles = readFiles(join(WEB_ROOT, 'src'))
+
+  it('apps/web/src has NO chart OOXML, JSZip, or direct-gateway chart writes', () => {
+    // (applyCellEditsToXlsx itself is deliberately absent from this list —
+    // the file-level comments legitimately name the engine's entry point;
+    // the root-import guard below blocks every actual value import.)
+    const forbidden = [
+      /<c:chartSpace\b/,
+      /<c:barChart\b/,
+      /<c:ser\b/,
+      /xl\/charts\//,
+      /relationships\/chart\b/,
+      /from\s+['"]jszip['"]/,
+      /applyChartEdit/,
+      /applyVisualAdditions/,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('apps/web/src chart surfaces use ONLY the canonical typed families', () => {
+    const chartsPath = join(WEB_ROOT, 'src', 'office', 'sheet-charts.tsx')
+    expect(existsSync(chartsPath), `${chartsPath} should exist`).toBe(true)
+    const chartsContent = readFileSync(chartsPath, 'utf8')
+    expect(chartsContent).toContain('SheetChartInfo')
+    expect(chartsContent).toContain('WorkbookChartEdit')
+    expect(
+      /import type \{[^}]*SheetChartInfo[^}]*\} from '@genoffice\/xlsx-gateway'/.test(
+        chartsContent,
+      ),
+    ).toBe(true)
+    const clientContent = readFileSync(
+      join(WEB_ROOT, 'src', 'api', 'office-client.ts'),
+      'utf8',
+    )
+    expect(clientContent).toContain('chartEdits?:')
+    expect(clientContent).toContain('WorkbookChartEdit')
+  })
+
+  it('apps/web/src/office/sheet-charts.tsx has NO private-Univer-internals access', () => {
+    const chartsPath = join(WEB_ROOT, 'src', 'office', 'sheet-charts.tsx')
+    expect(existsSync(chartsPath), `${chartsPath} should exist`).toBe(true)
+    const lines = readFileSync(chartsPath, 'utf8')
+      .split('\n')
+      .map((line, index) => ({ line, number: index + 1 }))
+      .filter(({ line }) => !line.trim().startsWith('//') && !line.trim().startsWith('*'))
+    const violations = lines.filter(({ line }) => /\bas unknown as\b|._image\b/.test(line))
+    expect(
+      violations.map((v) => `${v.number}: ${v.line.trim()}`),
+      'sheet-charts.tsx must use only the public facade surface (structural interfaces, no casts)',
+    ).toEqual([])
+  })
+
+  it('the gateway pure-domain submodule is the ONLY value import from xlsx-gateway', () => {
+    // Value imports from the gateway package ROOT remain forbidden (the
+    // engine must never bundle into the browser). EXCEL-023 permits
+    // exactly one subpath — the pure domain module the desktop also
+    // consumes (apps/sheets/src/domain/chart-visual.ts re-exports it) —
+    // which carries no archive/XML/relationship code.
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) =>
+        /^import\s+\{[^}]*\}\s+from\s+'@genoffice\/xlsx-gateway[^']*'/.test(line.trim()),
+      )
+    })
+    const offenders = violations.filter(
+      (f) =>
+        !f.content.includes("from '@genoffice/xlsx-gateway/src/domain/chart-visual.js'") ||
+        nonCommentLines(f.content).some(
+          (line) =>
+            /^import\s+\{[^}]*\}\s+from\s+'@genoffice\/xlsx-gateway'/.test(line.trim()),
+        ),
+    )
+    expect(offenders.map((v) => v.rel)).toEqual([])
+    // The pure-domain re-export must exist and carry no engine imports.
+    const domainPath = join(WEB_ROOT, 'src', 'office', 'chart-domain.ts')
+    expect(existsSync(domainPath), `${domainPath} should exist`).toBe(true)
+    const domainContent = readFileSync(domainPath, 'utf8')
+    expect(domainContent).toContain('chart-visual.js')
+  })
+
+  it('Ribbon Insert → Charts is wired (no disabled stub)', () => {
+    const ribbonPath = join(WEB_ROOT, 'src', 'screens', 'excel', 'Ribbon.tsx')
+    expect(existsSync(ribbonPath)).toBe(true)
+    const content = readFileSync(ribbonPath, 'utf8')
+    expect(content).toContain('onInsertChart')
+    expect(content).not.toContain('Chart — disabled')
+  })
+
+  it('ExcelEditor seeds file charts from WorksheetState.charts (read path) and emits the chartEdits family', () => {
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    expect(existsSync(editorPath)).toBe(true)
+    const content = readFileSync(editorPath, 'utf8')
+    expect(content).toContain('sheet.charts')
+    expect(content).toContain('collectChartEdits')
+    expect(content).toContain('collectChartAdditions')
+    expect(content).toContain('collectChartVisualEdits')
+    expect(content).toContain('chartEdits')
+  })
+})

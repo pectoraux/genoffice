@@ -64,19 +64,6 @@ const CHART_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/re
 /// editor patches.
 const ANCHOR_PATTERN = /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g
 
-/// The single-plot families the canonical model represents (mirrors the
-/// plot elements buildChartXml writes and applyChartEdit converts).
-const SUPPORTED_PLOTS = [
-  'barChart',
-  'lineChart',
-  'areaChart',
-  'pieChart',
-  'doughnutChart',
-  'scatterChart',
-  'radarChart',
-] as const
-type SupportedPlot = (typeof SUPPORTED_PLOTS)[number]
-
 /// Any other plot element means the chart is outside the envelope.
 const KNOWN_UNSUPPORTED_PLOTS =
   /<c:(bar3DChart|line3DChart|area3DChart|pie3DChart|doughnut3DChart|ofPieChart|bubbleChart|stockChart|surfaceChart|surface3DChart|radar3DChart|scatter3DChart)\b/
@@ -141,7 +128,7 @@ export async function parseSheetCharts(
     } catch {
       continue
     }
-    let state: ChartVisualState | null = null
+    let state: ChartVisualState | null
     try {
       state = parseChartXml(chartXml)
     } catch (error) {
@@ -293,7 +280,7 @@ export function parseChartXml(chartXml: string): ChartVisualState | null {
   if (KNOWN_UNSUPPORTED_PLOTS.test(chartXml)) return null
   const plots = [...chartXml.matchAll(PLOT_PATTERN)]
   if (plots.length === 0) return null
-  const plotNames = plots.map((plot) => plot[1] as SupportedPlot)
+  const plotNames = plots.map((plot) => plot[1] as string)
   const uniquePlots = new Set(plotNames)
   // Multi-plot support is the canonical combo ONLY: one barChart plot plus
   // one lineChart plot (series ordered bars-then-line, matching what
@@ -313,7 +300,7 @@ export function parseChartXml(chartXml: string): ChartVisualState | null {
   const series: ChartSeriesVisualState[] = []
   for (const plot of orderedPlots) {
     for (const serMatch of (plot[2] ?? '').matchAll(/<c:ser>[\s\S]*?<\/c:ser>/g)) {
-      const parsed = parseSeries(serMatch[0], plot[1] as SupportedPlot)
+      const parsed = parseSeries(serMatch[0], plot[1] as string)
       if (parsed !== null) series.push(parsed)
       if (series.length > MAX_SERIES_PER_CHART) return null
     }
@@ -420,7 +407,7 @@ export function parseChartXml(chartXml: string): ChartVisualState | null {
 
 /// One <c:ser> → ChartSeriesVisualState. Returns null for an unparseable
 /// series (missing values block).
-function parseSeries(serXml: string, plot: SupportedPlot): ChartSeriesVisualState | null {
+function parseSeries(serXml: string, plot: string): ChartSeriesVisualState | null {
   const name = parseSeriesName(serXml)
   const isScatter = plot === 'scatterChart'
   const valuesBlock = isScatter

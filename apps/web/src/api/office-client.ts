@@ -26,6 +26,7 @@ import type {
   SheetNote,
   SheetTableAddition,
   SheetVisualAddition,
+  WorkbookChartEdit,
   WorkbookSnapshot,
   WorkbookVisualEdit,
 } from '@genoffice/xlsx-gateway'
@@ -172,21 +173,28 @@ export interface BrowserWorkbookSavePlan {
    */
   readonly tableAdditions?: readonly SheetTableAddition[]
   /**
-   * Session-created images (Insert → Picture, EXCEL-022). Each entry
-   * carries the journaled image creation for one picture — the engine
-   * writes the media part, drawing picture, anchor, and relationships.
-   * IMAGE-ONLY on this wire (chart/shape additions are rejected by the
-   * route — EXCEL-023 will widen the family). Mirrors the desktop
-   * visualAdditions journal semantics: deleting a session image drops
-   * its entry, so it is never persisted.
+   * Session-created images and charts (Insert → Picture / Insert →
+   * Chart, EXCEL-022 / EXCEL-023). Each entry carries the journaled
+   * visual creation — exactly one typed payload (image or chart); the
+   * engine writes the parts, anchors, and relationships. Mirrors the
+   * desktop visualAdditions journal semantics: deleting a session visual
+   * drops its entry, so it is never persisted.
    */
   readonly visualAdditions?: readonly SheetVisualAddition[]
   /**
-   * Surgical edits to file-native images (move / resize / delete,
+   * Surgical semantic edits to file-native charts (EXCEL-023 — Chart
+   * Design). Each entry targets one chart part by its canonical
+   * xl/charts/*.xml path (the open snapshot's charts carry it) and
+   * carries the journaled property changes; the engine patches the chart
+   * XML through the canonical chartEdits family.
+   */
+  readonly chartEdits?: readonly WorkbookChartEdit[]
+  /**
+   * Surgical edits to file-native visuals (move / resize / delete,
    * EXCEL-022). Each entry targets the canonical (drawingPath,
-   * drawingIndex) locator the open snapshot's images carry. Anchors are
-   * 0-based cell markers with EMU offsets; the browser derives them from
-   * Univer's live over-grid image state (documented conversion:
+   * drawingIndex) locator the open snapshot's images/charts carry.
+   * Anchors are 0-based cell markers with EMU offsets; the browser
+   * derives them from the live visual state (documented conversion:
    * 1 px = 9525 EMU at 96 dpi).
    */
   readonly visualEdits?: readonly WorkbookVisualEdit[]
@@ -201,11 +209,14 @@ export interface BrowserWorkbookSaveRequest {
 
 export interface SaveWorkbookResponse {
   readonly fileBytes: string
-  /** EXCEL-022: locators of persisted visualAdditions, in order. */
+  /** EXCEL-022/023: locators of persisted visualAdditions, in order —
+   * chart additions carry the allocated chart part path so later
+   * chartEdits target the exact created chart. */
   readonly addedVisuals?: readonly {
     readonly worksheetPath?: string
     readonly drawingPath: string
     readonly drawingIndex: number
+    readonly chartPath?: string
   }[]
 }
 
