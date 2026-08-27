@@ -61,8 +61,8 @@ PROJECT-049 ← 046, 047, 048
 The objectively accepted state and the next authorized product increment (the authorization gate below applies):
 
 ```text
-Accepted: PROJECT-001..PROJECT-025 (PROJECT-019 completed as the 019A rescope decision record)
-Next authorized: PROJECT-026
+Accepted: PROJECT-001..PROJECT-026 (PROJECT-019 completed as the 019A rescope decision record)
+Next authorized: PROJECT-027
 ```
 
 A work item cannot be authorized until all direct dependencies are objectively accepted. A dependency change requires synchronized updates to `work-items.md`, this file, and `architecture-lock.md` when the change affects a frozen invariant.
@@ -227,3 +227,19 @@ PROJECT-026 (Critical-path/resource visualization) adds NO new workspace package
 ```
 
 The PROJECT-026 modules never import the scheduling package in production code (no scheduling authority — lock §3/§6; there is NO second CPM engine and NO second capacity engine: every critical/float value is the verbatim `TaskSchedule` echo of the projection's by-reference schedule join — the PROJECT-012 rule — and every demand/capacity/over-allocation value comes from the INJECTED `ResourceAllocationQuery`, satisfied by the host-side canonical binding `resourceAllocations` — the `ScheduleRunner`/`CalendarWorkingTimeQuery` injection precedents — and asserted at the TEST layer against the REAL scheduling package, the accepted precedent), never the file/host packages (R-009), and never React/Electron/Node/DOM APIs (lock §13 — the discipline suite's raw-source scan covers them, and the NEW no-second-engine guards scan `critical-path.ts` for CPM/float computation markers and `resources.ts` for capacity-semantics markers so no critical-path, slack, or resource-capacity algorithm can be re-implemented there). CI is unchanged: the existing foundation gate typechecks/tests both touched packages and its boundary grep covers them recursively. The work-item edge `022 + 012 → 026` completes on acceptance; `022 → 027`, `022 → 028` remain open.
+
+## Package dependency edges (PROJECT-027)
+
+PROJECT-027 (Electron shell) adds ONE new workspace package — the desktop app surface `apps/project` (`@genoffice/project-desktop`), sanctioned by architecture-lock §3 ("Project desktop host code will be isolated under a Project-specific app surface"; an APP, not a foundation package — the `apps/*` workspace root, exactly like `apps/docs`/`apps/sheets` on the office side). It changes NO existing edge; the six-package Project foundation graph is untouched:
+
+```text
+@genoffice/project-desktop → @genoffice/project-renderer-core (the shared renderer binding)
+@genoffice/project-desktop → @genoffice/project-engine (validation + command application, through the renderer-core session)
+@genoffice/project-desktop → @genoffice/project-contracts (types + brand helpers)
+@genoffice/project-desktop → @genoffice/project-scheduling (the canonical authorities, INJECTED: schedule/resolveCalendar∘workingIntervals/resourceAllocations)
+@genoffice/project-desktop → @genoffice/project-file (the canonical .gproj + MSPDI adapters: open/save)
+```
+
+The host's own layering is enforced structurally, not by convention: the MAIN process (`src/main/**`) and PRELOAD (`src/preload/**`) import NO `@genoffice/*` package of any kind — they are native transport only (window/lifecycle, native menu with UNREGISTERED accelerators, dialogs, raw byte reads/writes, the close-guard handshake); every `ProjectDocument`/byte semantic crossing happens in the renderer process. The renderer's `src/renderer/bindings.ts` is the ONE module importing the scheduling package — the three canonical injection seams the accepted increments define (`ScheduleRunner` PROJECT-021, `CalendarWorkingTimeQuery` PROJECT-025, `ResourceAllocationQuery` PROJECT-026) — and the desktop architecture suite (`apps/project/tests/unit/architecture.test.ts`) fails the build if any other host module imports scheduling, re-implements a working-time/capacity primitive, computes dates, or hand-builds a `ProjectCommand` literal (commands flow exclusively through the renderer-core builders + edit flows). The work-item edge `021 + 022 → 027` completes on acceptance; `021 + 022 → 028` (web shell) remains open and unauthorized. MPP import through the Java sidecar (`project-mpp-host`) is deliberately NOT wired into the shell yet — the work item's file surface is the canonical file adapter (`.gproj` open/save + MSPDI interchange through `@genoffice/project-file`); the MPP pipeline is a later host integration.
+
+CI: the Project foundation gate grows 25 → 27 steps (`Typecheck project-desktop`, `Test project-desktop` — the unit/architecture suite) plus the NEW `desktop-e2e` job (ubuntu-22.04, the repo-wide Electron E2E platform pinning: Electron runtime download → `electron-vite build` → AppArmor sysctl best-effort → `xvfb-run` over `npm run test:e2e -w @genoffice/project-desktop`) — the first Project CI stage that runs the product as an application rather than as packages.

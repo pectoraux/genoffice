@@ -58,6 +58,10 @@ jobs:
         run: npm run typecheck -w @genoffice/project-renderer-core
       - name: Test project-renderer-core
         run: npm test -w @genoffice/project-renderer-core
+      - name: Typecheck project-desktop
+        run: npm run typecheck -w @genoffice/project-desktop
+      - name: Test project-desktop
+        run: npm test -w @genoffice/project-desktop
       - name: Setup Java (MPXJ sidecar)
         uses: actions/setup-java@v4
         with:
@@ -69,3 +73,47 @@ jobs:
         run: npm run typecheck -w @genoffice/project-mpp-host
       - name: Test project-mpp-host
         run: npm test -w @genoffice/project-mpp-host
+
+  # PROJECT-027 — desktop E2E: boots the real built Electron app (main +
+  # preload + renderer binding the shared renderer core) under xvfb and
+  # drives the full native transport → adapter → engine → scheduler →
+  # projection pipeline (Playwright `electron.launch`, the repo-wide e2e
+  # job's platform pinning: 22.04's AppArmor policy is the documented
+  # working baseline for Electron renderers under xvfb).
+  desktop-e2e:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Download the Electron runtime
+        run: node node_modules/electron/install.js
+      - name: Build the Project desktop app
+        run: npm run build -w @genoffice/project-desktop
+      - name: Allow unprivileged user namespaces (Electron)
+        run: |
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          else
+            echo "kernel.apparmor_restrict_unprivileged_userns not present — skipping"
+          fi
+      - name: Desktop E2E (Electron)
+        env:
+          DEBUG: 'pw:browser'
+        run: xvfb-run --auto-servernum -- npm run test:e2e -w @genoffice/project-desktop
+      - name: Upload E2E artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-desktop-e2e-artifacts
+          path: |
+            apps/project/e2e/test-results
+          retention-days: 7
+          if-no-files-found: ignore
