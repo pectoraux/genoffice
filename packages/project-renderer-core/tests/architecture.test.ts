@@ -319,6 +319,90 @@ describe('PROJECT-021 architecture — package boundaries', () => {
     expect(timeline).not.toContain("from '@genoffice/project-scheduling'")
   })
 
+  it('exposes the PROJECT-026 critical-path/resource-visualization surface from the index (query, bands, floats, surfaces)', () => {
+    const index = srcModules['../src/index.ts'] ?? ''
+    for (const symbol of [
+      'type ProjectCriticalPathSurface',
+      'type ProjectTaskFloat',
+      'type ProjectTaskSlackGeometry',
+      'buildCriticalPath',
+      'RESOURCE_ALLOCATION_FAILED',
+      'type ProjectResourceBand',
+      'type ProjectResourceUtilization',
+      'type ProjectResourceViewSurface',
+      'type ResourceAllocation',
+      'type ResourceAllocationQuery',
+      'type ResourceAllocationSegment',
+      'type ResourceSurfaceStatus',
+      'type ResourceViewInput',
+      'buildResourceUtilization',
+    ]) {
+      expect(index).toContain(symbol)
+    }
+    // The timeline carries the additive PROJECT-026 surfaces (optional —
+    // the critical surface joins from the projection's schedule, the
+    // resource surface only when the allocation input is threaded).
+    const timeline = srcModules['../src/views/timeline.ts'] ?? ''
+    expect(timeline).toContain('readonly criticalPath?: ProjectCriticalPathSurface')
+    expect(timeline).toContain('readonly resourceUtilization?: ProjectResourceViewSurface')
+    // The gantt view threads the resource input (the calendar input's
+    // sibling — a per-render input, never persisted state).
+    const ganttView = srcModules['../src/views/gantt-view.ts'] ?? ''
+    expect(ganttView).toContain('resources?: ResourceViewInput')
+  })
+
+  it('keeps the critical-path projection free of CPM/float computation (no second CPM engine)', () => {
+    // The critical-path module may echo the authority's values and do pure
+    // instant geometry, but it must never own the primitives a CPM or float
+    // computation needs: working-time arithmetic and dependency-graph
+    // traversal. Without them no critical path, slack, or float can be
+    // computed — the structural form of the PROJECT-012 rule ("renderer,
+    // host, UI, and selector code MUST NOT compute authoritative critical
+    // path or float").
+    const criticalPath = srcModules['../src/critical-path.ts'] ?? ''
+    expect(criticalPath).not.toMatch(
+      /addWorkingTime|subtractWorkingTime|workingDuration|signedWorkingDuration/,
+    )
+    expect(criticalPath).not.toContain('buildDependencyGraph')
+    expect(criticalPath).not.toContain("from '@genoffice/project-scheduling'")
+    // The echoes read the authority's own values verbatim — the projection
+    // joins, it never derives.
+    expect(criticalPath).toContain('critical: schedule.critical')
+    expect(criticalPath).toContain('totalSlack: schedule.totalSlack')
+    expect(criticalPath).toContain('freeSlack: schedule.freeSlack')
+    // The timeline composes the surface from the projection's schedule join
+    // only (present iff a schedule was joined — never invented).
+    const timeline = srcModules['../src/views/timeline.ts'] ?? ''
+    expect(timeline).toContain('buildCriticalPath')
+    expect(timeline).not.toContain("from '@genoffice/project-scheduling'")
+  })
+
+  it('keeps the resource projection free of capacity semantics (no second capacity engine)', () => {
+    // The resource module may clip and echo the authority's segments, but it
+    // must never own the primitives a capacity/demand computation needs: the
+    // resource capacity fields, the capacity-window data, assignment units,
+    // and the calendar working-time evaluators. Without them no demand
+    // aggregation or capacity statement is possible here — the resource
+    // capacity algorithm stays with the scheduling authority
+    // (resourceAllocations), exactly as the PROJECT-026 directive requires.
+    const resources = srcModules['../src/resources.ts'] ?? ''
+    expect(resources).not.toMatch(/maxUnits|availability|effectiveMaxUnits/)
+    expect(resources).not.toMatch(/\bunits\b/)
+    expect(resources).not.toMatch(/resolveCalendar|workingIntervals|isWorking/)
+    expect(resources).not.toMatch(
+      /getUTCDay|getUTCFullYear|getUTCMonth|getUTCDate|dateKey|Date\.UTC/,
+    )
+    expect(resources).not.toContain("from '@genoffice/project-scheduling'")
+    // The only evaluation entry is the INJECTED query (a type declaration,
+    // never an implementation) — the ScheduleRunner/CalendarWorkingTimeQuery
+    // precedent.
+    expect(resources).toContain('export type ResourceAllocationQuery =')
+    // The over-allocation flag arrives on the authority's segments — the
+    // projection never compares demand against capacity itself.
+    expect(resources).toContain('overallocated: segment.overallocated')
+    expect(resources).not.toMatch(/demandUnits\s*>\s*/)
+  })
+
   it('keeps the view models free of pixel/DOM APIs (fraction space only)', () => {
     const viewFiles = Object.entries(srcModules).filter(([file]) =>
       file.startsWith('../src/views/'),
@@ -385,6 +469,14 @@ describe('PROJECT-021 architecture — CI and spec lockstep', () => {
     expect(workItems).toContain('CalendarWorkingTimeQuery')
     expect(dependencyGraph).toContain('Package dependency edges (PROJECT-025)')
     expect(verificationMatrix).toContain('PROJECT-025 evidence requirements')
+  })
+
+  it('the spec set carries the PROJECT-026 sections in lockstep', () => {
+    expect(requirements).toContain('PROJECT-026 — Critical-path / resource visualization')
+    expect(workItems).toMatch(/\|\s*PROJECT-026\s*\|/)
+    expect(workItems).toContain('ResourceAllocationQuery')
+    expect(dependencyGraph).toContain('Package dependency edges (PROJECT-026)')
+    expect(verificationMatrix).toContain('PROJECT-026 evidence requirements')
   })
 
   it('leaves the frozen architecture lock untouched (renderer boundary already sanctioned)', () => {

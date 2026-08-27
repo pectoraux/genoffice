@@ -22,6 +22,18 @@
  * build (a per-build memo — nothing is cached across renders,
  * architecture-lock §11).
  *
+ * PROJECT-026 — critical-path / resource visualization: the timeline also
+ * carries the critical-path surface (`../critical-path.js` — the canonical
+ * critical/float echo of every in-window row plus the both-endpoints
+ * critical-link classification; a pure DerivedSchedule projection, present
+ * iff the projection joined a schedule — never invented without one, no
+ * second CPM engine) and, when a canonical allocation query is threaded
+ * (`ResourceViewInput`), the resource-visualization surface
+ * (`../resources.js` — the authority's allocation segments clipped to the
+ * viewport, the over-allocation flag echoed; no second capacity engine).
+ * Both surfaces are ADDITIVE: with or without them, the geometry surfaces
+ * are byte-identical.
+ *
  * Pure composition: the timeline owns no semantics of its own.
  */
 import type { CalendarId, ProjectDocument, TaskId } from '@genoffice/project-contracts'
@@ -33,6 +45,12 @@ import {
   type ProjectCalendarSurface,
   buildCalendarSurface,
 } from '../calendar.js'
+import { type ProjectCriticalPathSurface, buildCriticalPath } from '../critical-path.js'
+import {
+  type ProjectResourceViewSurface,
+  type ResourceViewInput,
+  buildResourceUtilization,
+} from '../resources.js'
 import {
   type TimeAxisBand,
   type TimeAxisLevel,
@@ -94,13 +112,24 @@ export interface ProjectTimeline {
    * query was threaded but no in-window row carries a resolved calendar
    * (real information — e.g. no scheduler wired). */
   readonly rowCalendars?: readonly ProjectRowCalendar[]
+  /** PROJECT-026 — the canonical critical-path/float projection of every
+   * in-window row plus the both-endpoints critical-link classification.
+   * Present iff the projection joined a schedule (the values are the
+   * scheduling authority's own echoes — never recomputed, never invented
+   * without a schedule); EMPTY floats/links are real information. */
+  readonly criticalPath?: ProjectCriticalPathSurface
+  /** PROJECT-026 — the resource-visualization surface (the injected
+   * canonical allocation segments clipped to this viewport, the
+   * over-allocation flag echoed). Present iff a `ResourceViewInput` was
+   * threaded; absent otherwise — never invented. */
+  readonly resourceUtilization?: ProjectResourceViewSurface
 }
 
 /**
  * Builds the timeline view model. Pure and deterministic; never mutates
  * its inputs. An unparseable/degenerate viewport yields an EMPTY model
- * (no bands, no rows, no geometry, no calendar surfaces) rather than
- * invented values.
+ * (no bands, no rows, no geometry, no calendar/critical/resource surfaces)
+ * rather than invented values.
  *
  * PROJECT-024: the optional `state` parameter threads the interaction
  * state's dependency selection / edit target into the link surface
@@ -115,6 +144,13 @@ export interface ProjectTimeline {
  * per-row calendar surfaces. The calendar surfaces are ADDITIVE: with or
  * without them, `bands`/`rows`/`bars`/`milestones`/`links` are
  * byte-identical (reflection/projection never feeds geometry).
+ *
+ * PROJECT-026: the critical-path surface joins automatically whenever the
+ * projection carries a schedule (a pure echo of the authority's own
+ * critical/float values), and the optional `resources` parameter threads
+ * the injected canonical allocation query + the current derived schedule
+ * into the resource-visualization surface. Both surfaces are ADDITIVE:
+ * with or without them, every geometry surface is byte-identical.
  */
 export function buildTimeline(
   document: ProjectDocument,
@@ -123,6 +159,7 @@ export function buildTimeline(
   rowWindow: ProjectRowWindow,
   state?: ProjectViewState,
   calendar?: CalendarViewInput,
+  resources?: ResourceViewInput,
 ): ProjectTimeline {
   const span = viewportSpanMs(viewport)
   const axisLevel: TimeAxisLevel =
@@ -149,6 +186,18 @@ export function buildTimeline(
           calendar.calendarId,
         )
       : undefined
+  // PROJECT-026: the critical-path surface is a pure DerivedSchedule
+  // projection — present iff the projection joined a schedule (never
+  // invented without one); the resource surface needs the injected
+  // allocation query AND a real viewport span.
+  const criticalPath =
+    projection.hasSchedule && span !== undefined
+      ? buildCriticalPath(document, projection, viewport, rowWindow)
+      : undefined
+  const resourceUtilization =
+    resources !== undefined && span !== undefined
+      ? buildResourceUtilization(document, resources.schedule, resources.allocation, viewport)
+      : undefined
   return {
     viewport,
     axisLevel,
@@ -161,6 +210,8 @@ export function buildTimeline(
     ...(surfaces !== undefined
       ? { calendar: surfaces.calendar, rowCalendars: surfaces.rowCalendars }
       : {}),
+    ...(criticalPath !== undefined ? { criticalPath } : {}),
+    ...(resourceUtilization !== undefined ? { resourceUtilization } : {}),
   }
 }
 
