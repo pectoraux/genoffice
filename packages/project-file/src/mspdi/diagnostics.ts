@@ -65,6 +65,31 @@ export const MSPDI_READ = 'MSPDI_READ' as const
 /** Info-level "read succeeded" diagnostic emitted at the end of a successful
  * import, mirroring `GPROJ_READ` from the native adapter. */
 
+// ---- PROJECT-020 — MSPDI import provenance additions -----------------------
+//
+// Two known PROJECT-015 import limitations previously produced NO diagnostic
+// (silent behavior gaps). PROJECT-020 exposes their provenance — the minimal
+// parser-side addition sanctioned by "unless required to expose accurate
+// diagnostic provenance". Both are additive: no accepted code is renamed, no
+// mapping changes, only warnings that were previously silent become explicit.
+
+export const MSPDI_PHYSICAL_PERCENT_COMPLETE_DROPPED =
+  'MSPDI_PHYSICAL_PERCENT_COMPLETE_DROPPED' as const
+/** PROJECT-020 — a task carries a non-zero `<PhysicalPercentComplete>` which
+ * the canonical import does not reconstruct (the accepted PROJECT-015
+ * importer never read it; PROJECT-016's exporter emits it for fidelity and
+ * warns about the same round-trip gap). Warning: the value is dropped on
+ * import — an honest, diagnosed loss, no longer silent. A zero value loses
+ * nothing (the canonical default) and is not diagnosed. */
+
+export const MSPDI_BASELINE_CAPTURED_AT_APPROXIMATED =
+  'MSPDI_BASELINE_CAPTURED_AT_APPROXIMATED' as const
+/** PROJECT-020 — MSPDI carries no per-baseline captured date, so a created
+ * baseline's canonical `capturedAt` is approximated from the documented
+ * deterministic fallback chain (`<LastSaved>` → `<CreationDate>` → the
+ * project `<StartDate>` → the epoch default). One warning per created
+ * baseline slot, naming the fallback source actually used. */
+
 // ---- PROJECT-016 — MSPDI EXPORT diagnostic codes -------------------------
 //
 // Export has its own code family (the importer's codes describe MSPDI→canonical
@@ -110,7 +135,8 @@ export const MSPDI_WRITTEN = 'MSPDI_WRITTEN' as const
 /** Info-level "write succeeded" diagnostic emitted at the end of a successful
  * export, mirroring `MSPDI_READ` / `GPROJ_READ`. */
 
-/** The full set of PROJECT-015 import adapter-emitted diagnostic codes. */
+/** The full set of PROJECT-015 import adapter-emitted diagnostic codes
+ * (including the two PROJECT-020 provenance additions). */
 export const MSPDI_DIAGNOSTIC_CODES = [
   INVALID_MSPDI,
   UNSUPPORTED_MSPDI_VERSION,
@@ -124,6 +150,8 @@ export const MSPDI_DIAGNOSTIC_CODES = [
   INVALID_MSPDI_CONSTRAINT,
   MISSING_MSPDI_FIELD,
   MSPDI_READ,
+  MSPDI_PHYSICAL_PERCENT_COMPLETE_DROPPED,
+  MSPDI_BASELINE_CAPTURED_AT_APPROXIMATED,
 ] as const
 
 /** The full set of PROJECT-016 export adapter-emitted diagnostic codes. */

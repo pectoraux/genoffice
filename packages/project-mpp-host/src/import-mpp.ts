@@ -42,8 +42,10 @@ import {
   MPP_INPUT_TOO_LARGE,
   MPP_INPUT_UNREADABLE,
   MPP_MAX_INPUT_BYTES,
+  buildCompatibilityReport,
   emptyProjectDocument,
   importMppFromMspdi,
+  type CompatibilityReport,
   type MppConversionOutcome,
   type MppDiagnostic,
 } from '@genoffice/project-file'
@@ -58,6 +60,9 @@ export interface MppFullImportResult {
    * a scheduling failure keeps the rejected shape (`{ taskSchedules: {},
    * diagnostics: [] }` becomes the scheduling-stage diagnostics). */
   readonly schedule?: DerivedSchedule
+  /** The source format the sidecar detected (e.g. `"MPP14"`), when a
+   * frame was produced — the honest compatibility `sourceVersion`. */
+  readonly sourceFormat?: string
   /** Staged diagnostics, provenance preserved (sidecar → normalization →
    * mspdi → canonical → scheduling). */
   readonly diagnostics: readonly MppDiagnostic[]
@@ -186,7 +191,60 @@ function finishImport(
   const diagnostics: MppDiagnostic[] = [...imported.diagnostics]
   const derived = schedule(imported.document)
   diagnostics.push(...stageSchedulingDiagnostics(derived.diagnostics))
-  return { document: imported.document, schedule: derived, diagnostics }
+  return {
+    document: imported.document,
+    schedule: derived,
+    ...(outcome.frame.format !== undefined ? { sourceFormat: outcome.frame.format } : {}),
+    diagnostics,
+  }
+}
+
+/** The full-pipeline result paired with its PROJECT-020 compatibility
+ * report (same document/schedule as `importMppFromFile`, plus the
+ * canonical compatibility summary over the SAME staged diagnostics). */
+export interface MppCompatibilityImportResult {
+  readonly document: ProjectDocument
+  readonly schedule?: DerivedSchedule
+  readonly report: CompatibilityReport
+}
+
+/**
+ * Import an MPP file with the canonical compatibility report (PROJECT-020).
+ *
+ * Runs the production pipeline unchanged — sidecar → N1–N5 normalization →
+ * accepted MSPDI importer → canonical validation → `schedule()` — then
+ * aggregates the staged diagnostics into the `CompatibilityReport` via the
+ * foundation `buildCompatibilityReport` (host → foundation direction
+ * only; the report itself is host-neutral). The scheduling channel is the
+ * already-staged scheduling diagnostics of the full pipeline: scheduling
+ * status is 'success'/'failure' only over an authoritative document — the
+ * trivial scheduling of the atomic empty document after a fatal conversion
+ * is NOT an attempt, and the report says 'not-attempted'.
+ */
+export async function importMppFromFileWithCompatibility(
+  inputPath: string,
+  options: MppImportOptions,
+): Promise<MppCompatibilityImportResult> {
+  const result = await importMppFromFile(inputPath, options)
+  // Split the staged diagnostics by channel: the scheduling-stage entries
+  // enter via the scheduling channel (their presence — even empty — signals
+  // the scheduler ran), everything else via the import channel. (The full
+  // pipeline ALWAYS schedules when it reaches the tail, so presence here is
+  // honest; a fatal conversion short-circuits earlier and the aggregator's
+  // own rule marks scheduling 'not-attempted'.)
+  const schedulingDiagnostics = result.diagnostics.filter((d) => d.stage === 'scheduling')
+  const importDiagnostics = result.diagnostics.filter((d) => d.stage !== 'scheduling')
+  const report = buildCompatibilityReport({
+    format: 'mpp',
+    ...(result.sourceFormat !== undefined ? { sourceVersion: result.sourceFormat } : {}),
+    diagnostics: importDiagnostics,
+    schedulingDiagnostics,
+  })
+  return {
+    document: result.document,
+    ...(result.schedule !== undefined ? { schedule: result.schedule } : {}),
+    report,
+  }
 }
 
 /**

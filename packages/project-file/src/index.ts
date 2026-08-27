@@ -74,3 +74,11 @@ export * from './mspdi/index.js'
 // entry point consuming a host-managed MPXJ sidecar conversion outcome).
 // No process/binary/Java code lives here (architecture-lock §13).
 export * from './mpp/index.js'
+
+// PROJECT-020 — canonical import-compatibility layer: the diagnostic model
+// (stages, severity, data-loss classification, recoverability, entity
+// provenance), the deterministic classification/aggregation, and pipeline
+// entry points pairing every accepted import path with a
+// CompatibilityReport. No new package dependency (the scheduler is injected
+// by the caller).
+export * from './compatibility/index.js'

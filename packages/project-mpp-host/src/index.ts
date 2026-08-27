@@ -43,7 +43,9 @@ export {
 export {
   importMppFromFile,
   importMppFromBytes,
+  importMppFromFileWithCompatibility,
   stageSchedulingDiagnostics,
   type MppFullImportResult,
+  type MppCompatibilityImportResult,
   type MppImportOptions,
 } from './import-mpp.js'

@@ -78,11 +78,23 @@ public class MppSidecar {
       }
       int assignments = project.getResourceAssignments().size();
 
+      // PROJECT-020 — the detected source format (the frame field the
+      // protocol contract has always declared as "present on success";
+      // the compatibility report's honest sourceVersion). For MPP inputs
+      // this is the byte-true container generation ("MPP8"/"MPP9"/
+      // "MPP12"/"MPP14"), NOT the filename or product provenance — e.g.
+      // an MPP9-era file re-saved by a newer Project reports "MPP14".
+      String fileType = project.getProjectProperties().getFileType();
+      String format = "MPP".equals(fileType)
+          ? "MPP" + project.getProjectProperties().getMppFileType()
+          : fileType;
+
       new MSPDIWriter().write(project, new File(outputPath));
 
       StringBuilder sb = new StringBuilder(256);
       sb.append("{\"version\":1,\"requestId\":").append(jsonString(requestId));
       sb.append(",\"ok\":true");
+      sb.append(",\"format\":").append(jsonString(format));
       sb.append(",\"counts\":{\"tasks\":").append(tasks);
       sb.append(",\"resources\":").append(resources);
       sb.append(",\"calendars\":").append(calendars);
