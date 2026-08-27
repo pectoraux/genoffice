@@ -6,7 +6,7 @@ import type {
   ProjectDocument,
 } from '@genoffice/project-contracts'
 import type { ResourceAllocation } from '../src/index.js'
-import { asAssignmentId, asResourceId } from '@genoffice/project-contracts'
+import { asAssignmentId, asCalendarId, asResourceId } from '@genoffice/project-contracts'
 import {
   MONDAY,
   MONDAY_FINISH,
@@ -16,6 +16,7 @@ import {
   WEDNESDAY_FINISH,
   iso,
   makeAssignment,
+  makeCalendar,
   makeDocument,
   makeResource,
   makeTask,
@@ -36,9 +37,12 @@ import {
  * resources; milestone/summary/zero-duration/unscheduled tasks contribute no
  * demand), and the leveler's determinism contract (sorted output, invariance
  * under array reordering and serialization round-trips, purity). The
- * leveler cross-check proves the mirrored-sweep equivalence: the union of
- * consecutive over-allocated segments IS the leveler's own conflict record
- * — the same authority, never a second capacity engine.
+ * leveler cross-check proves the SINGLE-KERNEL equivalence: `resourceAllocations()`
+ * and `levelResources()` both consume the ONE shared canonical allocation
+ * kernel (`src/allocation-kernel.ts`), so the union of consecutive
+ * over-allocated segments IS the leveler's own conflict record — two
+ * projections of one authority, never a second capacity engine (the
+ * architecture suite guards the single-authority property structurally).
  */
 
 const overallocatedWindows = (allocations: readonly ResourceAllocation[]) =>
@@ -373,7 +377,7 @@ describe('PROJECT-026 canonical resource allocation — determinism and purity',
   })
 })
 
-describe('PROJECT-026 canonical resource allocation — the leveler cross-check (mirrored sweep)', () => {
+describe('PROJECT-026 canonical resource allocation — the leveler cross-check (the shared kernel, two projections)', () => {
   it("the union of consecutive over-allocated segments equals the leveler's resolvable conflict record", () => {
     // Two 1-day tasks on one 100% resource (100% + 60%): a resolvable
     // conflict — the leveler delays one task; the ORIGINAL conflict window
@@ -476,5 +480,209 @@ describe('PROJECT-026 canonical resource allocation — the leveler cross-check 
       },
     ])
     expect(allocationWindows).toEqual(levelerWindows)
+  })
+})
+
+// ===========================================================================
+// The single-kernel segmentation identity — the Principal Architect's
+// required regression evidence for the PROJECT-026 correction: the
+// resource-calendar-aware demand segmentation and the availability-window
+// capacity segmentation produce IDENTICAL windows through both consumers
+// (`resourceAllocations()` and `levelResources()`), because both read the
+// ONE shared canonical allocation kernel. Each scenario below exercises the
+// segmentation rules that were previously at drift risk (a second
+// implementation evolving while the other was missed): resource-calendar
+// clipping, non-working splits, and mid-assignment capacity changes.
+// ===========================================================================
+
+// Mid-working-day instants (MONDAY = 09:00; the standard day runs
+// 09:00–17:00).
+const MONDAY_ELEVEN_AM = '2026-08-03T11:00:00.000Z'
+const MONDAY_NOON = '2026-08-03T12:00:00.000Z'
+const MONDAY_ONE_PM = '2026-08-03T13:00:00.000Z'
+const MONDAY_TWO_PM = '2026-08-03T14:00:00.000Z'
+const MONDAY_THREE_PM = '2026-08-03T15:00:00.000Z'
+
+describe('PROJECT-026 — the single-kernel segmentation identity (resource-calendar + availability-window evidence)', () => {
+  /** Resource calendar Mon–Fri 10:00–14:00; availability window Monday
+   * 11:00–15:00 units 0.5; two full-day tasks on the standard task calendar.
+   * The over-allocation is the INTERSECTION [11:00, 14:00): the availability
+   * drop AND the resource's working periods must both segment the tiling —
+   * a sweep that ignored either would over-report the window. */
+  const intersectingDocument = (): ProjectDocument => {
+    const resourceCal = makeCalendar('resourceCal', {
+      workingWeek: {
+        0: [],
+        1: [{ startMinute: 600, endMinute: 840 }],
+        2: [{ startMinute: 600, endMinute: 840 }],
+        3: [{ startMinute: 600, endMinute: 840 }],
+        4: [{ startMinute: 600, endMinute: 840 }],
+        5: [{ startMinute: 600, endMinute: 840 }],
+        6: [],
+      },
+    })
+    return makeDocument({
+      tasks: [makeTask({ id: 't1', duration: wm(480) }), makeTask({ id: 't2', duration: wm(480) })],
+      calendars: [makeCalendar('standard'), resourceCal],
+      resources: [
+        makeResource({
+          id: 'r1',
+          availability: [
+            { start: iso(MONDAY_ELEVEN_AM), finish: iso(MONDAY_THREE_PM), units: 0.5 },
+          ],
+          calendarId: asCalendarId('resourceCal'),
+        }),
+      ],
+      assignments: [
+        makeAssignment('a1', 't1', 'r1', { units: 0.5 }),
+        makeAssignment('a2', 't2', 'r1', { units: 0.5 }),
+      ],
+    })
+  }
+
+  it('clips the conflict window to the resource working boundary (the resource-calendar × availability intersection)', () => {
+    const document = intersectingDocument()
+    const scheduleResult = schedule(document)
+    const allocationWindows = overallocatedWindows(resourceAllocations(document, scheduleResult))
+    const levelerWindows = levelResources(document).overallocations.map(levelerSignature)
+    expect(levelerWindows).toEqual([
+      {
+        resourceId: 'r1',
+        start: MONDAY_ELEVEN_AM,
+        finish: MONDAY_TWO_PM,
+        peak: 1,
+        capacity: 0.5,
+        assignmentIds: ['a1', 'a2'],
+      },
+    ])
+    expect(allocationWindows).toEqual(levelerWindows)
+  })
+
+  it('splits one over-allocation into TWO conflict windows at a non-working midday break (the calendar-aware split)', () => {
+    // Resource calendar Mon–Fri 09:00–12:00 + 13:00–17:00 (a lunch break);
+    // the task runs the full standard day. The kernel's calendar-aware demand
+    // zeroing splits the over-allocation at the break: two DISTINCT conflict
+    // windows, never one spanning the non-working hour. A single 1.5-unit
+    // assignment on a 100% resource cannot be delayed out of itself, so the
+    // leveler reports BOTH windows (unresolvable) — exactly the tiling's two
+    // over-allocated runs.
+    const splitDay = makeCalendar('splitDay', {
+      workingWeek: {
+        0: [],
+        1: [
+          { startMinute: 540, endMinute: 720 },
+          { startMinute: 780, endMinute: 1020 },
+        ],
+        2: [
+          { startMinute: 540, endMinute: 720 },
+          { startMinute: 780, endMinute: 1020 },
+        ],
+        3: [
+          { startMinute: 540, endMinute: 720 },
+          { startMinute: 780, endMinute: 1020 },
+        ],
+        4: [
+          { startMinute: 540, endMinute: 720 },
+          { startMinute: 780, endMinute: 1020 },
+        ],
+        5: [
+          { startMinute: 540, endMinute: 720 },
+          { startMinute: 780, endMinute: 1020 },
+        ],
+        6: [],
+      },
+    })
+    const document = makeDocument({
+      tasks: [makeTask({ id: 't1', duration: wm(480) })],
+      calendars: [makeCalendar('standard'), splitDay],
+      resources: [makeResource({ id: 'r1', calendarId: asCalendarId('splitDay') })],
+      assignments: [makeAssignment('a1', 't1', 'r1', { units: 1.5 })],
+    })
+    const scheduleResult = schedule(document)
+    const allocationWindows = overallocatedWindows(resourceAllocations(document, scheduleResult))
+    const levelerWindows = levelResources(document).overallocations.map(levelerSignature)
+    expect(levelerWindows).toEqual([
+      {
+        resourceId: 'r1',
+        start: MONDAY,
+        finish: MONDAY_NOON,
+        peak: 1.5,
+        capacity: 1,
+        assignmentIds: ['a1'],
+      },
+      {
+        resourceId: 'r1',
+        start: MONDAY_ONE_PM,
+        finish: MONDAY_FINISH,
+        peak: 1.5,
+        capacity: 1,
+        assignmentIds: ['a1'],
+      },
+    ])
+    expect(allocationWindows).toEqual(levelerWindows)
+  })
+
+  it('splits the over-allocation at TWO mid-assignment capacity drops (the availability-window segmentation on both sides)', () => {
+    // maxUnits 0.5 with two restrictive availability windows — 11:00–12:00
+    // and 14:00–15:00, each units 0.3 (windows can only RESTRICT capacity:
+    // the tightest-coverage rule takes the minimum). A single 0.4-unit task:
+    // the demand exceeds capacity only inside the two windows — TWO distinct
+    // unresolvable windows with boundaries exactly at the availability
+    // transitions.
+    const document = makeDocument({
+      tasks: [makeTask({ id: 't1', duration: wm(480) })],
+      resources: [
+        makeResource({
+          id: 'r1',
+          maxUnits: 0.5,
+          availability: [
+            { start: iso(MONDAY_ELEVEN_AM), finish: iso(MONDAY_NOON), units: 0.3 },
+            { start: iso(MONDAY_TWO_PM), finish: iso(MONDAY_THREE_PM), units: 0.3 },
+          ],
+        }),
+      ],
+      assignments: [makeAssignment('a1', 't1', 'r1', { units: 0.4 })],
+    })
+    const scheduleResult = schedule(document)
+    const allocationWindows = overallocatedWindows(resourceAllocations(document, scheduleResult))
+    const levelerWindows = levelResources(document).overallocations.map(levelerSignature)
+    expect(levelerWindows).toEqual([
+      {
+        resourceId: 'r1',
+        start: MONDAY_ELEVEN_AM,
+        finish: MONDAY_NOON,
+        peak: 0.4,
+        capacity: 0.3,
+        assignmentIds: ['a1'],
+      },
+      {
+        resourceId: 'r1',
+        start: MONDAY_TWO_PM,
+        finish: MONDAY_THREE_PM,
+        peak: 0.4,
+        capacity: 0.3,
+        assignmentIds: ['a1'],
+      },
+    ])
+    expect(allocationWindows).toEqual(levelerWindows)
+  })
+
+  it('the kernel-driven outputs are invariant under array reordering (segmentation-heavy fixture)', () => {
+    // The deterministic single-authority property: reversing every input
+    // array leaves BOTH consumers' kernel-driven outputs byte-identical —
+    // the allocation tiling AND the leveler's conflict record.
+    const document = intersectingDocument()
+    const scheduleResult = schedule(document)
+    const expectedAllocations = JSON.stringify(resourceAllocations(document, scheduleResult))
+    const expectedLeveling = JSON.stringify(levelResources(document).overallocations)
+    const reordered: ProjectDocument = {
+      ...document,
+      tasks: [...document.tasks].reverse(),
+      assignments: [...document.assignments].reverse(),
+      resources: [...document.resources].reverse(),
+      calendars: [...document.calendars].reverse(),
+    }
+    expect(JSON.stringify(resourceAllocations(reordered, scheduleResult))).toBe(expectedAllocations)
+    expect(JSON.stringify(levelResources(reordered).overallocations)).toBe(expectedLeveling)
   })
 })

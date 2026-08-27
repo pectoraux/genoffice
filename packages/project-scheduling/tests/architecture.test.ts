@@ -110,3 +110,104 @@ describe('PROJECT-scheduling architecture — the scheduling engine has no file-
     expect(acrRaw).toContain('## 4. New interpretation')
   })
 })
+
+// ===========================================================================
+// PROJECT-026 — the single canonical allocation kernel.
+//
+// The Principal Architect's review of PR #28 (CHANGES REQUIRED): a
+// higher-level semantic concept must have ONE canonical authority — the
+// resource demand/capacity semantics (demand contribution, demand-interval
+// construction, resource-calendar resolution, availability-capacity
+// resolution, calendar-aware segmentation, over-allocation predicate) may be
+// IMPLEMENTED only in `src/allocation-kernel.ts`. Both
+// `resourceAllocations()` (allocation.ts) and `levelResources()` (leveling.ts)
+// must CONSUME that kernel; neither may carry an independent implementation
+// of the shared rules. These guards fail if the leveler (or the allocation
+// projection) reintroduces an independent implementation.
+// ===========================================================================
+
+describe('PROJECT-026 architecture — the single canonical allocation kernel (one authority)', () => {
+  const kernel = srcModules['../src/allocation-kernel.ts'] ?? ''
+  const leveling = srcModules['../src/leveling.ts'] ?? ''
+  const allocation = srcModules['../src/allocation.ts'] ?? ''
+  const nonKernelModules = srcFiles.filter(([file]) => file !== '../src/allocation-kernel.ts')
+
+  it('the kernel module defines the shared allocation semantics', () => {
+    // The named semantic primitives exist exactly here.
+    expect(kernel).toContain('export const isLeaf')
+    expect(kernel).toContain('export const contributesToDemand')
+    expect(kernel).toContain('export const effectiveMaxUnits')
+    expect(kernel).toContain('export const demandIntervalsForResource')
+    expect(kernel).toContain('export const resourceCalendarFor')
+    expect(kernel).toContain('export const allocationSegments')
+    // The kernel owns the over-allocation predicate — the single
+    // classification both consumers echo (never re-derive).
+    expect(kernel).toContain('overallocated: demand > capacity')
+  })
+
+  it('no other module defines an independent implementation of the shared allocation rules', () => {
+    // The kernel's semantic primitives may be DEFINED only in the kernel —
+    // a second definition anywhere else in this package (e.g. a leveler
+    // that reintroduces its own capacity sweep) fails here.
+    const kernelPrimitives = [
+      'isLeaf',
+      'contributesToDemand',
+      'effectiveMaxUnits',
+      'effectiveCapacity',
+      'demandIntervalsForResource',
+      'assignmentIntervalsForResource',
+      'resourceCalendarFor',
+      'allocationSegments',
+      'allocationSegmentsForResource',
+    ]
+    for (const [file, source] of nonKernelModules) {
+      const clean = stripComments(source)
+      for (const name of kernelPrimitives) {
+        expect(
+          clean,
+          `${file} defines the kernel primitive ${name} outside allocation-kernel.ts`,
+        ).not.toMatch(new RegExp(`(?:const|function)\\s+${name}\\s*[(=]`))
+      }
+    }
+  })
+
+  it('the leveler consumes the kernel (no independent capacity sweep survives in leveling.ts)', () => {
+    const clean = stripComments(leveling)
+    // The leveler builds its conflicts from the kernel's tiling and its
+    // demand intervals from the kernel's construction.
+    expect(clean).toContain("from './allocation-kernel.js'")
+    expect(clean).toContain('allocationSegments(')
+    expect(clean).toContain('demandIntervalsForResource(')
+    expect(clean).toContain('resourceCalendarFor(')
+    // The sweep's structural primitives no longer exist in the leveler: an
+    // independent capacity sweep would need boundary collection and
+    // working-time evaluation. (nextWorkingInstant/addWorkingTime stay free
+    // — delay PLACEMENT is leveling policy, not allocation semantics.)
+    expect(clean, 'leveling.ts collects sweep boundaries').not.toContain('boundaries')
+    expect(clean, 'leveling.ts evaluates working time').not.toContain('workingIntervals')
+    expect(clean, 'leveling.ts evaluates working status').not.toContain('isWorking')
+    expect(clean, 'leveling.ts resolves capacity itself').not.toContain('effectiveMaxUnits')
+    expect(clean, 'leveling.ts re-implements the demand rule').not.toContain('contributesToDemand')
+  })
+
+  it('the allocation projection consumes the kernel (no independent capacity sweep survives in allocation.ts)', () => {
+    const clean = stripComments(allocation)
+    expect(clean).toContain("from './allocation-kernel.js'")
+    expect(clean).toContain('demandIntervalsForResource(')
+    expect(clean).toContain('allocationSegments(')
+    expect(clean).toContain('resourceCalendarFor(')
+    expect(clean, 'allocation.ts collects sweep boundaries').not.toContain('boundaries')
+    expect(clean, 'allocation.ts evaluates working time').not.toContain('workingIntervals')
+    expect(clean, 'allocation.ts evaluates working status').not.toContain('isWorking')
+    expect(clean, 'allocation.ts resolves capacity itself').not.toContain('effectiveMaxUnits')
+    expect(clean, 'allocation.ts re-implements the demand rule').not.toContain(
+      'contributesToDemand',
+    )
+  })
+
+  it('the kernel stays a lower layer than its consumers (no import cycles)', () => {
+    const clean = stripComments(kernel)
+    expect(clean).not.toContain("from './leveling.js'")
+    expect(clean).not.toContain("from './allocation.js'")
+  })
+})

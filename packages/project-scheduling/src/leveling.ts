@@ -1,5 +1,4 @@
 import type {
-  Assignment,
   Calendar,
   CalendarId,
   DerivedSchedule,
@@ -16,16 +15,17 @@ import type {
   Task,
   TaskId,
 } from '@genoffice/project-contracts'
-import { asISODateTime, asTaskId } from '@genoffice/project-contracts'
+import { asTaskId } from '@genoffice/project-contracts'
+import { CalendarBook, addWorkingTime, nextWorkingInstant, resolveCalendar } from './calendar.js'
+import { schedule, type SchedulingOptions } from './schedule.js'
 import {
-  CalendarBook,
-  addWorkingTime,
-  isWorking,
-  nextWorkingInstant,
-  resolveCalendar,
-  workingIntervals,
-} from './calendar.js'
-import { resolveResourceCalendarId, schedule, type SchedulingOptions } from './schedule.js'
+  allocationSegments,
+  compareIds,
+  demandIntervalsForResource,
+  isLeaf,
+  resourceCalendarFor,
+  type ResourceDemandInterval,
+} from './allocation-kernel.js'
 
 // ===========================================================================
 // PROJECT-013 deterministic resource leveling.
@@ -44,12 +44,22 @@ import { resolveResourceCalendarId, schedule, type SchedulingOptions } from './s
 //     → schedule(documentAfterLeveling)
 //     → DerivedSchedule
 //
+// SINGLE AUTHORITY (the PROJECT-026 correction): every demand/capacity
+// semantic the leveler needs — which tasks contribute demand, the demand
+// intervals, the resource-calendar resolution, the availability-capacity
+// resolution, the calendar-aware segmentation, and the over-allocation
+// predicate — comes from the shared canonical allocation kernel
+// (`allocation-kernel.ts`), the SAME implementation
+// `resourceAllocations()` projects in full. The leveler consumes the
+// kernel's tiling and collapses its consecutive over-allocated runs into
+// conflict windows; it never re-implements the allocation rules (the
+// scheduling architecture suite fails the build if it does).
+//
 // The leveler does NOT mutate the input document. The scheduler remains the
 // sole scheduling authority. See `spec/project/requirements.md` for the full
 // canonical policy.
 // ===========================================================================
 
-const compareIds = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
 const isBefore = (a: ISODateTime, b: ISODateTime): boolean =>
   new Date(a).getTime() < new Date(b).getTime()
 const later = (a: ISODateTime, b: ISODateTime): ISODateTime => (isBefore(a, b) ? b : a)
@@ -95,18 +105,10 @@ const normalizeOptions = (
   }
 }
 
-interface AssignmentInterval {
-  assignment: Assignment
-  task: Task
-  start: ISODateTime
-  finish: ISODateTime
-  units: number
-}
-
 interface Conflict {
   resourceId: ResourceId
   resource: Resource
-  sides: AssignmentInterval[]
+  sides: ResourceDemandInterval[]
   window: { start: ISODateTime; finish: ISODateTime }
   peakDemand: number
   /** Effective (tightest) max-units that was exceeded during the conflict window. */
@@ -118,31 +120,6 @@ interface DelayDecision {
   diagnostic?: LevelingDiagnostic
   action?: LevelingAction
   proposedCommand?: ProjectCommand
-}
-
-/** True if the task is a leaf (not a summary with children). */
-const isLeaf = (document: ProjectDocument, task: Task): boolean => {
-  if (!task.summary) return true
-  return !document.tasks.some((child) => child.parentTaskId === task.id)
-}
-
-/**
- * True if the task CONTRIBUTES to work-resource demand. A task contributes
- * demand when it has a non-zero duration and is not a summary-with-children
- * (summaries roll up from children; their own assignments, if any, are not
- * double-counted). Manual tasks, auto tasks, and leaf summaries all
- * contribute demand — the resource is consumed when the task runs regardless
- * of whether the task is manually scheduled. Whether a task can be DELAYED is
- * a separate question answered by `isProtected`.
- *
- * Milestones and zero-duration tasks have an empty [start, finish) window,
- * so they contribute no work demand and are skipped.
- */
-const contributesToDemand = (document: ProjectDocument, task: Task): boolean => {
-  if (task.summary && !isLeaf(document, task)) return false
-  if (task.milestone) return false
-  if ((task.duration as number) <= 0) return false
-  return true
 }
 
 /**
@@ -167,247 +144,84 @@ const taskCalendarFor = (
 }
 
 /**
- * Effective max-units capacity for a work resource at a given instant. When
- * an availability window covers the instant, its `units` override
- * `resource.maxUnits` (MS Project semantics: availability windows define the
- * resource's max units over time). When no window covers the instant, the
- * resource's `maxUnits` is the capacity. When `maxUnits` is 0 the resource has
- * no capacity at any time.
+ * Detects over-allocation conflicts for a single work resource by collapsing
+ * the shared canonical allocation kernel's tiling: a conflict is one maximal
+ * run of consecutive OVER-ALLOCATED segments (the kernel's own over-allocation
+ * predicate), so the leveler's conflict windows are exactly the over-allocated
+ * portion of the SAME tiling `resourceAllocations()` projects in full — one
+ * kernel, two projections.
  *
- * Windows with `finish === undefined` are open-ended (active from `start`
- * onwards). Overlapping windows are resolved by taking the MINIMUM units
- * (the tightest capacity) so an over-allocation is never masked by a wider
- * window.
- */
-const effectiveMaxUnits = (resource: Resource, timestamp: ISODateTime): number => {
-  if (resource.maxUnits <= 0) return 0
-  const ts = new Date(timestamp).getTime()
-  let effective = resource.maxUnits
-  let covered = false
-  for (const slot of resource.availability) {
-    const startMs = new Date(slot.start).getTime()
-    const finishMs =
-      slot.finish !== undefined ? new Date(slot.finish).getTime() : Number.POSITIVE_INFINITY
-    if (ts >= startMs && ts < finishMs) {
-      covered = true
-      // Take the tightest capacity across all covering windows.
-      if (slot.units < effective) effective = slot.units
-    }
-  }
-  return covered ? effective : resource.maxUnits
-}
-
-/**
- * Resolves the resource's calendar (resource.calendarId ?? defaultCalendarId).
- * Used to compute the proposed new start for a delayed task: the task starts
- * at the next instant the RESOURCE is working (after the kept tasks finish),
- * so the resource is never asked to work outside its own calendar. The task's
- * own calendar is then re-applied by `schedule()` when it computes the
- * scheduled start from the pinned `task.start` candidate.
- */
-const resourceCalendarFor = (
-  document: ProjectDocument,
-  book: CalendarBook,
-  cache: Map<string, Calendar>,
-  resource: Resource,
-): Calendar => {
-  const calendarId =
-    resolveResourceCalendarId(document, resource.id) ?? document.properties.defaultCalendarId
-  const key = calendarId as string
-  let resolved = cache.get(key)
-  if (!resolved) {
-    resolved = resolveCalendar(book, calendarId)
-    cache.set(key, resolved)
-  }
-  return resolved
-}
-
-/**
- * Builds the list of assignment intervals for a given work resource. Only
- * assignments on levelable tasks with valid scheduled windows are included.
- * Material and cost resources are never work-capacity and are skipped.
- */
-const assignmentIntervalsForResource = (
-  document: ProjectDocument,
-  schedule: DerivedSchedule,
-  resource: Resource,
-  options: ReturnType<typeof normalizeOptions>,
-): AssignmentInterval[] => {
-  if (resource.kind !== 'work') return []
-  const intervals: AssignmentInterval[] = []
-  for (const assignment of document.assignments) {
-    if (assignment.resourceId !== resource.id) continue
-    const task = document.tasks.find((t) => t.id === assignment.taskId)
-    if (!task) continue
-    if (!contributesToDemand(document, task)) continue
-    // Scope filter: if a taskIds scope is set, only assignments on those tasks
-    // are DELAYABLE. Assignments on out-of-scope tasks still contribute to
-    // demand (they are the immovable side of a conflict).
-    const taskSchedule = schedule.taskSchedules[task.id]
-    if (!taskSchedule) continue
-    const start = taskSchedule.scheduledStart
-    const finish = taskSchedule.scheduledFinish
-    if (!start || !finish) continue
-    // Date window filter: skip assignments whose scheduled window does not
-    // overlap the leveling window.
-    if (options.levelingDateWindow) {
-      const w = options.levelingDateWindow
-      if (w.start && isBefore(finish, w.start)) continue
-      if (w.finish && isBefore(w.finish, start)) continue
-    }
-    intervals.push({ assignment, task, start, finish, units: assignment.units })
-  }
-  return intervals
-}
-
-/**
- * Detects over-allocation conflicts for a single work resource using a
- * segment-based sweep. A conflict exists on a maximal window where combined
- * assignment `units` exceed the resource's effective max-units (considering
- * availability windows) AND the resource is actually available to perform
- * work (per its resolved calendar), with the conflicting assignments active
- * during each window.
- *
- * SEGMENTATION (correctness-critical): the sweep collects EVERY boundary
- * timestamp at which either demand, effective capacity, OR resource working
- * status can change — assignment start/finish endpoints, availability-window
- * start/finish endpoints, AND resource-calendar working-period start/finish
- * endpoints (bounded to the assignment span). Between two consecutive
- * boundaries the active assignment set, the effective capacity, AND the
- * resource's working status are all constant, so one evaluation per segment is
- * both sufficient and complete.
- *
- * RESOURCE-CALENDAR-AWARE DEMAND (correctness-critical): over-allocation is
- * evaluated only where the resource can actually supply work capacity. During
- * a segment where the resource's calendar says it is NOT working, the resource
- * supplies no work capacity, so the demand against capacity on that segment is
- * zero — there is no over-allocation there (the resource is not being asked to
- * work above capacity; it is not working at all). Zeroing demand on
- * non-working segments clips conflict windows to the resource's working
- * periods: any open conflict is closed at the working→non-working transition,
- * so a reported conflict window never spans a non-working interval. Omitting
- * the resource calendar from detection would report a FALSE over-allocation
- * whenever two task-calendar windows overlap on a day the resource does not
- * work, even though the resource supplies no work that day.
- *
- * Capacity is evaluated at the segment midpoint (any point strictly inside
- * the open segment reflects the window coverage for that segment, independent
- * of event ordering). Omitting availability-window boundaries would miss
- * over-allocations that arise ONLY from a mid-assignment capacity drop (the
- * assignment endpoints alone do not bracket the conflict).
+ * The demand/capacity semantics themselves — which assignments contribute
+ * demand, the calendar-aware segmentation (the boundary sweep over assignment,
+ * availability-window, and working-period endpoints with midpoint evaluation
+ * and zero demand on non-working segments), the availability-capacity
+ * resolution, and the over-allocation predicate — are the kernel's
+ * (`allocation-kernel.ts`); this function never re-implements them. It only
+ * groups the kernel's answer into conflict windows: the window spans the
+ * run's first through last over-allocated segment (the kernel's segments tile
+ * the assignment span contiguously, so the run's last finish is exactly
+ * where the over-allocation ends), `peakDemand` is the maximum demand across
+ * the run's segments, `maxUnits` is the tightest capacity exceeded across the
+ * run, and `sides` is the union of the run's active assignments (document
+ * order, first-seen).
  */
 const detectConflictsForResource = (
   resource: Resource,
   resourceCal: Calendar,
-  intervals: AssignmentInterval[],
+  intervals: ResourceDemandInterval[],
 ): Conflict[] => {
-  if (intervals.length === 0 || resource.maxUnits <= 0) return []
-  // Bound the sweep to the assignment span. Availability windows and resource
-  // working periods outside this span cannot bracket a conflict (no
-  // assignment is active there).
-  const startMs = intervals.reduce(
-    (min, iv) => Math.min(min, new Date(iv.start).getTime()),
-    Number.POSITIVE_INFINITY,
-  )
-  const finishMs = intervals.reduce(
-    (max, iv) => Math.max(max, new Date(iv.finish).getTime()),
-    Number.NEGATIVE_INFINITY,
-  )
-  const boundaries = new Set<number>()
-  for (const iv of intervals) {
-    boundaries.add(new Date(iv.start).getTime())
-    boundaries.add(new Date(iv.finish).getTime())
-  }
-  for (const slot of resource.availability) {
-    const s = new Date(slot.start).getTime()
-    if (s >= startMs && s <= finishMs) boundaries.add(s)
-    if (slot.finish !== undefined) {
-      const f = new Date(slot.finish).getTime()
-      if (f >= startMs && f <= finishMs) boundaries.add(f)
-    }
-  }
-  // Resource-calendar working-period boundaries: each segment then lies
-  // wholly inside or wholly outside a working period, so the working-status
-  // check at the segment midpoint is representative of the whole segment.
-  const spanStartIso = asISODateTime(new Date(startMs).toISOString())
-  const spanFinishIso = asISODateTime(new Date(finishMs).toISOString())
-  for (const wi of workingIntervals(resourceCal, spanStartIso, spanFinishIso)) {
-    boundaries.add(new Date(wi.start).getTime())
-    boundaries.add(new Date(wi.finish).getTime())
-  }
-  const sorted = [...boundaries].sort((a, b) => a - b)
-  if (sorted.length < 2) return []
-
-  const isoAt = (ms: number): ISODateTime => asISODateTime(new Date(ms).toISOString())
+  const segments = allocationSegments(resource, resourceCal, intervals)
   const conflicts: Conflict[] = []
-  let inConflict = false
-  let conflictStartMs = 0
-  let conflictSides: AssignmentInterval[] = []
-  let peakDemand = 0
-  let conflictMaxUnits = resource.maxUnits
+  let open:
+    | {
+        start: ISODateTime
+        finish: ISODateTime
+        sides: ResourceDemandInterval[]
+        peakDemand: number
+        maxUnits: number
+      }
+    | undefined
 
-  const closeConflict = (endMs: number) => {
+  const closeConflict = () => {
+    if (open === undefined) return
     conflicts.push({
       resourceId: resource.id,
       resource,
-      sides: conflictSides,
-      window: { start: isoAt(conflictStartMs), finish: isoAt(endMs) },
-      peakDemand,
+      sides: open.sides,
+      window: { start: open.start, finish: open.finish },
+      peakDemand: open.peakDemand,
       // Report the effective (tightest) capacity that was exceeded. The
       // nominal `resource.maxUnits` is still echoed on the `resource` field
       // for downstream layers.
-      maxUnits: conflictMaxUnits,
+      maxUnits: open.maxUnits,
     })
-    inConflict = false
-    conflictSides = []
-    peakDemand = 0
-    conflictMaxUnits = resource.maxUnits
+    open = undefined
   }
 
-  for (let k = 0; k < sorted.length - 1; k += 1) {
-    const t0 = sorted[k]
-    const t1 = sorted[k + 1]
-    if (t0 >= t1) continue
-    // Active assignments on the open segment (t0, t1): a half-open interval
-    // [start, finish) is active throughout (t0, t1) iff start <= t0 and
-    // finish >= t1 (it was already active at t0 and remains active past t1).
-    const active = intervals.filter((iv) => {
-      const s = new Date(iv.start).getTime()
-      const f = new Date(iv.finish).getTime()
-      return s <= t0 && f >= t1
-    })
-    const midpoint = isoAt(t0 + (t1 - t0) / 2)
-    const working = isWorking(resourceCal, midpoint)
-    // During non-working segments the resource supplies no work capacity, so
-    // demand against capacity is zero — there is no over-allocation there.
-    // This clips conflict windows to the resource's working periods: any
-    // open conflict is closed at the working→non-working transition.
-    const demand = working ? active.reduce((sum, i) => sum + i.units, 0) : 0
-    // Capacity is constant on (t0, t1); evaluate at the midpoint. On
-    // non-working segments capacity is irrelevant (demand is already zero).
-    const capacity = effectiveMaxUnits(resource, midpoint)
-    if (demand > capacity) {
-      if (!inConflict) {
-        inConflict = true
-        conflictStartMs = t0
-        conflictSides = [...active]
-        peakDemand = demand
-        conflictMaxUnits = capacity
-      } else {
-        if (demand > peakDemand) peakDemand = demand
-        if (capacity < conflictMaxUnits) conflictMaxUnits = capacity
-        for (const i of active) {
-          if (!conflictSides.includes(i)) conflictSides.push(i)
-        }
+  for (const segment of segments) {
+    if (!segment.overallocated) {
+      closeConflict()
+      continue
+    }
+    if (open === undefined) {
+      open = {
+        start: segment.start,
+        finish: segment.finish,
+        sides: [...segment.active],
+        peakDemand: segment.demandUnits,
+        maxUnits: segment.capacityUnits,
       }
-    } else if (inConflict) {
-      closeConflict(t0)
+    } else {
+      open.finish = segment.finish
+      if (segment.demandUnits > open.peakDemand) open.peakDemand = segment.demandUnits
+      if (segment.capacityUnits < open.maxUnits) open.maxUnits = segment.capacityUnits
+      for (const interval of segment.active) {
+        if (!open.sides.includes(interval)) open.sides.push(interval)
+      }
     }
   }
   // Close a trailing conflict that extends to the last boundary.
-  if (inConflict) {
-    closeConflict(sorted[sorted.length - 1])
-  }
+  closeConflict()
   return conflicts
 }
 
@@ -426,9 +240,19 @@ const detectAllConflicts = (
   const all: Conflict[] = []
   for (const resource of document.resources) {
     if (resource.kind !== 'work') continue
-    const intervals = assignmentIntervalsForResource(document, schedule, resource, options)
-    // Resolve the resource's calendar so detection intersects assignment
-    // demand with the resource's actual working periods (Finding 1).
+    // The demand intervals come from the shared kernel (the same construction
+    // `resourceAllocations()` projects), scoped to the leveling date window
+    // when one is set; out-of-scope tasks are simply not demand inside the
+    // window (the scope rule documented on `normalizeOptions`).
+    const intervals = demandIntervalsForResource(
+      document,
+      schedule,
+      resource,
+      options.levelingDateWindow,
+    )
+    // Resolve the resource's calendar through the shared kernel so detection
+    // intersects assignment demand with the resource's actual working periods
+    // (Finding 1) — the same resolution the allocation projection uses.
     const resourceCal = resourceCalendarFor(document, book, cache, resource)
     const conflicts = detectConflictsForResource(resource, resourceCal, intervals)
     all.push(...conflicts)
@@ -511,7 +335,7 @@ interface KeepScore {
 }
 
 const keepScoreOf = (
-  side: AssignmentInterval,
+  side: ResourceDemandInterval,
   options: ReturnType<typeof normalizeOptions>,
 ): KeepScore => ({
   priorityNeg: options.respectPriority ? -side.task.priority : 0,
@@ -541,7 +365,7 @@ const computeNewStart = (
   book: CalendarBook,
   cache: Map<string, Calendar>,
   conflict: Conflict,
-  delayedSide: AssignmentInterval,
+  delayedSide: ResourceDemandInterval,
 ): ISODateTime => {
   const otherFinishes = conflict.sides.filter((s) => s !== delayedSide).map((s) => s.finish)
   const latestFinish = otherFinishes.reduce<ISODateTime | undefined>(
@@ -677,7 +501,7 @@ const decideDelay = (
     }
   }
   // Partition sides into delayable vs protected.
-  const candidates: { side: AssignmentInterval; score: KeepScore }[] = []
+  const candidates: { side: ResourceDemandInterval; score: KeepScore }[] = []
   const protectedReasons: LevelingDiagnostic['code'][] = []
   for (const side of conflict.sides) {
     const prot = isProtected(document, side.task, schedule, options)
