@@ -157,6 +157,15 @@ Required:
 - no-op byte preservation;
 - browser + production E2E.
 
+Evidence (2026-08-28, branch excel-024-cf, independent re-run on the uncommitted-plus-committed tree by the continuation session — every gate re-executed from scratch, none trusted from the prior session's report):
+
+- UNIT: xlsx-gateway 668/668 (44 new reader tests: every saveable family, dxf subset, priority/multi-range/multi-rule, x14/timePeriod/malformed fail-closed, write→reopen round-trip, clear, no-op byte preservation, structural sqref+formula shift, unrelated-part byte identity); contractor-core 458 passed + 4 skipped (17 new cfStates wire-validation tests); web unit 229/229 (6 new architecture guards).
+- ARCH: 6 new guards — no CF OOXML/JSZip in apps/web/src; no second CF engine; canonical type-only imports; install/journal/snapshot/gate wiring; real panel command; native-transform §8 resolution (no browser-side double shift).
+- GOLDEN/BYTE: package-level no-op proof (CF sections + styles.xml dxfs + unrelated sheet byte-identical through a cell-edit save); supported-edit proof (only expected CF parts change; workbook.xml gains only the documented fullCalcOnLoad marker; rels/content-types/unrelated sheet byte-identical); browser-level byte proofs in E2E tests 7/8.
+- BROWSER: 10/10 ribbon-conditional-formatting.spec.ts (open+render, create→XML→reopen, edit/delete preserving siblings, row-insert/column-insert/row-delete live-range transforms persisted + reopened, x14+timePeriod lock with refused edits, no-CF-dirty byte preservation, ribbon→real panel). Full-suite regression 122/122 (106 Excel + 16 Word) re-run in 8 chunks by the continuation session.
+- §8 resolution (decisive): Univer 0.25.1's CF-UI `ConditionalFormattingFormulaRefRangeController` + `FormulaRefRangeService` natively transform live CF rule ranges on structural ops (extend-at-top-edge on insert, shrink on delete, formula-rule splits) and fire set/add/delete-conditional-rule mutations that journal the sheet CF-dirty — verified from installed package source AND empirically (headless Node probe WITHOUT the CF-UI plugin shows ranges stay STALE and no mutations fire; the real browser E2E tests 5/6/10 prove the transforms active). A browser-side shift would double-transform; none exists (architecture-guarded).
+- DEPLOYED: NOT YET — branch push was blocked by missing GitHub credentials in the reset environment; production E2E against genoffice.vercel.app must run after merge (architect owns the merge + VERIFIED transitions).
+
 ### EXCEL-025 Named Ranges
 
 Required:

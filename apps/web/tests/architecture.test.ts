@@ -959,3 +959,112 @@ describe('architecture: EXCEL-023 Charts uses the canonical wire families', () =
     expect(content).toContain('chartEdits')
   })
 })
+
+// ── EXCEL-024 (Home → Conditional Formatting): the browser is a thin typed
+//    client for the conditional-formatting surface too — it installs the
+//    gateway's canonical CfWireRule set into Univer's live model, journals
+//    through the cfStates wire family, and shifts live rule ranges in
+//    lockstep with the canonical structural replay; ALL CF OOXML work
+//    (parsing <conditionalFormatting>, resolving dxfs, serializing cfRule /
+//    cfvo / dxf records) stays in @genoffice/xlsx-gateway.
+describe('architecture: EXCEL-024 Conditional Formatting uses the canonical wire families', () => {
+  const webFiles = readFiles(join(WEB_ROOT, 'src'))
+
+  it('apps/web/src has NO conditional-formatting OOXML or JSZip', () => {
+    // The browser must never construct or parse CF XML: no <cfRule>, no
+    // <conditionalFormatting> strings, no <cfvo>, no dxf records, no zip
+    // handling — rules travel ONLY through the typed CfWireRule family.
+    const forbidden = [
+      /<conditionalFormatting\b/,
+      /<cfRule\b/,
+      /<cfvo\b/,
+      /<dxf\b/,
+      /<dxfs\b/,
+      /from\s+['"]jszip['"]/,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('apps/web/src has no second conditional-formatting engine (no serializer, no evaluator)', () => {
+    // The browser must not re-implement canonical CF semantics: the only
+    // serialize/evaluate entry points live in the gateway. The web's CF
+    // surface is install + journal + declarative snapshot + pure range
+    // arithmetic for the structural lockstep.
+    const forbidden = [
+      /applyCfRules/,
+      /parseConditionalFormatting/,
+      /cfRuleUnsaveableReason/,
+      /iconSetSaveable/,
+      /buildDxfXml/,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('CF types cross the browser boundary from the canonical package only (type-only imports)', () => {
+    const clientPath = join(WEB_ROOT, 'src', 'api', 'office-client.ts')
+    const content = readFileSync(clientPath, 'utf8')
+    expect(content).toContain('cfStates?:')
+    expect(content).toContain('CfWireRule')
+    expect(
+      /import type \{[^}]*CfWireRule[^}]*\} from '@genoffice\/xlsx-gateway'/.test(content),
+    ).toBe(true)
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    const editorContent = readFileSync(editorPath, 'utf8')
+    expect(
+      /import type \{[^}]*CfWireRule[^}]*\} from '@genoffice\/xlsx-gateway'/.test(editorContent),
+    ).toBe(true)
+  })
+
+  it('ExcelEditor installs file CF under suppression and journals through cfStates', () => {
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    const content = readFileSync(editorPath, 'utf8')
+    // Read path: file rules install into the live model.
+    expect(content).toContain('sheet.cfRules')
+    expect(content).toContain('sheet.cfLocked')
+    expect(content).toContain('sheet.mutation.add-conditional-rule')
+    // Journal: the four CF mutations mark the sheet CF-dirty.
+    expect(content).toContain("'sheet.mutation.add-conditional-rule'")
+    expect(content).toContain("'sheet.mutation.set-conditional-rule'")
+    expect(content).toContain("'sheet.mutation.delete-conditional-rule'")
+    expect(content).toContain("'sheet.mutation.move-conditional-rule'")
+    // Save path: declarative snapshot through collectCfStates → cfStates.
+    expect(content).toContain('collectCfStates')
+    expect(content).toContain('cfStates')
+    // Fail-closed: the command gate refuses edits on locked sheets.
+    expect(content).toContain('CF_RULE_COMMAND_PATTERN')
+    expect(content).toContain('cfLockedRef')
+  })
+
+  it('Ribbon Home → Conditional Formatting opens the real Univer panel', () => {
+    const ribbonPath = join(WEB_ROOT, 'src', 'screens', 'excel', 'Ribbon.tsx')
+    const content = readFileSync(ribbonPath, 'utf8')
+    expect(content).toContain('onOpenConditionalFormatting')
+    expect(content).not.toContain('Conditional Formatting — disabled')
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    const editorContent = readFileSync(editorPath, 'utf8')
+    expect(editorContent).toContain("'sheet.operation.open.conditional.formatting.panel'")
+  })
+
+  it('structural ops ride Univer-native CF transforms (no browser-side second shift)', () => {
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    const content = readFileSync(editorPath, 'utf8')
+    // EXCEL-024 §8 resolution: Univer 0.25.1 natively transforms live CF
+    // rule ranges on structural ops (the CF-UI plugin's
+    // ConditionalFormattingFormulaRefRangeController via
+    // FormulaRefRangeService — range rewrites + formula-rule splits).
+    // A browser-side shift would DOUBLE-transform — the editor
+    // must NOT carry one, and the native transform mutations must flow
+    // into the CF-dirty journal so the save snapshot keeps the file and
+    // the live model in lockstep.
+    expect(content).not.toContain('shiftLiveCfRanges(')
+    expect(content).toContain('CF_MUTATION_IDS')
+  })
+})

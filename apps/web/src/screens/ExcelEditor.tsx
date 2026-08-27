@@ -38,6 +38,7 @@ import type {
   CellEdit,
   CellFormatState,
   CellState,
+  CfWireRule,
   DvWireRule,
   FilterColumnState,
   SheetFilterState,
@@ -170,6 +171,38 @@ const NOTE_MUTATION_IDS = new Set(['sheet.mutation.update-note', 'sheet.mutation
  */
 const FILTER_COMMAND_PATTERN =
   /^sheet\.command\.(set-filter-criteria|set-filter-range|smart-toggle-filter|clear-filter-criteria|remove-sheet-filter|re-calc-filter)$/
+
+/**
+ * CF mutation IDs (EXCEL-024 — Home → Conditional Formatting). Verified
+ * against the INSTALLED @univerjs/sheets-conditional-formatting 0.25.1
+ * source, not documentation: add/set/delete/move cover every live-model
+ * rule change (the panel's clear-range/clear-worksheet commands route
+ * through delete mutations).
+ */
+const CF_MUTATION_IDS = new Set([
+  'sheet.mutation.add-conditional-rule',
+  'sheet.mutation.set-conditional-rule',
+  'sheet.mutation.delete-conditional-rule',
+  'sheet.mutation.move-conditional-rule',
+])
+
+/**
+ * CF rule COMMANDS (EXCEL-024). Every command that can change a sheet's
+ * conditional-formatting rules — the panel's add/set/delete/move/clear
+ * entries and its typed sub-command buttons (add-number-, add-text-,
+ * add-color-scale-, …). Used by the fail-closed gate: a sheet whose file
+ * CF could not be represented (cfLocked) must refuse ALL rule edits,
+ * because a CF-dirty save rewrites every section from the live-model
+ * snapshot and would silently drop the unrepresentable rules.
+ */
+const CF_RULE_COMMAND_PATTERN = /^sheet\.command\.[a-z-]+-conditional-rule$/
+
+/**
+ * The panel's date-occurring (timePeriod) rule button. The canonical
+ * writer cannot serialize time periods — refuse the dedicated command up
+ * front rather than failing the whole save later.
+ */
+const CF_TIME_PERIOD_COMMAND = 'sheet.command.add-time-period-conditional-rule'
 
 /** Structural mutation IDs (insert/remove row/column). */
 const STRUCTURAL_MUTATION_IDS = new Set([
@@ -422,6 +455,22 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   //    rule set is snapshotted (created + modified + untouched rules alike)
   //    — editing one rule never drops its neighbors.
   const dvDirtyRef = useRef<Set<string>>(new Set())
+  // ── Conditional-formatting journal (Home → Conditional Formatting,
+  //    EXCEL-024). Desktop parity (App.tsx cfDirty): sheet NAMES whose
+  //    rules changed in-session. A sheet absent from this set is NOT
+  //    CF-dirty: its save plan carries NO cf state, so a no-op save
+  //    preserves the file's <conditionalFormatting> XML byte-for-byte. At
+  //    save, the sheet's FULL live rule set is snapshotted (created +
+  //    modified + untouched rules alike) — editing one rule never drops
+  //    its siblings.
+  const cfDirtyRef = useRef<Set<string>>(new Set())
+  // Sheets whose file conditional formatting could not be represented by
+  // the canonical typed model (x14 extensions, time periods, …). The
+  // command gate refuses every CF rule edit on these sheets — a CF-dirty
+  // save would rewrite every section from the live-model snapshot and
+  // silently drop the unrepresentable rules (fail-closed; a no-op save
+  // leaves the file's XML untouched).
+  const cfLockedRef = useRef<Set<string>>(new Set())
   // ── Note journal (Review → New Comment). Desktop parity (App.tsx
   //    noteDirty): sheet NAMES whose notes changed in-session. A sheet absent
   //    from this set is NOT note-dirty: its save plan carries NO note state,
@@ -610,6 +659,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       filterOriginsRef,
       dvDirtyRef,
       noteDirtyRef,
+      cfDirtyRef,
       () => setDirty(true),
     )
     // ── EXCEL-021: table-owned filter gate (desktop App.tsx
@@ -633,6 +683,40 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       ;(event as { cancel?: boolean }).cancel = true
       setStatus("This sheet's filter belongs to an Excel table — editing it cannot be saved yet.")
     })
+    // ── EXCEL-024: conditional-formatting fail-closed gate. Two refusals,
+    //    both BEFORE the command runs (desktop App.tsx BeforeCommandExecute
+    //    parity):
+    //    1. A sheet whose file CF could not be represented by the canonical
+    //       model (cfLocked — x14 extensions, time periods, unresolvable
+    //       styling) refuses EVERY rule edit: a CF-dirty save rewrites all
+    //       of the sheet's <conditionalFormatting> sections from the
+    //       live-model snapshot, so an edit here would silently drop the
+    //       unrepresentable rules. The workbook still opens, the untouched
+    //       rules on other sheets still work, and a no-op save preserves
+    //       the bytes.
+    //    2. The panel's date-occurring (timePeriod) rule cannot be
+    //       serialized by the canonical writer at all — refuse its button
+    //       instead of failing the whole save later.
+    const cfGate = rt.univerAPI.addEvent(rt.univerAPI.Event.BeforeCommandExecute, (event) => {
+      if (event.id === CF_TIME_PERIOD_COMMAND) {
+        ;(event as { cancel?: boolean }).cancel = true
+        setStatus('Date-occurring conditional formatting cannot be saved to xlsx yet.')
+        return
+      }
+      if (!CF_RULE_COMMAND_PATTERN.test(event.id)) return
+      const params = event.params as { subUnitId?: string } | undefined
+      const subUnitId =
+        params?.subUnitId ?? rt.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId()
+      if (subUnitId === undefined) return
+      const wb = rt.univerAPI.getActiveWorkbook()
+      const sheetName = wb?.getSheetBySheetId(subUnitId)?.getSheetName()
+      if (sheetName === undefined) return
+      if (!cfLockedRef.current.has(sheetName)) return
+      ;(event as { cancel?: boolean }).cancel = true
+      setStatus(
+        'This sheet has conditional formatting that cannot be edited yet — its rules are preserved as-is.',
+      )
+    })
     const w = window as { __genofficeExcelRuntime?: unknown }
     w.__genofficeExcelRuntime = rt
     // EXCEL-022: image mutation journal (move/resize/delete → the
@@ -650,6 +734,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     return () => {
       imageSub.dispose()
       filterGate.dispose()
+      cfGate.dispose()
       sub.dispose()
       delete w.__genofficeExcelRuntime
       rt.univer.dispose()
@@ -1289,6 +1374,8 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       filterDirtyRef.current.clear()
       filterOriginsRef.current.clear()
       dvDirtyRef.current.clear()
+      cfDirtyRef.current.clear()
+      cfLockedRef.current.clear()
       noteDirtyRef.current.clear()
       try {
         rt.univerAPI.createWorkbook({
@@ -1400,6 +1487,58 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             } catch {
               // Installing the file's validations must never fail the open.
             }
+          }
+          // Install the file's conditional-formatting rules into the REAL
+          // Univer CF model (EXCEL-024, desktop applyConditionalRules
+          // parity): each canonical CfWireRule becomes a
+          // sheet.mutation.add-conditional-rule execution under journal
+          // suppression — loading a workbook is not an edit, and the
+          // rules then RENDER through the real Univer CF pipeline. The
+          // wire rules arrive priority-ascending (the gateway reader's
+          // order); Univer PREPENDS each add, so installing
+          // priority-DESCENDING leaves the most important rule at the
+          // FRONT of the model list — and Univer's composeStyle gives
+          // list-front rules the highest rendered precedence (verified
+          // from the installed package source; the desktop's
+          // ascending-install + unshift leaves its list REVERSED, a
+          // desktop-only precedence quirk the web does not inherit).
+          // Raw mutations (not the facade command) so nothing lands on
+          // the undo stack. A sheet whose CF failed to parse arrives
+          // cfLocked instead — nothing installs and the command gate
+          // refuses later edits.
+          if (sheet.cfRules && sheet.cfRules.length > 0) {
+            try {
+              const wb = rt.univerAPI.getActiveWorkbook()
+              const ws = wb?.getSheetByName(sheet.name)
+              if (ws) {
+                const ordered = [...sheet.cfRules].reverse()
+                for (const [index, wire] of ordered.entries()) {
+                  try {
+                    rt.univerAPI.syncExecuteCommand('sheet.mutation.add-conditional-rule', {
+                      unitId: wb!.getId(),
+                      subUnitId: ws.getSheetId(),
+                      rule: {
+                        cfId: `file-cf-${sheet.id}-${index}`,
+                        ranges: wire.ranges.map((range) => ({ ...range })),
+                        stopIfTrue: wire.stopIfTrue === true,
+                        rule: wire.rule,
+                      },
+                    })
+                  } catch {
+                    // An unsupported rule shape must not break the open.
+                  }
+                }
+              }
+            } catch {
+              // Installing the file's conditional formatting must never
+              // fail the open.
+            }
+          }
+          // Seed the fail-closed lock: a sheet whose CF could not be
+          // represented (cfLocked) refuses every rule edit — the command
+          // gate reads this set (see the cfGate above).
+          if (sheet.cfLocked === true) {
+            cfLockedRef.current.add(sheet.name)
           }
           // Install the file's legacy notes into the REAL Univer note model
           // (desktop applyWorkbookNotes parity): each SheetNote becomes a
@@ -1626,6 +1765,13 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         // ride along, so editing one rule never drops its neighbors. An
         // empty list means all validation on the sheet was cleared.
         const dvStates = collectDvStates(runtimeRef.current, dvDirtyRef)
+        // Snapshot the LIVE conditional-formatting model for every
+        // CF-dirty sheet (Home → Conditional Formatting, EXCEL-024).
+        // Declarative, desktop collectCfStates parity: the FULL rule set
+        // of each dirty sheet — untouched rules ride along, so editing
+        // one rule never drops its siblings. An empty list clears the
+        // sheet's conditional formatting.
+        const cfStates = collectCfStates(runtimeRef.current, cfDirtyRef)
         // Snapshot the LIVE note model for every note-dirty sheet
         // (Review → New Comment). Declarative, desktop collectNoteStates
         // parity: the FULL note set of each dirty sheet — untouched notes
@@ -1717,6 +1863,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             ...(pageSetupStates.length > 0 ? { pageSetupStates } : {}),
             ...(filterStates.length > 0 ? { filterStates } : {}),
             ...(dvStates.length > 0 ? { dvStates } : {}),
+            ...(cfStates.length > 0 ? { cfStates } : {}),
             ...(noteStates.length > 0 ? { noteStates } : {}),
             ...(sheetProtections.length > 0 ? { sheetProtections } : {}),
             ...(workbookProtectionState !== null ? { workbookProtectionState } : {}),
@@ -1750,6 +1897,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         // for DV: the snapshot is in the file; a no-op save must preserve it.
         filterDirtyRef.current.clear()
         dvDirtyRef.current.clear()
+        cfDirtyRef.current.clear()
         noteDirtyRef.current.clear()
         // EXCEL-020: the saved protection state is now IN the source bytes —
         // merge the journal into the file refs (the ribbon echo must reflect
@@ -2068,6 +2216,20 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     setChartPanelMode('create')
   }, [chartSelection])
 
+  // ── EXCEL-024: Home → Conditional Formatting. Opens Univer's own
+  //    manage-rules panel through the REAL operation (desktop ribbon-actions
+  //    'cf-open' parity — value 2 is the rule-manager list; a missing
+  //    params object silently no-ops). Rule changes then journal through
+  //    the canonical cfStates family; the BeforeCommandExecute gate
+  //    refuses edits on cfLocked sheets fail-closed.
+  const handleOpenConditionalFormatting = useCallback(() => {
+    const rt = runtimeRef.current
+    if (!rt) return
+    void rt.univerAPI.executeCommand('sheet.operation.open.conditional.formatting.panel', {
+      value: 2,
+    })
+  }, [])
+
   const handleChartInsertFromPanel = useCallback(
     (chart: ChartAdd) => {
       const rt = runtimeRef.current
@@ -2198,6 +2360,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         }}
         images={{ onInsertPicture: handleInsertPicture }}
         charts={{ onInsertChart: handleInsertChart }}
+        cf={{ onOpenConditionalFormatting: handleOpenConditionalFormatting }}
       />
 
       {/* EXCEL-023 — the Chart Design pane (create mode after Insert →
@@ -2387,6 +2550,44 @@ function collectDvStates(
 }
 
 /**
+ * Snapshot the LIVE Univer conditional-formatting model for every CF-dirty
+ * sheet into the canonical CfWireRule[] wire shape (EXCEL-024, desktop
+ * collectCfStates parity — a declarative full-rule-set snapshot, never a
+ * UI-command replay). The FWorksheet.getConditionalFormattingRules()
+ * facade returns IConditionFormattingRule[]; each entry's cfId is stripped
+ * (priorities are assigned canonically at serialization time) and the
+ * ranges + stopIfTrue + rule record form the wire shape the gateway's
+ * reader ALSO emits on open — the browser sends exactly what it received.
+ */
+function collectCfStates(
+  runtime: BrowserUniverRuntime | null,
+  cfDirtyRef: React.MutableRefObject<Set<string>>,
+): Array<{ sheetName: string; rules: CfWireRule[] }> {
+  const workbook = runtime?.univerAPI.getActiveWorkbook()
+  if (!workbook) return []
+  const states: Array<{ sheetName: string; rules: CfWireRule[] }> = []
+  for (const sheetName of cfDirtyRef.current) {
+    const worksheet = workbook.getSheetByName(sheetName)
+    if (!worksheet) continue
+    const rules: CfWireRule[] = []
+    for (const live of worksheet.getConditionalFormattingRules()) {
+      rules.push({
+        ranges: live.ranges.map((range) => ({
+          startRow: range.startRow,
+          endRow: range.endRow,
+          startColumn: range.startColumn,
+          endColumn: range.endColumn,
+        })),
+        stopIfTrue: live.stopIfTrue === true,
+        rule: live.rule as unknown as Record<string, unknown>,
+      })
+    }
+    states.push({ sheetName, rules })
+  }
+  return states
+}
+
+/**
  * Snapshot the LIVE Univer note model for every note-dirty sheet into the
  * canonical SheetNoteState wire shape (desktop collectNoteStates parity —
  * a declarative full-set snapshot, never a mutation replay). Univer's note
@@ -2534,6 +2735,7 @@ function subscribeToCellMutations(
   >,
   dvDirtyRef: React.MutableRefObject<Set<string>>,
   noteDirtyRef: React.MutableRefObject<Set<string>>,
+  cfDirtyRef: React.MutableRefObject<Set<string>>,
   onDirty: () => void,
 ): { dispose(): void } {
   const sub = runtime.univerAPI.addEvent(runtime.univerAPI.Event.CommandExecuted, (event) => {
@@ -2599,6 +2801,26 @@ function subscribeToCellMutations(
       }
       dirtyRef.current.clear()
       for (const [key, edit] of shifted.entries()) dirtyRef.current.set(key, edit)
+      // ── EXCEL-024 §8 NOTE: no browser-side range shift is needed — nor
+      //    allowed. Univer 0.25.1's OWN machinery transforms live CF rule
+      //    ranges on row/column structural ops (the CF-UI plugin's
+      //    ConditionalFormattingFormulaRefRangeController registers every
+      //    rule's ranges with sheets-formula's FormulaRefRangeService; on
+      //    insert/delete/move the controller emits set/add/delete-
+      //    conditional-rule side-effect mutations that rewrite the ranges —
+      //    extend-at-top-edge on insert, shrink on delete, formula-rule
+      //    splits with re-anchored formulas. Verified empirically in the
+      //    real browser AND from the installed package source; the earlier
+      //    Phase A finding ("no transform anywhere") was an artifact of
+      //    auditing the base CF package without the CF-UI plugin). Those
+      //    native transform mutations fire the CF journal below — so the
+      //    save snapshots the LIVE rule set and the written file always
+      //    matches the live model (no drift; desktop parity — the desktop
+      //    rides the same transforms). A browser-side shift on top would
+      //    DOUBLE-transform and is actively harmful. The saved XLSX
+      //    remains governed by the canonical gateway (cfStates →
+      //    applyCfRules; the structural shift governs non-CF-dirty
+      //    sheets, which by construction carry no live-model divergence).
       onDirty()
       return
     }
@@ -2873,6 +3095,29 @@ function subscribeToCellMutations(
       const ws = wb.getSheetBySheetId(params.subUnitId)
       if (!ws) return
       dvDirtyRef.current.add(ws.getSheetName())
+      onDirty()
+      return
+    }
+
+    // ── Conditional-formatting mutations (EXCEL-024). Any add/set/
+    //    delete/move marks the sheet CF-dirty — the SAVE snapshots the
+    //    live rule model declaratively (collectCfStates), exactly like the
+    //    desktop's CF_MUTATIONS handler. Individual commands are never
+    //    replayed; created/modified/deleted all collapse into "the sheet's
+    //    full rule set at save time". This ALSO catches Univer's own
+    //    structural CF transforms (the CF-UI controller's range rewrites
+    //    + formula-rule splits fire set/add-conditional-rule), so a row
+    //    insert on a CF-bearing sheet journals as a rule-set change and
+    //    the save writes the live snapshot — keeping the file and the live
+    //    model in lockstep with zero drift.
+    if (CF_MUTATION_IDS.has(event.id)) {
+      const params = event.params as { subUnitId?: string; unitId?: string } | undefined
+      if (!params?.subUnitId) return
+      const wb = runtime.univerAPI.getActiveWorkbook()
+      if (!wb) return
+      const ws = wb.getSheetBySheetId(params.subUnitId)
+      if (!ws) return
+      cfDirtyRef.current.add(ws.getSheetName())
       onDirty()
       return
     }

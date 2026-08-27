@@ -21,6 +21,7 @@
 // up with the server-side route handlers.
 import type {
   CellEdit,
+  CfWireRule,
   DvWireRule,
   SheetFilterState,
   SheetNote,
@@ -133,6 +134,21 @@ export interface BrowserWorkbookSavePlan {
   readonly dvStates?: readonly {
     readonly sheetName: string
     readonly rules: readonly DvWireRule[]
+  }[]
+  /**
+   * Per-sheet conditional-formatting states (Home → Conditional
+   * Formatting, EXCEL-024). Replayed by the engine AFTER structural ops,
+   * cell edits, filters, and validation — rule ranges match the sheet's
+   * final content. Each entry REPLACES the sheet's whole conditional
+   * formatting with the canonical `CfWireRule[]` snapshotted from
+   * Univer's live CF model (the same wire shape the gateway's reader
+   * emits on open — never XML, never reconstructed OOXML). An empty
+   * rules array clears the sheet's `<conditionalFormatting>`; sheets
+   * absent from the list keep their file XML byte-for-byte.
+   */
+  readonly cfStates?: readonly {
+    readonly sheetName: string
+    readonly rules: readonly CfWireRule[]
   }[]
   /**
    * Per-sheet legacy-note states (Review → New Comment). Each entry REPLACES

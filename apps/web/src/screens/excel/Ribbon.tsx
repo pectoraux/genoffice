@@ -97,6 +97,7 @@ import {
   GridlinesIcon,
   FreezePaneIcon,
   FunctionIcon,
+  CfIcon,
 } from './RibbonIcons'
 
 type TabId = 'home' | 'insert' | 'page' | 'formulas' | 'data' | 'review' | 'view'
@@ -238,6 +239,17 @@ export interface RibbonImagesProps {
 }
 
 /**
+ * EXCEL-024 conditional-formatting surface (Home → Styles group). The
+ * shell (ExcelEditor) owns the runtime and passes the command down here;
+ * the button only calls back and invokes Univer's own panel — the web
+ * shell invents no CF UI of its own.
+ */
+export interface RibbonCfProps {
+  /** Home → Conditional Formatting: open Univer's manage-rules panel. */
+  readonly onOpenConditionalFormatting: () => void
+}
+
+/**
  * EXCEL-023 charts surface (Insert → Charts group). The shell
  * (ExcelEditor) owns the chart store + session journal and passes the
  * command down here; the button only calls back (the Chart Design pane
@@ -254,12 +266,14 @@ export function Ribbon({
   tables,
   images,
   charts,
+  cf,
 }: {
   api: ExcelRuntimeApi | null
   protection?: RibbonProtectionProps | null
   tables?: RibbonTablesProps | null
   images?: RibbonImagesProps | null
   charts?: RibbonChartsProps | null
+  cf?: RibbonCfProps | null
 }) {
   const [tab, setTab] = useState<TabId>('home')
   // EXCEL-018 — Remove Duplicates dialog state. Mirrors the desktop's
@@ -506,6 +520,21 @@ export function Ribbon({
                   </option>
                 ))}
               </select>
+            </Group>
+            <Group label="Styles">
+              {/* EXCEL-024 — Home → Conditional Formatting. Opens Univer's
+                  own conditional-formatting panel (the preset the runtime
+                  already registers); the shell invents no CF UI. Rule
+                  changes journal through the canonical cfStates family —
+                  the command gate refuses edits on sheets whose file CF
+                  cannot be represented (fail-closed). */}
+              <RibbonButton
+                label="Conditional Formatting"
+                title="Conditional Formatting — manage rules for the current selection (highlight, color scales, data bars, icon sets)"
+                icon={<CfIcon />}
+                disabled={disabled || !cf}
+                onClick={() => cf?.onOpenConditionalFormatting()}
+              />
             </Group>
           </>
         )}
