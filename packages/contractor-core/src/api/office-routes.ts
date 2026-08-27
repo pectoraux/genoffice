@@ -26,6 +26,7 @@
 import {
   applyCellEditsToXlsx,
   readBasicWorkbook,
+  type AddedVisualLocator,
   type CellEdit,
   type EditableBorderStyle,
   type SheetDvState,
@@ -35,9 +36,11 @@ import {
   type SheetProtectionState,
   type SheetStructuralOps,
   type SheetTableAddition,
+  type SheetVisualAddition,
   type StructuralOp,
   type WorkbookSnapshot,
   type WorkbookStyleEdit,
+  type WorkbookVisualEdit,
 } from '@genoffice/xlsx-gateway'
 import {
   applyImageWrap,
@@ -139,6 +142,27 @@ export interface BrowserWorkbookSavePlan {
    * entry, so it is never persisted — convert-to-range).
    */
   readonly tableAdditions?: readonly SheetTableAddition[]
+  /**
+   * Session-created visuals (Insert → Picture, EXCEL-022). Each entry
+   * carries a typed image addition — the engine writes the media part,
+   * the drawing picture + anchor, the drawing relationship, and (when the
+   * sheet has no drawing yet) the worksheet drawing relationship and the
+   * [Content_Types] Default. IMAGE-ONLY on this wire: chart/shape
+   * additions are rejected (the web editor has no chart/shape UI —
+   * EXCEL-023 will widen the family when charts land). Mirrors the
+   * desktop visualAdditions journal semantics (deleting a session image
+   * drops its entry, so it is never persisted).
+   */
+  readonly visualAdditions?: readonly SheetVisualAddition[]
+  /**
+   * Surgical edits to file-native visuals (move / resize / delete,
+   * EXCEL-022). Each entry targets the canonical (drawingPath,
+   * drawingIndex) locator the open snapshot's images carry — the engine
+   * rewrites the anchor's from/to markers or splices the anchor out,
+   * cascading the image relationship + media part on delete (media is
+   * removed only when no remaining relationship references it).
+   */
+  readonly visualEdits?: readonly WorkbookVisualEdit[]
   // Extensibility seam — future mutation families land here as optional
   // readonly fields (chartEdits?, hyperlinkEdits?, …).
   // The route handler ignores unknown keys, so adding a field is a
@@ -175,6 +199,13 @@ export type SaveWorkbookRequest = BrowserWorkbookSaveRequest | LegacyWorkbookSav
 
 export interface SaveWorkbookResponse {
   readonly fileBytes: string // base64-encoded mutated XLSX
+  /**
+   * EXCEL-022: locators of visuals persisted by this save's
+   * visualAdditions (drawingPath + drawingIndex per addition, in order).
+   * The browser merges them into its live image state so a later
+   * move/resize/delete targets the exact appended anchor.
+   */
+  readonly addedVisuals?: readonly AddedVisualLocator[]
 }
 
 /**
@@ -2420,6 +2451,205 @@ const MAX_SHEET_PROTECTIONS = 1_000
 const MAX_TABLE_ADDITIONS = 50
 const TABLE_STYLE_PATTERN = /^TableStyle(?:Light|Medium|Dark)[1-9][0-9]?$/
 
+// ── Visual validation (Insert → Picture / image edit, EXCEL-022) ─────────────
+
+/** Caps for the visual families (image-only additions + surgical edits). */
+const MAX_VISUAL_ADDITIONS = 50
+const MAX_VISUAL_EDITS = 200
+const MAX_VISUAL_IMAGE_BASE64_CHARS = 11_000_000
+const MAX_ANCHOR_ROW = 1_048_575
+const MAX_ANCHOR_COLUMN = 16_383
+const MAX_ANCHOR_OFFSET_EMU = 50_000_000
+const DRAWING_PATH_PATTERN = /^xl\/drawings\/[A-Za-z0-9._/-]+\.xml$/
+const VISUAL_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif'])
+
+/**
+ * Validate one drawing anchor from the wire — eight non-negative bounded
+ * integers (rows 0..1048575, columns 0..16383, EMU offsets 0..50M).
+ */
+function expectDrawingAnchor(
+  value: unknown,
+  field: string,
+): {
+  readonly fromRow: number
+  readonly fromColumn: number
+  readonly fromRowOffset: number
+  readonly fromColumnOffset: number
+  readonly toRow: number
+  readonly toColumn: number
+  readonly toRowOffset: number
+  readonly toColumnOffset: number
+} {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const bounds: Array<[string, number]> = [
+    ['fromRow', MAX_ANCHOR_ROW],
+    ['fromColumn', MAX_ANCHOR_COLUMN],
+    ['fromRowOffset', MAX_ANCHOR_OFFSET_EMU],
+    ['fromColumnOffset', MAX_ANCHOR_OFFSET_EMU],
+    ['toRow', MAX_ANCHOR_ROW],
+    ['toColumn', MAX_ANCHOR_COLUMN],
+    ['toRowOffset', MAX_ANCHOR_OFFSET_EMU],
+    ['toColumnOffset', MAX_ANCHOR_OFFSET_EMU],
+  ]
+  const out: Record<string, number> = {}
+  for (const [key, max] of bounds) {
+    const raw = value[key]
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0 || raw > max) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.${key} must be an integer between 0 and ${max}`,
+      )
+    }
+    out[key] = raw
+  }
+  for (const key of Object.keys(value)) {
+    if (!bounds.some(([name]) => name === key)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field} carries an unknown field "${key}"`,
+      )
+    }
+  }
+  return out as {
+    readonly fromRow: number
+    readonly fromColumn: number
+    readonly fromRowOffset: number
+    readonly fromColumnOffset: number
+    readonly toRow: number
+    readonly toColumn: number
+    readonly toRowOffset: number
+    readonly toColumnOffset: number
+  }
+}
+
+/**
+ * Validate one visual addition from the wire (EXCEL-022). IMAGE-ONLY: the
+ * payload carries a sheetName, a bounded drawing anchor, and an image with
+ * a supported media type and base64 bytes. Chart/shape additions are
+ * rejected — the web editor has no chart/shape UI, so nothing unvalidated
+ * may reach the generic engine family. Unknown fields are rejected.
+ */
+function expectSheetVisualAddition(value: unknown, index: number): SheetVisualAddition {
+  const field = `visualAdditions[${index}]`
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  if (value.chart !== undefined || value.shape !== undefined) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field} carries an unsupported visual kind — only image additions are supported`,
+    )
+  }
+  if (value.image === undefined) {
+    throw new OfficeValidationError('validation', `${field}.image is required`)
+  }
+  const sheetName = expectString(value.sheetName, `${field}.sheetName`)
+  const anchor = expectDrawingAnchor(value.anchor, `${field}.anchor`)
+  if (!isRecord(value.image)) {
+    throw new OfficeValidationError('validation', `${field}.image must be an object`)
+  }
+  const mediaTypeRaw = expectString(value.image.mediaType, `${field}.image.mediaType`)
+  if (!VISUAL_MEDIA_TYPES.has(mediaTypeRaw)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.image.mediaType must be one of image/png, image/jpeg, image/gif`,
+    )
+  }
+  const mediaType = mediaTypeRaw as 'image/png' | 'image/jpeg' | 'image/gif'
+  const base64 = expectString(value.image.base64, `${field}.image.base64`)
+  if (base64.length > MAX_VISUAL_IMAGE_BASE64_CHARS) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.image.base64 exceeds ${MAX_VISUAL_IMAGE_BASE64_CHARS} characters`,
+    )
+  }
+  for (const key of Object.keys(value.image)) {
+    if (key !== 'mediaType' && key !== 'base64') {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.image carries an unknown field "${key}"`,
+      )
+    }
+  }
+  for (const key of Object.keys(value)) {
+    if (!['sheetName', 'anchor', 'image'].includes(key)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field} carries an unknown field "${key}"`,
+      )
+    }
+  }
+  return { sheetName, anchor, image: { mediaType, base64 } }
+}
+
+/**
+ * Validate one visual edit from the wire (EXCEL-022). The edit targets the
+ * canonical (drawingPath, drawingIndex) locator and carries EITHER a
+ * removal flag OR a new anchor — never both, never neither. Unknown
+ * fields are rejected; unvalidated objects never reach the engine.
+ */
+function expectWorkbookVisualEdit(value: unknown, index: number): WorkbookVisualEdit {
+  const field = `visualEdits[${index}]`
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const drawingPath = expectString(value.drawingPath, `${field}.drawingPath`)
+  if (!DRAWING_PATH_PATTERN.test(drawingPath)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.drawingPath must be an xl/drawings/*.xml package path`,
+    )
+  }
+  const drawingIndexRaw = value.drawingIndex
+  if (
+    typeof drawingIndexRaw !== 'number' ||
+    !Number.isInteger(drawingIndexRaw) ||
+    drawingIndexRaw < 0 ||
+    drawingIndexRaw > 10_000
+  ) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.drawingIndex must be an integer between 0 and 10000`,
+    )
+  }
+  const hasRemove = value.remove !== undefined
+  const hasAnchor = value.anchor !== undefined
+  if (hasRemove && hasAnchor) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field} carries both remove and anchor — exactly one is required`,
+    )
+  }
+  if (!hasRemove && !hasAnchor) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field} needs either remove or anchor`,
+    )
+  }
+  if (hasRemove && value.remove !== true) {
+    throw new OfficeValidationError('validation', `${field}.remove must be true`)
+  }
+  const anchor = hasAnchor
+    ? expectDrawingAnchor(value.anchor, `${field}.anchor`)
+    : undefined
+  for (const key of Object.keys(value)) {
+    if (!['drawingPath', 'drawingIndex', 'remove', 'anchor'].includes(key)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field} carries an unknown field "${key}"`,
+      )
+    }
+  }
+  return {
+    drawingPath,
+    drawingIndex: drawingIndexRaw,
+    ...(hasRemove ? { remove: true } : {}),
+    ...(anchor !== undefined ? { anchor } : {}),
+  }
+}
+
 /**
  * Validate one table addition from the wire (EXCEL-021). Mirrors the
  * desktop preload's workbookTableAddSchema exactly — sheetName, a 0-based
@@ -2761,6 +2991,37 @@ function parseSaveWorkbookRequest(
         `savePlan.tableAdditions exceeds ${MAX_TABLE_ADDITIONS} entries`,
       )
     }
+    // EXCEL-022: session-created images (Insert → Picture) + surgical
+    // edits to file-native images (move / resize / delete). Strictly
+    // validated — nothing unvalidated reaches the engine.
+    const visualAdditions =
+      body.savePlan.visualAdditions !== undefined && body.savePlan.visualAdditions !== null
+        ? expectArray(
+            body.savePlan.visualAdditions,
+            'savePlan.visualAdditions',
+            expectSheetVisualAddition,
+          )
+        : undefined
+    if (visualAdditions !== undefined && visualAdditions.length > MAX_VISUAL_ADDITIONS) {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.visualAdditions exceeds ${MAX_VISUAL_ADDITIONS} entries`,
+      )
+    }
+    const visualEdits =
+      body.savePlan.visualEdits !== undefined && body.savePlan.visualEdits !== null
+        ? expectArray(
+            body.savePlan.visualEdits,
+            'savePlan.visualEdits',
+            expectWorkbookVisualEdit,
+          )
+        : undefined
+    if (visualEdits !== undefined && visualEdits.length > MAX_VISUAL_EDITS) {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.visualEdits exceeds ${MAX_VISUAL_EDITS} entries`,
+      )
+    }
     return {
       fileName,
       fileBytes,
@@ -2774,6 +3035,8 @@ function parseSaveWorkbookRequest(
         ...(sheetProtections ? { sheetProtections } : {}),
         ...(workbookProtectionState !== null ? { workbookProtectionState } : {}),
         ...(tableAdditions && tableAdditions.length > 0 ? { tableAdditions } : {}),
+        ...(visualAdditions && visualAdditions.length > 0 ? { visualAdditions } : {}),
+        ...(visualEdits && visualEdits.length > 0 ? { visualEdits } : {}),
       },
     }
   }
@@ -2850,6 +3113,8 @@ async function handleSaveWorkbook(
   const sheetProtections = req.savePlan.sheetProtections ?? []
   const workbookProtectionState = req.savePlan.workbookProtectionState ?? null
   const tableAdditions = req.savePlan.tableAdditions ?? []
+  const visualAdditions = req.savePlan.visualAdditions ?? []
+  const visualEdits = req.savePlan.visualEdits ?? []
   let mutation
   try {
     // filterStates is argument 6 (after chartEdits/sheetPlan): the canonical
@@ -2864,7 +3129,10 @@ async function handleSaveWorkbook(
     // their OOXML protection elements after the content flush.
     // tableAdditions is the trailing argument (EXCEL-021): new tables run
     // on the flushed worksheet XML — the <tableParts> element and overlap
-    // checks see the final sheet content. See planCellEditsToXlsx in
+    // checks see the final sheet content. visualAdditions/visualEdits are
+    // the two trailing arguments (EXCEL-022): surgical image edits run
+    // after the structural flush (post-shift coordinates) and new image
+    // anchors append after that. See planCellEditsToXlsx in
     // @genoffice/xlsx-gateway.
     mutation = await applyCellEditsToXlsx(
       buf,
@@ -2883,6 +3151,8 @@ async function handleSaveWorkbook(
       [],
       workbookProtectionState,
       tableAdditions,
+      visualAdditions,
+      visualEdits,
     )
   } catch (e) {
     throw new OfficeValidationError(
@@ -2890,7 +3160,10 @@ async function handleSaveWorkbook(
       e instanceof Error ? e.message : 'Failed to apply cell edits',
     )
   }
-  const res: SaveWorkbookResponse = { fileBytes: encodeFileBytes(mutation.buffer, codec) }
+  const res: SaveWorkbookResponse = {
+    fileBytes: encodeFileBytes(mutation.buffer, codec),
+    ...(mutation.addedVisuals !== undefined ? { addedVisuals: mutation.addedVisuals } : {}),
+  }
   return { status: 200, body: res }
 }
 

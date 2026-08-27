@@ -9,6 +9,7 @@ import type { SheetFilterState } from '../gateway/xlsx-filter'
 import type { DvWireRule } from '../gateway/xlsx-dv'
 import type { SheetNote } from '../gateway/xlsx-notes'
 import type { SheetTableInfo } from '../gateway/xlsx-table-read'
+import type { SheetImageInfo } from '../gateway/xlsx-image-read'
 
 export type CellScalar = string | number | boolean | null
 
@@ -110,6 +111,21 @@ export interface WorksheetState {
    * OOXML knowledge.
    */
   readonly tables?: readonly SheetTableInfo[] | undefined
+  /**
+   * Worksheet pictures (EXCEL-022) parsed from the sheet's drawing part
+   * (resolved through the worksheet rels). Absent means the sheet carries
+   * no representable pictures — including when the drawing wiring is
+   * unreadable (fail closed PER SHEET) or when individual pictures are
+   * unsupported (media type, size, missing part — skipped per picture,
+   * anchors still counted for drawingIndex parity). The web Sheets shell
+   * renders these through Univer's over-grid image model and journals
+   * move/resize/delete through the canonical visualEdits save family,
+   * keyed by the (drawingPath, drawingIndex) locator. NOTE: this is a
+   * DEDICATED image surface — the chart-oriented `visuals` field above is
+   * the desktop demo/AI chart replay state and is deliberately NOT
+   * repurposed (EXCEL-022 architecture decision, worklog).
+   */
+  readonly images?: readonly SheetImageInfo[] | undefined
   /**
    * Sheet protection state parsed from the worksheet's <sheetProtection>
    * element. Absent means the worksheet carries NO element (not

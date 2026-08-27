@@ -104,6 +104,31 @@ Required:
 - save/reopen;
 - browser + production E2E.
 
+Status: IMPLEMENTING — local verification complete (browser E2E 12/12
+through the real HTTP stack; production E2E and byte inspection remain
+POST-MERGE steps, exactly like EXCEL-018/020/021).
+
+Evidence (local):
+
+- Gateway unit: `tests/xlsx-image.test.ts` — 18 tests covering the read
+  path (two-cell/one-cell/absolute modeling, drawingIndex parity over
+  non-picture anchors, rotation, unsupported-media skip, missing-media
+  skip, per-sheet fail-closed wiring, multi-sheet, no-op byte
+  preservation) and the delete cascade (single image, one-of-two,
+  shared rel, shared media via two rels, cross-drawing media, final-image
+  removal, move-only edits, composed delete+move).
+- Route unit: `office-visual-routes.test.ts` — 19 validation tests
+  (image-only wire, media types, base64 shape/caps, anchor bounds,
+  unknown fields, both/neither edit kinds, drawing-path pattern, count
+  caps).
+- Architecture: 3 new guards (no drawing/relationship XML work in
+  apps/web/src, type-only gateway imports, canonical visual wire types).
+- Browser E2E: `ribbon-images.spec.ts` — 12 tests through browser → HTTP
+  → routeOffice → gateway → XLSX bytes → reopen (import, render,
+  identity, move, resize, insert, delete cascade, multi-image isolation,
+  save/reopen, no-op preservation + plan inspection, relationship chain,
+  one-cell fail-closed, multi-sheet shared media, JPEG round-trip).
+
 ### EXCEL-023 Charts
 
 Required:

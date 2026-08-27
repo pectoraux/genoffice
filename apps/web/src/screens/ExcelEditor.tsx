@@ -24,6 +24,15 @@ import '@univerjs/sheets-filter/facade'
 // registered table is VISUAL (filter dropdowns + theme); the canonical
 // persistence is the tableAdditions save family, never this model.
 import '@univerjs/sheets-table/facade'
+// Same pattern for the drawing facade (EXCEL-022): surfaces
+// newOverGridImage / insertImages / getImages on FWorksheet and the
+// FOverGridImage builder surface. The runtime side is wired by
+// UniverSheetsDrawingPreset in create-browser-univer.ts (already
+// shipped); this import only brings the TypeScript signatures into
+// scope so the image install/read paths typecheck against the PUBLIC
+// facade — the canonical persistence is the visualAdditions /
+// visualEdits save families, never this model.
+import '@univerjs/sheets-drawing/facade'
 import type { ICustomFilter, IFilterColumn } from '@univerjs/sheets-filter'
 import type {
   CellEdit,
@@ -32,6 +41,7 @@ import type {
   DvWireRule,
   FilterColumnState,
   SheetFilterState,
+  SheetImageInfo,
   SheetNote,
   SheetTableAddition,
   SheetTableInfo,
@@ -53,6 +63,20 @@ import {
 } from '../api/office-client'
 import { parseAddress, parseRange, columnIndex } from '../office/cell-address'
 import { applyTableBandingToMatrix, type TableBandingMatrix } from '../office/table-banding'
+import {
+  anchorFromPlacement,
+  collectImageVisualAdditions,
+  collectImageVisualEdits,
+  emuToPx,
+  fileImageId,
+  insertOverGridImage,
+  measureImage,
+  placementFromAnchor,
+  readLivePlacement,
+  supportedMediaType,
+  type ImageWorksheetFacade,
+  type SessionImageAdd,
+} from '../office/sheet-images'
 import {
   cellEditFromMutation,
   mergeCellEdit,
@@ -436,6 +460,37 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   const tableAddsRef = useRef<SheetTableAddition[]>([])
   const tableUniverIdsRef = useRef<Map<string, string>>(new Map())
   const tableFilterOriginRef = useRef<Set<string>>(new Set())
+  // ── Image state (EXCEL-022, Insert → Picture / image edit). Desktop
+  //    parity (App.tsx file.visuals + edit-journal.ts visualAdds /
+  //    visualEdits). Four structures:
+  //    - fileImagesRef: the FILE's own pictures keyed by their Univer
+  //      drawing id (which IS the canonical locator id
+  //      `file-img:{drawingPath}#{drawingIndex}`), carrying the wire
+  //      SheetImageInfo. Seeded on open, merged after save — the anchor
+  //      refreshes to the saved geometry so the next move/resize diffs
+  //      against the persisted baseline.
+  //    - imageAddsRef: the session journal (SessionImageAdd — id,
+  //      sheetName, anchor, mediaType, base64). Deleting a session image
+  //      SPLICES its entry (never persisted), desktop visualAdds parity.
+  //    - imageDirtyRef: file images the user moved/resized this session
+  //      (Univer set-drawing-apply UPDATE mutations). The save reads the
+  //      LIVE anchor, so multiple interactions collapse into one
+  //      final-state visualEdit.
+  //    - imageRemovalsRef: file images the user deleted. The save emits
+  //      visualEdits remove entries — the gateway cascades the image
+  //      relationship and drops the media part ONLY when nothing else
+  //      references it.
+  //    imageInstallingRef suppresses mutation journaling while the load
+  //    path (or a read-only revert) installs/reinstalls images.
+  const fileImagesRef = useRef<Map<string, { sheetName: string; info: SheetImageInfo }>>(
+    new Map(),
+  )
+  const imageAddsRef = useRef<SessionImageAdd[]>([])
+  const imageDirtyRef = useRef<Set<string>>(new Set())
+  const imageRemovalsRef = useRef<Set<string>>(new Set())
+  const imageInstallingRef = useRef(false)
+  const imageSeqRef = useRef(0)
+  const imageFileInputRef = useRef<HTMLInputElement | null>(null)
   // Echo for the ribbon's Protect Sheet / Protect Workbook buttons —
   // recomputed whenever the journal, the file state, or the ACTIVE SHEET
   // changes (the runtime's ActiveSheetChanged subscription re-renders the
@@ -538,7 +593,20 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     })
     const w = window as { __genofficeExcelRuntime?: unknown }
     w.__genofficeExcelRuntime = rt
+    // EXCEL-022: image mutation journal (move/resize/delete → the
+    // canonical visualEdits family; read-only anchors revert fail-closed).
+    const imageSub = subscribeToImageMutations(
+      rt,
+      imageInstallingRef,
+      fileImagesRef,
+      imageAddsRef,
+      imageDirtyRef,
+      imageRemovalsRef,
+      () => setDirty(true),
+      (message) => setStatus(message),
+    )
     return () => {
+      imageSub.dispose()
       filterGate.dispose()
       sub.dispose()
       delete w.__genofficeExcelRuntime
@@ -922,7 +990,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   }, [])
 
   const loadSnapshot = useCallback(
-    (snapshot: WorkbookSnapshot) => {
+    async (snapshot: WorkbookSnapshot) => {
       const rt = runtimeRef.current
       if (!rt) return
       const active = rt.univerAPI.getActiveWorkbook()
@@ -965,6 +1033,25 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       for (const sheet of snapshot.sheets) {
         if (sheet.tables && sheet.tables.length > 0) {
           tablesFileRef.current.set(sheet.name, sheet.tables)
+        }
+      }
+      // EXCEL-022 image state: same leak guard. The file refs re-seed from
+      // THIS snapshot (per-sheet pictures with inline media), the session
+      // journal starts empty (a freshly opened workbook saves NO visual
+      // families — a no-op save preserves the drawing parts byte-for-byte),
+      // and the interaction journals reset.
+      fileImagesRef.current.clear()
+      imageAddsRef.current = []
+      imageDirtyRef.current.clear()
+      imageRemovalsRef.current.clear()
+      for (const sheet of snapshot.sheets) {
+        if (sheet.images && sheet.images.length > 0) {
+          for (const info of sheet.images) {
+            fileImagesRef.current.set(fileImageId(info.drawingPath, info.drawingIndex), {
+              sheetName: sheet.name,
+              info,
+            })
+          }
         }
       }
       const sheetsConfig: Record<string, IWorksheetData> = {}
@@ -1248,6 +1335,55 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
               }
             }
           }
+          // ── EXCEL-022: install the file's pictures into the REAL
+          //    Univer over-grid image model (desktop WorkbookVisuals
+          //    ImageVisual parity — the browser renders the typed wire
+          //    state; the canonical persistence stays with the
+          //    visualEdits/visualAdditions save families). Each image
+          //    installs with its LOCATOR as the Univer drawing id, so
+          //    mutation events map straight back to the canonical model.
+          //    Two-cell anchors derive their pixel size from the live
+          //    grid; one-cell/absolute images use the reader's a:ext
+          //    size. All of it runs under install suppression: loading
+          //    a workbook is not an edit, and the undo filter drops the
+          //    load-time drawing commands (desktop journalSuppression
+          //    parity). Best-effort per image — a failed install never
+          //    breaks the open.
+          if (sheet.images && sheet.images.length > 0) {
+            const wb = rt.univerAPI.getActiveWorkbook()
+            const ws = wb?.getSheetByName(sheet.name)
+            if (wb && ws) {
+              const imageWs = ws as unknown as ImageWorksheetFacade
+              for (const info of sheet.images) {
+                try {
+                  imageInstallingRef.current = true
+                  try {
+                    await insertOverGridImage(imageWs, {
+                      id: fileImageId(info.drawingPath, info.drawingIndex),
+                      unitId: wb.getId(),
+                      dataUrl: info.dataUrl,
+                      placement:
+                        info.anchorType === 'two-cell'
+                          ? placementFromAnchor(imageWs, info.anchor)
+                          : {
+                              column: info.anchor.fromColumn,
+                              columnOffsetPx: emuToPx(info.anchor.fromColumnOffset),
+                              row: info.anchor.fromRow,
+                              rowOffsetPx: emuToPx(info.anchor.fromRowOffset),
+                              widthPx: info.widthPx ?? 100,
+                              heightPx: info.heightPx ?? 100,
+                            },
+                    })
+                  } finally {
+                    imageInstallingRef.current = false
+                  }
+                } catch {
+                  // Best-effort install (desktop parity): an unsupported
+                  // picture must not fail the open.
+                }
+              }
+            }
+          }
         }
       } finally {
         journalSuppressionRef.current = false
@@ -1268,7 +1404,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         const res = await openWorkbook({ fileName: file.name, fileBytes: bytes })
         handleRef.current = createWorkbookHandle(file.name, bytes)
         setFileName(file.name)
-        loadSnapshot(res.snapshot)
+        await loadSnapshot(res.snapshot)
         setStatus(`Opened ${file.name}`)
         setDirty(false)
       } catch (e) {
@@ -1340,6 +1476,30 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         //   workbook without table creations emits NO family, so a no-op
         //   save preserves the file's table parts byte-for-byte.
         const tableAdditions = [...tableAddsRef.current]
+        // EXCEL-022: the image save families. Desktop save-actions parity
+        // (toSaveVisualEdits / toSaveVisualAdds): edits journal the
+        // removals and the moved/resized file images (anchors read from
+        // the LIVE Univer model — multiple interactions collapse into one
+        // final-state edit); additions journal the session creations
+        // (deleted session images already spliced out). A workbook
+        // without image interactions emits NEITHER family, so a no-op
+        // save preserves the drawing parts byte-for-byte.
+        const worksheetByName = (sheetName: string): ImageWorksheetFacade | null => {
+          const wb = runtimeRef.current?.univerAPI.getActiveWorkbook()
+          const ws = wb?.getSheetByName(sheetName)
+          return (ws as unknown as ImageWorksheetFacade) ?? null
+        }
+        const visualEdits = collectImageVisualEdits(
+          worksheetByName,
+          fileImagesRef.current,
+          imageDirtyRef.current,
+          imageRemovalsRef.current,
+        )
+        const visualAdditions = collectImageVisualAdditions(
+          worksheetByName,
+          imageAddsRef.current,
+          imageRemovalsRef.current,
+        )
         // SPLIT-SAVE (desktop save-actions heldTables parity): the gateway
         // fails closed when a new table rides with row/column changes on
         // its sheet ("A new table cannot be saved together with row/column
@@ -1358,7 +1518,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           }
           nextFileName = newName.endsWith('.xlsx') ? newName : `${newName}.xlsx`
         }
-        let savedBytes = await saveWorkbook({
+        let saved = await saveWorkbook({
           fileName: nextFileName,
           fileBytes: handle.sourceBytes,
           savePlan: {
@@ -1371,18 +1531,21 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             ...(sheetProtections.length > 0 ? { sheetProtections } : {}),
             ...(workbookProtectionState !== null ? { workbookProtectionState } : {}),
             ...(!splitSave && tableAdditions.length > 0 ? { tableAdditions } : {}),
+            ...(visualEdits.length > 0 ? { visualEdits } : {}),
+            ...(visualAdditions.length > 0 ? { visualAdditions } : {}),
           },
         })
         if (splitSave) {
           // Phase 2: the held tables alone, against the phase-1 bytes —
           // the same two-phase save the desktop runs when structural ops
           // and new tables collide.
-          savedBytes = await saveWorkbook({
+          saved = await saveWorkbook({
             fileName: nextFileName,
-            fileBytes: savedBytes,
+            fileBytes: saved.bytes,
             savePlan: { edits: [], tableAdditions: heldTables },
           })
         }
+        const savedBytes = saved.bytes
         handleRef.current = {
           fileName: nextFileName,
           sourceBytes: savedBytes,
@@ -1441,6 +1604,70 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           }
           tableAddsRef.current = []
         }
+        // EXCEL-022: the saved image state is now IN the source bytes.
+        // Merge the journals into the file refs so a subsequent save diffs
+        // against the persisted state:
+        //   - removals leave the tracked map (their anchors are gone);
+        //   - moved/resized images refresh their stored anchor to the
+        //     emitted geometry;
+        //   - session creations become file-native: the save response's
+        //     addedVisuals locators (exact drawingPath + drawingIndex the
+        //     gateway assigned) rebuild their tracked entries, keyed by
+        //     the SAME Univer drawing id — later edits target the precise
+        //     anchor. A missing locator block (older host) keeps the
+        //     images editable-in-memory only; the browser refuses to
+        //     guess indexes (fail closed against silent corruption).
+        for (const id of imageRemovalsRef.current) {
+          fileImagesRef.current.delete(id)
+        }
+        imageRemovalsRef.current.clear()
+        imageDirtyRef.current.clear()
+        for (const edit of visualEdits) {
+          if (edit.remove === true || edit.anchor === undefined) continue
+          for (const [id, entry] of fileImagesRef.current.entries()) {
+            if (
+              entry.info.drawingPath === edit.drawingPath &&
+              entry.info.drawingIndex === edit.drawingIndex
+            ) {
+              fileImagesRef.current.set(id, {
+                sheetName: entry.sheetName,
+                info: { ...entry.info, anchor: edit.anchor },
+              })
+            }
+          }
+        }
+        if (visualAdditions.length > 0 && saved.addedVisuals !== undefined) {
+          const locators = saved.addedVisuals
+          if (locators.length === visualAdditions.length) {
+            const consumed = new Set<string>()
+            for (const [index, addition] of visualAdditions.entries()) {
+              const locator = locators[index]
+              if (locator === undefined) continue
+              const additionImage = addition.image
+              if (additionImage === undefined) continue
+              const add = imageAddsRef.current.find(
+                (candidate) =>
+                  !consumed.has(candidate.id) &&
+                  candidate.sheetName === addition.sheetName &&
+                  candidate.mediaType === additionImage.mediaType,
+              )
+              if (add === undefined) continue
+              consumed.add(add.id)
+              fileImagesRef.current.set(add.id, {
+                sheetName: add.sheetName,
+                info: {
+                  drawingPath: locator.drawingPath,
+                  drawingIndex: locator.drawingIndex,
+                  anchorType: 'two-cell',
+                  anchor: addition.anchor,
+                  mediaType: add.mediaType,
+                  dataUrl: `data:${add.mediaType};base64,${add.base64}`,
+                },
+              })
+            }
+            imageAddsRef.current = imageAddsRef.current.filter((add) => consumed.has(add.id))
+          }
+        }
         const blob = new Blob([savedBytes.buffer as ArrayBuffer], {
           type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         })
@@ -1460,6 +1687,85 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   )
 
   const isError = status.startsWith('Open failed') || status.startsWith('Save failed')
+
+  // EXCEL-022 — Insert → Picture (desktop insertPictureVisual parity): a
+  // browser File/Blob upload path. The picker's bytes become a data URL,
+  // the natural size scales to a ≤480px-wide frame anchored at the active
+  // cell, and the image installs through Univer's over-grid builder with
+  // a session id. The journal entry carries the canonical
+  // visualAdditions payload (sheetName + anchor + typed image) — the
+  // anchor refreshes from the live model at save, so post-insert moves
+  // persist at their final position. No filesystem path ever reaches the
+  // browser.
+  const handleInsertPicture = useCallback(() => {
+    imageFileInputRef.current?.click()
+  }, [])
+  const handleImageFile = useCallback(async (file: File) => {
+    const rt = runtimeRef.current
+    const wb = rt?.univerAPI.getActiveWorkbook()
+    if (!rt || !wb) {
+      setStatus('Open a workbook first')
+      return
+    }
+    const mediaType = supportedMediaType(file.type)
+    if (mediaType === null) {
+      setStatus('Unsupported image type — PNG, JPEG, and GIF are supported.')
+      return
+    }
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(new Error('Could not read the image file.'))
+      reader.readAsDataURL(file)
+    })
+    const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+    const { width, height } = await measureImage(dataUrl)
+    const ws = wb.getActiveSheet()
+    const sheetName = ws.getSheetName()
+    const range = wb.getActiveRange()
+    if (!range) {
+      setStatus('Select a cell first')
+      return
+    }
+    const row = range.getRow()
+    const column = range.getColumn()
+    // Desktop parity: scale down to a ≤480px-wide frame; ~80px columns
+    // and ~22px rows size the two-cell anchor.
+    const scale = Math.min(1, 480 / Math.max(1, width))
+    const widthPx = Math.max(16, Math.round(width * scale))
+    const heightPx = Math.max(16, Math.round(height * scale))
+    const imageWs = ws as unknown as ImageWorksheetFacade
+    const placement = {
+      column,
+      columnOffsetPx: 0,
+      row,
+      rowOffsetPx: 0,
+      widthPx,
+      heightPx,
+    }
+    const id = `added-img-${Date.now().toString(36)}-${imageSeqRef.current++}`
+    imageInstallingRef.current = true
+    try {
+      await insertOverGridImage(imageWs, { id, unitId: wb.getId(), dataUrl, placement })
+    } catch (e) {
+      setStatus(`Insert failed: ${e instanceof Error ? e.message : String(e)}`)
+      return
+    } finally {
+      imageInstallingRef.current = false
+    }
+    imageAddsRef.current = [
+      ...imageAddsRef.current,
+      {
+        id,
+        sheetName,
+        anchor: anchorFromPlacement(imageWs, placement),
+        mediaType,
+        base64,
+      },
+    ]
+    setDirty(true)
+    setStatus('Picture inserted')
+  }, [])
 
   return (
     <div className="excel-shell" data-testid="excel-shell">
@@ -1522,6 +1828,20 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
               e.target.value = ''
             }}
           />
+          {/* EXCEL-022: Insert → Picture upload path (browser File/Blob —
+              no filesystem path is ever exposed to the editor). */}
+          <input
+            ref={imageFileInputRef}
+            hidden
+            type="file"
+            accept="image/png,image/jpeg,image/gif"
+            data-testid="excel-image-input"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) void handleImageFile(f)
+              e.target.value = ''
+            }}
+          />
         </div>
       </header>
 
@@ -1540,6 +1860,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           onInsertTable: handleInsertTable,
           onDeleteTable: handleDeleteTable,
         }}
+        images={{ onInsertPicture: handleInsertPicture }}
       />
 
       <div className="excel-formula-row" data-testid="excel-formula-row">
@@ -2290,4 +2611,189 @@ function subscribeToCellMutations(
     if (touched) onDirty()
   })
   return { dispose: () => sub.dispose() }
+}
+
+/**
+ * EXCEL-022 — image mutation journal. Subscribes to Univer's
+ * `sheet.mutation.set-drawing-apply` (the single mutation behind image
+ * insert/update/remove) and maps user interactions onto the canonical
+ * image journal structures:
+ *
+ *   UPDATE (move/resize) on a two-cell file image → imageDirtyRef
+ *   UPDATE on a one-cell/absolute file image → REVERT (fail closed —
+ *     the canonical edit family cannot represent the change) + status
+ *   REMOVE of a file image → imageRemovalsRef
+ *   REMOVE of a session image → splice from imageAddsRef (never persists)
+ *
+ * Install-time activity (load or revert) is suppressed via
+ * imageInstallingRef so neither loads nor reverts journal.
+ */
+function subscribeToImageMutations(
+  runtime: BrowserUniverRuntime,
+  imageInstallingRef: React.MutableRefObject<boolean>,
+  fileImagesRef: React.MutableRefObject<Map<string, { sheetName: string; info: SheetImageInfo }>>,
+  imageAddsRef: React.MutableRefObject<SessionImageAdd[]>,
+  imageDirtyRef: React.MutableRefObject<Set<string>>,
+  imageRemovalsRef: React.MutableRefObject<Set<string>>,
+  onDirty: () => void,
+  onStatus: (message: string) => void,
+): { dispose(): void } {
+  const sub = runtime.univerAPI.addEvent(runtime.univerAPI.Event.CommandExecuted, (event) => {
+    if (event.id !== 'sheet.mutation.set-drawing-apply') return
+    if (imageInstallingRef.current) return
+    const params = event.params as
+      | {
+          type?: number
+          unitId?: string
+          subUnitId?: string
+          objects?: Array<{ drawingId?: string }>
+        }
+      | undefined
+    if (params?.type === undefined || !Array.isArray(params.objects)) return
+    const wb = runtime.univerAPI.getActiveWorkbook()
+    if (!wb || params.unitId !== undefined && params.unitId !== wb.getId()) return
+    const ids = params.objects
+      .map((object) => object?.drawingId)
+      .filter((id): id is string => typeof id === 'string')
+    if (ids.length === 0) return
+    // 0 = INSERT, 1 = REMOVE, 2 = UPDATE (DrawingApplyType).
+    if (params.type === 1) {
+      let touched = false
+      for (const id of ids) {
+        if (fileImagesRef.current.has(id)) {
+          imageRemovalsRef.current.add(id)
+          imageDirtyRef.current.delete(id)
+          touched = true
+        } else if (imageAddsRef.current.some((add) => add.id === id)) {
+          // Session image deleted before saving: splice — it never
+          // persists (desktop visualAdds parity).
+          imageAddsRef.current = imageAddsRef.current.filter((add) => add.id !== id)
+          touched = true
+        }
+      }
+      if (touched) onDirty()
+      return
+    }
+    if (params.type === 2) {
+      let touched = false
+      for (const id of ids) {
+        const entry = fileImagesRef.current.get(id)
+        if (entry === undefined) continue
+        if (entry.info.anchorType !== 'two-cell') {
+          // Fail closed: the canonical edit family cannot move/resize a
+          // one-cell or absolute anchored image without approximating
+          // its geometry. Revert the interaction and say why. The revert
+          // runs DEFERRED (macrotask): re-entering the command service
+          // from inside the CommandExecuted dispatch would deadlock the
+          // drawing command, so the restore must leave the event's
+          // synchronous stack first.
+          onStatus(
+            'This image uses a one-cell or absolute anchor — moving or resizing it is not supported yet.',
+          )
+          window.setTimeout(() => {
+            void revertImageToBaseline(
+              runtime,
+              imageInstallingRef,
+              entry.sheetName,
+              id,
+              entry.info,
+              onStatus,
+            )
+          }, 50)
+          continue
+        }
+        imageDirtyRef.current.add(id)
+        touched = true
+      }
+      if (touched) onDirty()
+    }
+  })
+  return { dispose: () => sub.dispose() }
+}
+
+/** Re-installs a read-only image at its file geometry after a refused edit. */
+async function revertImageToBaseline(
+  runtime: BrowserUniverRuntime,
+  imageInstallingRef: React.MutableRefObject<boolean>,
+  sheetName: string,
+  id: string,
+  info: SheetImageInfo,
+  onStatus: (message: string) => void,
+): Promise<void> {
+  try {
+    const wb = runtime.univerAPI.getActiveWorkbook()
+    const ws = wb?.getSheetByName(sheetName)
+    if (!wb || !ws) return
+    const imageWs = ws as unknown as ImageWorksheetFacade
+    const baseline =
+      info.anchorType === 'two-cell'
+        ? placementFromAnchor(imageWs, info.anchor)
+        : {
+            column: info.anchor.fromColumn,
+            columnOffsetPx: emuToPx(info.anchor.fromColumnOffset),
+            row: info.anchor.fromRow,
+            rowOffsetPx: emuToPx(info.anchor.fromRowOffset),
+            widthPx: info.widthPx ?? 100,
+            heightPx: info.heightPx ?? 100,
+          }
+    const live = imageWs.getImages().find((entry) => entry.getId() === id)
+    // Restore by remove + reinstall at the file geometry. The Univer
+    // set-drawing command diffs its builder param against the live object
+    // reference — when invoked outside the interaction that produced the
+    // edit, the diff collapses to an empty op (the transformer pipeline
+    // owns the object), so a surgical setPositionAsync does not reliably
+    // land. Removing the refused state and re-inserting the image from
+    // the wire bytes at its baseline placement always lands, and both
+    // commands run under install suppression so nothing journals.
+    imageInstallingRef.current = true
+    try {
+      if (live !== undefined) {
+        try {
+          ;(live as unknown as { remove(): boolean }).remove()
+        } catch {
+          // Already gone — install below recreates it.
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 60))
+      }
+      await insertOverGridImage(imageWs, {
+        id,
+        unitId: wb.getId(),
+        dataUrl: info.dataUrl,
+        placement: baseline,
+      })
+      // The refused edit's transformer pipeline can commit AFTER the
+      // restore (it settles asynchronously); verify the final placement
+      // once it had time, and reinstall again if the ghost edit landed.
+      await new Promise((resolve) => window.setTimeout(resolve, 350))
+      const current = readLivePlacement(imageWs, id)
+      if (
+        current === null ||
+        current.column !== baseline.column ||
+        current.row !== baseline.row
+      ) {
+        const ghost = imageWs.getImages().find((entry) => entry.getId() === id)
+        if (ghost !== undefined) {
+          try {
+            ;(ghost as unknown as { remove(): boolean }).remove()
+          } catch {
+            /* best-effort */
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 60))
+        }
+        await insertOverGridImage(imageWs, {
+          id,
+          unitId: wb.getId(),
+          dataUrl: info.dataUrl,
+          placement: baseline,
+        })
+      }
+    } finally {
+      imageInstallingRef.current = false
+    }
+  } catch (e) {
+    // Best-effort revert: the journal never recorded the edit, so the
+    // next save preserves the file's XML regardless. Surface the reason
+    // in the status bar for diagnosability.
+    onStatus(`Could not restore the read-only image: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }

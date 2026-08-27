@@ -2748,3 +2748,270 @@ async function buildTableLedgerFixture(options: { readonly withTable: boolean })
 
   return toBytes(zip)
 }
+
+// ── Worksheet image fixtures (EXCEL-022) ─────────────────────────────────────
+
+/** Minimal valid 1×1 JPEG (baseline, no EXIF) — deterministic bytes. */
+const MINIMAL_JPEG_BASE64 =
+  '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwcJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigD//2Q=='
+
+/** One spreadsheetDrawing anchor carrying a picture. */
+function sheetDrawingAnchorXml(options: {
+  kind: 'twoCellAnchor' | 'oneCellAnchor' | 'absoluteAnchor'
+  embedId: string
+  name?: string
+  from?: { col: number; colOff: number; row: number; rowOff: number }
+  to?: { col: number; colOff: number; row: number; rowOff: number }
+  ext?: { cx: number; cy: number }
+}): string {
+  const marker = (m: { col: number; colOff: number; row: number; rowOff: number }) =>
+    `<xdr:col>${m.col}</xdr:col><xdr:colOff>${m.colOff}</xdr:colOff>` +
+    `<xdr:row>${m.row}</xdr:row><xdr:rowOff>${m.rowOff}</xdr:rowOff>`
+  const from = options.from ?? { col: 1, colOff: 0, row: 2, rowOff: 0 }
+  const to = options.to ?? { col: 6, colOff: 0, row: 12, rowOff: 0 }
+  const ext = options.ext ?? { cx: 190500, cy: 95250 }
+  const name = options.name ?? 'Picture'
+  const head =
+    options.kind === 'absoluteAnchor'
+      ? `<xdr:pos x="47625" y="9525"/><xdr:ext cx="${ext.cx}" cy="${ext.cy}"/>`
+      : `<xdr:from>${marker(from)}</xdr:from>` +
+        (options.kind === 'twoCellAnchor' ? `<xdr:to>${marker(to)}</xdr:to>` : '') +
+        (options.kind === 'oneCellAnchor' ? `<xdr:ext cx="${ext.cx}" cy="${ext.cy}"/>` : '')
+  const pic =
+    '<xdr:pic><xdr:nvPicPr>' +
+    `<xdr:cNvPr id="2" name="${name}"/>` +
+    '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr>' +
+    '</xdr:nvPicPr>' +
+    `<xdr:blipFill><a:blip r:embed="${options.embedId}"/>` +
+    '<a:stretch><a:fillRect/></a:stretch></xdr:blipFill>' +
+    `<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${ext.cx}" cy="${ext.cy}"/></a:xfrm>` +
+    '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>'
+  return `<xdr:${options.kind}>${head}${pic}<xdr:clientData/></xdr:${options.kind}>`
+}
+
+interface SheetImageSpec {
+  anchors: Array<{
+    kind: 'twoCellAnchor' | 'oneCellAnchor' | 'absoluteAnchor'
+    embedId: string
+    name?: string
+    from?: { col: number; colOff: number; row: number; rowOff: number }
+    to?: { col: number; colOff: number; row: number; rowOff: number }
+  }>
+  rels: string[]
+}
+
+/** Builds an image-carrying workbook: sharedStrings-free single- or dual-sheet. */
+async function buildSheetImageFixture(options: {
+  sheets: Array<{ name: string; images: SheetImageSpec }>
+  media: Record<string, Buffer | string>
+  contentTypes: string
+}): Promise<Buffer> {
+  const zip = new JSZip()
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  ${options.contentTypes}
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  ${options.sheets
+    .map(
+      (_, index) =>
+        `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`,
+    )
+    .join('')}
+  ${options.sheets
+    .map(
+      (_, index) =>
+        `<Override PartName="/xl/drawings/drawing${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`,
+    )
+    .join('')}
+</Types>`,
+  )
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    ${options.sheets
+      .map((sheet, index) => `<sheet name="${sheet.name}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`)
+      .join('\n    ')}
+  </sheets>
+</workbook>`,
+  )
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${options.sheets
+    .map(
+      (_, index) =>
+        `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`,
+    )
+    .join('\n  ')}
+</Relationships>`,
+  )
+  options.sheets.forEach((sheet, index) => {
+    const number = index + 1
+    addFile(
+      zip,
+      `xl/worksheets/sheet${number}.xml`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>
+    <row r="1"><c r="A1"><v>${number * 10}</v></c></row>
+  </sheetData>
+  <drawing r:id="rIdDrw1"/>
+</worksheet>`,
+    )
+    addFile(
+      zip,
+      `xl/worksheets/_rels/sheet${number}.xml.rels`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdDrw1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${number}.xml"/>
+</Relationships>`,
+    )
+    addFile(
+      zip,
+      `xl/drawings/drawing${number}.xml`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+${sheet.images.anchors.map((anchor) => sheetDrawingAnchorXml(anchor)).join('\n')}
+</xdr:wsDr>`,
+    )
+    addFile(
+      zip,
+      `xl/drawings/_rels/drawing${number}.xml.rels`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+${sheet.images.rels.join('\n')}
+</Relationships>`,
+    )
+  })
+  for (const [path, content] of Object.entries(options.media)) {
+    zip.file(path, content, { createFolders: false })
+  }
+  return toBytes(zip)
+}
+
+const IMAGE_REL = (id: string, target: string) =>
+  `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${target}"/>`
+
+const PNG_DEFAULT = '<Default Extension="png" ContentType="image/png"/>'
+
+/** One PNG picture (red 16×16) with a two-cell anchor B3 → G13. */
+export async function buildExcelImageFixture(): Promise<Buffer> {
+  return buildSheetImageFixture({
+    sheets: [
+      {
+        name: 'Data',
+        images: {
+          anchors: [{ kind: 'twoCellAnchor', embedId: 'rId1', name: 'Red dot' }],
+          rels: [IMAGE_REL('rId1', 'image1.png')],
+        },
+      },
+    ],
+    media: { 'xl/media/image1.png': buildSolidPng(16, 16, [200, 40, 40]) },
+    contentTypes: PNG_DEFAULT,
+  })
+}
+
+/** Two PNG pictures on one sheet (isolation) — red + blue, distinct media. */
+export async function buildExcelImagesFixture(): Promise<Buffer> {
+  return buildSheetImageFixture({
+    sheets: [
+      {
+        name: 'Data',
+        images: {
+          anchors: [
+            { kind: 'twoCellAnchor', embedId: 'rId1', name: 'Red dot' },
+            {
+              kind: 'twoCellAnchor',
+              embedId: 'rId2',
+              name: 'Blue dot',
+              from: { col: 8, colOff: 0, row: 4, rowOff: 0 },
+              to: { col: 13, colOff: 0, row: 14, rowOff: 0 },
+            },
+          ],
+          rels: [IMAGE_REL('rId1', 'image1.png'), IMAGE_REL('rId2', 'image2.png')],
+        },
+      },
+    ],
+    media: {
+      'xl/media/image1.png': buildSolidPng(16, 16, [200, 40, 40]),
+      'xl/media/image2.png': buildSolidPng(16, 16, [40, 40, 200]),
+    },
+    contentTypes: PNG_DEFAULT,
+  })
+}
+
+/** One PNG per sheet across two sheets. */
+export async function buildExcelMultiSheetImageFixture(): Promise<Buffer> {
+  const images = (embedId: string): SheetImageSpec => ({
+    anchors: [{ kind: 'twoCellAnchor', embedId, name: 'Dot' }],
+    rels: [IMAGE_REL(embedId, 'image1.png')],
+  })
+  return buildSheetImageFixture({
+    sheets: [
+      { name: 'First', images: images('rId1') },
+      { name: 'Second', images: images('rId1') },
+    ],
+    // BOTH pictures share one media part — cross-sheet reference parity.
+    media: { 'xl/media/image1.png': buildSolidPng(16, 16, [40, 160, 40]) },
+    contentTypes: PNG_DEFAULT,
+  })
+}
+
+/** One JPEG picture (writer-supported type parity). */
+export async function buildExcelJpegImageFixture(): Promise<Buffer> {
+  return buildSheetImageFixture({
+    sheets: [
+      {
+        name: 'Data',
+        images: {
+          anchors: [{ kind: 'twoCellAnchor', embedId: 'rId1', name: 'Photo' }],
+          rels: [IMAGE_REL('rId1', 'image1.jpeg')],
+        },
+      },
+    ],
+    media: { 'xl/media/image1.jpeg': Buffer.from(MINIMAL_JPEG_BASE64, 'base64') },
+    contentTypes: '<Default Extension="jpeg" ContentType="image/jpeg"/>',
+  })
+}
+
+/** One oneCellAnchor picture — read-only, edits fail closed. */
+export async function buildExcelOneCellImageFixture(): Promise<Buffer> {
+  return buildSheetImageFixture({
+    sheets: [
+      {
+        name: 'Data',
+        images: {
+          anchors: [{ kind: 'oneCellAnchor', embedId: 'rId1', name: 'One cell' }],
+          rels: [IMAGE_REL('rId1', 'image1.png')],
+        },
+      },
+    ],
+    media: { 'xl/media/image1.png': buildSolidPng(16, 16, [120, 40, 160]) },
+    contentTypes: PNG_DEFAULT,
+  })
+}
+
+/** Read a ZIP entry as raw bytes (binary-safe). */
+export async function readZipEntryBytes(buffer: Buffer, path: string): Promise<Buffer | null> {
+  const zip = await JSZip.loadAsync(buffer)
+  const entry = zip.file(path)
+  return entry === null ? null : ((await entry.async('nodebuffer')) as Buffer)
+}
