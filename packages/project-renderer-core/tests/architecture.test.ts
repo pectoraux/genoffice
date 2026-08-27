@@ -6,6 +6,7 @@ import workItems from '../../../spec/project/work-items.md?raw'
 import dependencyGraph from '../../../spec/project/dependency-graph.md?raw'
 import verificationMatrix from '../../../spec/project/verification-matrix.md?raw'
 import architectureLock from '../../../spec/project/architecture-lock.md?raw'
+import acr from '../../../spec/project/architecture-changes/ACR-001-project-file-adapter-boundary.md?raw'
 
 /**
  * PROJECT-021/022 — architecture discipline guards.
@@ -19,6 +20,12 @@ import architectureLock from '../../../spec/project/architecture-lock.md?raw'
  * Determinism guards: no wall clock, no randomness, no locale comparisons.
  * This suite itself uses ONLY vitest + `?raw` module sources — no `node:`
  * imports, satisfying the same CI boundary grep as every foundation package.
+ *
+ * Roadmap reconciliation increment — extended with the clarified §13 rule
+ * (ACR-001): the renderer MUST NOT import project-file, MSPDI parser
+ * internals, or MPP parser internals — the renderer must not acquire
+ * file-format knowledge (file-format implementations remain behind the
+ * project-file adapter boundary).
  */
 const srcModules = import.meta.glob('../src/**/*.ts', {
   query: '?raw',
@@ -38,8 +45,19 @@ const FORBIDDEN_IMPORT_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: string 
   { pattern: /from ['"]node:/, label: 'Node built-ins' },
   { pattern: /from ['"]https?['"]/, label: 'HTTP(S) client' },
   { pattern: /from ['"]@genoffice\/project-scheduling['"]/, label: 'the scheduling package' },
-  { pattern: /from ['"]@genoffice\/project-file['"]/, label: 'the file package' },
+  {
+    pattern: /from ['"]@genoffice\/project-file(?:\/[^'"]*)?['"]/,
+    label: 'the file adapter package (public surface or internals)',
+  },
   { pattern: /from ['"]@genoffice\/project-mpp-host['"]/, label: 'the MPP host package' },
+  {
+    pattern: /from ['"][^'"]*(?:mspdi|gproj)[^'"]*['"]/i,
+    label: 'MSPDI/.gproj file-format parser internals',
+  },
+  {
+    pattern: /from ['"][^'"]*\bmpp\b[^'"]*['"]/i,
+    label: 'MPP file-format parser internals',
+  },
   {
     pattern: /from ['"]fs['"]|from ['"]path['"]|from ['"]child_process['"]/,
     label: 'Node core modules',
@@ -55,7 +73,7 @@ describe('PROJECT-021 architecture — package boundaries', () => {
     expect(Object.keys(pkg.devDependencies ?? {}).sort()).toEqual(['typescript', 'vitest'])
   })
 
-  it('never imports React/Electron/Node/HTTP/scheduling/file/host packages in src', () => {
+  it('never imports React/Electron/Node/HTTP/scheduling/file/host packages or file-format parser internals in src', () => {
     expect(srcFiles.length).toBeGreaterThan(0)
     for (const [file, source] of srcFiles) {
       for (const { pattern, label } of FORBIDDEN_IMPORT_PATTERNS) {
@@ -313,5 +331,30 @@ describe('PROJECT-021 architecture — CI and spec lockstep', () => {
       '`packages/project-renderer-core`: shared renderer boundary until PROJECT-021+; no scheduling authority.',
     )
     expect(architectureLock).toContain('Status: FROZEN')
+  })
+
+  it('documents the clarified §13 rule (ACR-001): the renderer acquires no file-format knowledge', () => {
+    // The clarified §13 (roadmap reconciliation increment, ACR-001): the
+    // renderer is a foundation semantic/runtime package — it must not import
+    // external MSPDI/MPP parser implementations nor any format-specific
+    // parser internals; file-format implementations stay behind the
+    // project-file adapter boundary.
+    expect(architectureLock).toContain(
+      'Foundation semantic/runtime packages (`project-contracts`, `project-engine`, `project-scheduling`, `project-renderer-core`) must not import external MSPDI/MPP parser implementations.',
+    )
+    expect(architectureLock).toContain(
+      'No `project-engine`, `project-scheduling`, `project-renderer-core`, or host package may directly import format-specific parser internals.',
+    )
+    expect(architectureLock).toContain(
+      'File-format implementations remain behind the `project-file` adapter boundary.',
+    )
+    expect(architectureLock).toContain('ACR-001')
+    expect(acr).toContain('## 9. Principal Architect approval reference')
+    // The renderer's runtime dependency set stays exactly contracts + engine
+    // (no file adapter package, no format internals).
+    expect(Object.keys(pkg.dependencies ?? {}).sort()).toEqual([
+      '@genoffice/project-contracts',
+      '@genoffice/project-engine',
+    ])
   })
 })
