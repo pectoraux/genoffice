@@ -1089,3 +1089,22 @@ Stage Summary:
 - The implementation is real, complete, and freshly re-verified (602/602, 423+4s, 216/216, 78/78, 101/101 E2E, typecheck clean, frozen surfaces untouched) on branch excel-022-images rebased at 3d7fc3c + 3 commits (tip after this worklog commit).
 - Push/PR cannot originate from this sandbox (no credentials — verified, not assumed). Patch series + instructions exported; ready for `git am` + push by anyone with repo access.
 - Workflow state: EXCEL-022 remains IMPLEMENTING. NOT PR_OPEN (no remote ref — architect's finding stands), NOT VERIFIED (architect owns that transition). EXCEL-021 cleanup likewise rides this branch (a594137) and remains NOT VERIFIED until it lands on remote main.
+
+---
+
+Task ID: EXCEL-022-pr-open
+Agent: Z.ai (Implementation Operator)
+Task: Publish the excel-022-images branch and open the PR (architect supplied a GitHub PAT after confirming the remote ref was missing).
+
+Work Log:
+
+- Architect supplied a GitHub PAT (exported as GITHUB_TOKEN, persisted in ~/.bashrc; authenticates as pectoraux with full repo scope). Note for future sessions: each shell invocation is fresh — `source ~/.bashrc` before any authenticated command.
+- Verified origin/main still at 3d7fc3c (branch base unchanged; project-office moved but is unrelated). Pushed excel-022-images: remote ref = f10ad0ffd8371e70c9b5a673fcc8592bd20ea820 = local HEAD.
+- Opened PR #20 (base main ← head excel-022-images): https://github.com/pectoraux/genoffice/pull/20 — 4 commits, 21 files, +3801/−39. PR body carries the full implementation summary, gate evidence, commit mapping (pre-rebase local SHAs → published SHAs), known limitations, and workflow state.
+- The patch package at /home/z/my-project/download/excel-022-images/ is now SUPERSEDED by the remote ref (kept for the audit trail; tree identity was proven before pushing).
+
+Stage Summary:
+
+- EXCEL-022 workflow state: IMPLEMENTING → PR_OPEN. Remote ref and PR exist and are reviewable.
+- CI evidence collection on PR #20 follows (web job is the canonical office gate; test/e2e/foundation failures are the documented pre-existing baseline if they recur).
+- NOT VERIFIED — the architect owns that transition; review proceeds on the actual diff.
