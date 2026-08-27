@@ -1061,3 +1061,31 @@ Stage Summary:
 - EXCEL-022 commit 7b1cc15 builds and deploys cleanly on Vercel (preview URL above) — infrastructure-level proof the exact tree compiles in the deploy pipeline.
 - Deployed E2E against the preview: BLOCKED by account Deployment Protection (SSO). Production verification (Phase N) remains pending the PR/merge that the sandbox cannot perform.
 - Workflow state: IMPLEMENTING (local implementation + all local gates green). NOT PR_OPEN (no GitHub credentials), NOT VERIFIED (architect owns that transition).
+
+---
+
+Task ID: EXCEL-022-publish-correction
+Agent: Z.ai (Implementation Operator)
+Task: Respond to the architect's independent remote verification finding: no `excel-022-images` ref exists on GitHub; the reported commits (e1d025d, 7b1cc15, ab325cc) are not remotely verifiable. Make the branch publishable and re-verify every gate on the exact tree to be pushed.
+
+Work Log:
+
+- Architect finding CONFIRMED CORRECT. `git fetch origin` shows no `origin/excel-022-images`; the three commits exist only in this sandbox. My previous report cited local SHAs without stating prominently enough that they were never pushed — that ambiguity is the defect being corrected here.
+- Root cause, verified exhaustively: this sandbox has ZERO GitHub credentials — no credential helper, no ~/.git-credentials, no ~/.netrc, no GITHUB_TOKEN/GH_TOKEN env vars, no gh CLI, no SSH keys. `GIT_TERMINAL_PROMPT=0 git push --dry-run` fails with "could not read Username for 'https://github.com'". Push and PR creation are physically impossible from here. (The Vercel token deploys to Vercel only; it cannot touch GitHub.)
+- Rebased `excel-022-images` onto current origin/main (`93b4c30` → `3d7fc3c`, clean rebase; main had advanced with PR #18/PROJECT-020 which touches no EXCEL-022 file). SHA mapping (neither set ever existed on the remote): e1d025d → a594137 (EXCEL-021 cleanup), 7b1cc15 → 3c6a00a (EXCEL-022 implementation), ab325cc → e058b9f (worklog evidence). Pre-rebase tip preserved locally as `excel-022-images-prerebase`.
+- Fresh gate evidence ON THE REBASED TREE (all re-executed this session, none carried over from the earlier report):
+  - xlsx-gateway: 602/602 (32 files).
+  - contractor-core: 423 passed + 4 skipped (26 files + 1 skipped).
+  - web unit: 216/216 (10 files, includes the 43 architecture guards).
+  - web-host: 78/78.
+  - Typecheck clean: @contractor/web, @contractor/web-host, @contractor/core, @genoffice/xlsx-gateway.
+  - Browser E2E (real Vite + API stack): 101/101 — batch 1 (excel + insert): 50/50; ribbon-images: 12/12; batch 2 (ribbon + word): 39/39.
+  - Frozen surfaces vs origin/main: empty diff over apps/sheets/src, apps/docs, apps/shell, packages/platform-electron, packages/renderer-bridge. Full PR: 21 files, +3773/−39.
+- Publish package exported for credential-holders: /home/z/my-project/download/excel-022-images/ — 3-patch series (git am onto current main), pr-combined.diff, pr-diffstat.txt, SHA256SUMS, PUBLISH.md (exact push + PR-open commands). Stale pre-rebase 0003 patch moved to superseded/.
+- Publication remains with the architect/operator: apply patches → push excel-022-images → open PR. Alternatively, provision a GitHub token in this sandbox and the push + PR happen immediately from here.
+
+Stage Summary:
+
+- The implementation is real, complete, and freshly re-verified (602/602, 423+4s, 216/216, 78/78, 101/101 E2E, typecheck clean, frozen surfaces untouched) on branch excel-022-images rebased at 3d7fc3c + 3 commits (tip after this worklog commit).
+- Push/PR cannot originate from this sandbox (no credentials — verified, not assumed). Patch series + instructions exported; ready for `git am` + push by anyone with repo access.
+- Workflow state: EXCEL-022 remains IMPLEMENTING. NOT PR_OPEN (no remote ref — architect's finding stands), NOT VERIFIED (architect owns that transition). EXCEL-021 cleanup likewise rides this branch (a594137) and remains NOT VERIFIED until it lands on remote main.
