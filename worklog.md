@@ -1246,6 +1246,7 @@ Stage Summary:
 - Workflow state: EXCEL-023 ASSIGNED → IMPLEMENTING. Not VERIFIED — architect owns that transition.
 
 ---
+
 Task ID: EXCEL-023-implementation
 Agent: Z.ai (Implementation Operator)
 Task: Implement EXCEL-023 (Charts) on branch excel-023-charts per the audited architecture — gateway chart reader, chartEdits wire family, web chart visual surface, and the 15-scenario browser E2E suite.
