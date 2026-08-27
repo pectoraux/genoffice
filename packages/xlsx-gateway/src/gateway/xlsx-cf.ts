@@ -499,3 +499,757 @@ function escapeXmlAttribute(input: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
 }
+
+// ── Read side (EXCEL-024) ──────────────────────────────────────────────────
+//
+// parseConditionalFormatting is the exact inverse of applyCfRules: it turns
+// a worksheet's `<conditionalFormatting>` sections into the same
+// CfWireRule[] the writer consumes (the Univer conditional-formatting model
+// shape, with the dxf style PRE-RESOLVED into rule.style). The browser
+// receives ready-to-install rules and never parses style XML.
+//
+// Fail closed PER SHEET (the parseDataValidations recipe): x14 extensions,
+// time periods, unknown rule types/operators, malformed sqref, unresolvable
+// dxf styling, or guard-rail overruns throw CfReadError — the caller
+// surfaces NO cfRules for the sheet, the workbook still opens, and a no-op
+// save preserves the file's XML byte-for-byte.
+
+export class CfReadError extends Error {}
+
+const CF_MAX_RULES = 500
+const CF_MAX_RANGES_PER_RULE = 100
+/// Formula CF costs one dependency tree per covered cell; above this, huge
+/// (e.g. whole-column) rules keep the cheaper native number condition
+/// (desktop univer-sync.ts parity — CELLIS_FORMULA_CELL_LIMIT).
+const CF_CELLIS_FORMULA_CELL_LIMIT = 20_000
+
+const CF_CELLIS_OPERATORS = new Set([
+  'equal',
+  'notEqual',
+  'greaterThan',
+  'lessThan',
+  'greaterThanOrEqual',
+  'lessThanOrEqual',
+  'between',
+  'notBetween',
+])
+
+/// OOXML iconSet names → icon count (the whitelist mirrors OOXML_ICON_SETS).
+const ICON_SET_SIZES: Readonly<Record<string, number>> = {
+  '3Arrows': 3,
+  '3ArrowsGray': 3,
+  '3Flags': 3,
+  '3TrafficLights1': 3,
+  '3TrafficLights2': 3,
+  '3Signs': 3,
+  '3Symbols': 3,
+  '3Symbols2': 3,
+  '4Arrows': 4,
+  '4ArrowsGray': 4,
+  '4RedToBlack': 4,
+  '4Rating': 4,
+  '4TrafficLights': 4,
+  '5Arrows': 5,
+  '5ArrowsGray': 5,
+  '5Quarters': 5,
+  '5Rating': 5,
+}
+
+/**
+ * Parse a worksheet's `<conditionalFormatting>` sections into the canonical
+ * CfWireRule[] read model. Rules come back priority-ascending (the install
+ * order the desktop uses — Univer applies rules in insertion order, and
+ * lower xlsx priority = higher precedence).
+ *
+ * `dxfAt(dxfId)` resolves a dxf index to the raw `<dxf>` XML from
+ * styles.xml (the StylesheetReader owns the dxfs list); only the
+ * writer-round-trippable subset is accepted — anything else fails closed.
+ */
+export function parseConditionalFormatting(
+  worksheetXml: string,
+  dxfAt: (dxfId: number) => string | undefined,
+): readonly CfWireRule[] {
+  // x14 twins (pure extension rules in the worksheet extLst, or base halves
+  // linked through a cfRule extLst) cannot be edited through the typed
+  // model — the browser must not render a CF surface it cannot save.
+  if (/<x14:conditionalFormatting\b/.test(worksheetXml)) {
+    throw new CfReadError(
+      'This sheet has extended (x14) conditional formatting — it cannot be represented yet.',
+    )
+  }
+  if (!/<conditionalFormatting\b/.test(worksheetXml)) return []
+  const collected: Array<{ priority: number; rule: CfWireRule }> = []
+  // Self-closing alternatives come FIRST: a trailing `/>` form must never
+  // fall through to the paired form and span a later element.
+  const blockPattern =
+    /<conditionalFormatting\b([^>]*?)\/>|<conditionalFormatting\b([^>]*)>([\s\S]*?)<\/conditionalFormatting>/g
+  let block: RegExpExecArray | null
+  while ((block = blockPattern.exec(worksheetXml)) !== null) {
+    const attributes = (block[1] ?? block[2] ?? '').trim()
+    const inner = block[3] ?? ''
+    const ranges = parseSqref(readXmlAttribute(attributes, 'sqref'))
+    if (/<extLst\b/.test(inner)) {
+      throw new CfReadError(
+        'This range has extended conditional formatting (x14) that cannot be represented yet',
+      )
+    }
+    const rulePattern = /<cfRule\b([^>]*?)\/>|<cfRule\b([^>]*)>([\s\S]*?)<\/cfRule>/g
+    let ruleMatch: RegExpExecArray | null
+    while ((ruleMatch = rulePattern.exec(inner)) !== null) {
+      const ruleAttributes = (ruleMatch[1] ?? ruleMatch[2] ?? '').trim()
+      const body = ruleMatch[3] ?? ''
+      const priority = readPriority(ruleAttributes)
+      collected.push({ priority, rule: parseCfRule(ruleAttributes, body, ranges, dxfAt) })
+      if (collected.length > CF_MAX_RULES) {
+        throw new CfReadError(
+          `Worksheet carries more than ${CF_MAX_RULES} conditional-formatting rules.`,
+        )
+      }
+    }
+  }
+  collected.sort((left, right) => left.priority - right.priority)
+  return collected.map((entry) => entry.rule)
+}
+
+function parseCfRule(
+  attributes: string,
+  body: string,
+  ranges: readonly CfCellArea[],
+  dxfAt: (dxfId: number) => string | undefined,
+): CfWireRule {
+  const type = readXmlAttribute(attributes, 'type')
+  const stopIfTrue = readXmlAttribute(attributes, 'stopIfTrue') === '1'
+  if (type === 'colorScale') {
+    return { ranges, stopIfTrue, rule: colorScaleConfig(body) }
+  }
+  if (type === 'dataBar') {
+    return { ranges, stopIfTrue, rule: dataBarConfig(body) }
+  }
+  if (type === 'iconSet') {
+    return { ranges, stopIfTrue, rule: iconSetConfig(body) }
+  }
+  // Every remaining representable family is a highlightCell rule carrying a
+  // dxf-resolved style.
+  const style = resolveRuleStyle(attributes, dxfAt)
+  if (type === 'cellIs') return cellIsConfig(attributes, body, ranges, style)
+  if (type === 'expression') {
+    const formula = extractFormulas(body)[0]
+    if (formula === undefined) {
+      throw new CfReadError('An expression rule has no formula.')
+    }
+    return {
+      ranges,
+      stopIfTrue,
+      rule: { type: 'highlightCell', subType: 'formula', value: `=${formula}`, style },
+    }
+  }
+  const textOperators: Readonly<Record<string, string>> = {
+    containsText: 'containsText',
+    notContainsText: 'notContainsText',
+    beginsWith: 'beginsWith',
+    endsWith: 'endsWith',
+    containsBlanks: 'containsBlanks',
+    notContainsBlanks: 'notContainsBlanks',
+    containsErrors: 'containsErrors',
+    notContainsErrors: 'notContainsErrors',
+  }
+  if (type !== undefined && textOperators[type] !== undefined) {
+    const text = readXmlAttribute(attributes, 'text') ?? ''
+    return {
+      ranges,
+      stopIfTrue,
+      rule: {
+        type: 'highlightCell',
+        subType: 'text',
+        operator: textOperators[type]!,
+        value: text,
+        style,
+      },
+    }
+  }
+  if (type === 'duplicateValues' || type === 'uniqueValues') {
+    return { ranges, stopIfTrue, rule: { type: 'highlightCell', subType: type, style } }
+  }
+  if (type === 'top10') {
+    const rankText = readXmlAttribute(attributes, 'rank')
+    const rank = rankText === undefined ? Number.NaN : Number(rankText)
+    if (!Number.isInteger(rank) || rank < 1 || rank > 1000) {
+      throw new CfReadError('A top-10 rule needs a rank between 1 and 1000.')
+    }
+    return {
+      ranges,
+      stopIfTrue,
+      rule: {
+        type: 'highlightCell',
+        subType: 'rank',
+        value: rank,
+        isPercent: readXmlAttribute(attributes, 'percent') === '1',
+        isBottom: readXmlAttribute(attributes, 'bottom') === '1',
+        style,
+      },
+    }
+  }
+  if (type === 'aboveAverage') {
+    const below = readXmlAttribute(attributes, 'aboveAverage') === '0'
+    const equal = readXmlAttribute(attributes, 'equalAverage') === '1'
+    const operator = below
+      ? equal
+        ? 'lessThanOrEqual'
+        : 'lessThan'
+      : equal
+        ? 'greaterThanOrEqual'
+        : 'greaterThan'
+    return {
+      ranges,
+      stopIfTrue,
+      rule: { type: 'highlightCell', subType: 'average', operator, style },
+    }
+  }
+  if (type === 'timePeriod') {
+    throw new CfReadError('Date-occurring rules cannot be represented yet.')
+  }
+  throw new CfReadError(`Unsupported conditional-formatting rule type "${String(type)}".`)
+}
+
+// ── highlightCell: cellIs ───────────────────────────────────────────────────
+//
+// Excel cellIs operands are formulas: a numeric literal, a quoted string, or
+// a reference/expression. Numeric operands become Univer number rules (the
+// writer's exact inverse); quoted strings become text equality rules (also
+// an exact inverse); anything else becomes a formula rule anchored at the
+// rule's top-left-sorted first range — desktop buildCellIsNonNumeric parity.
+// Where Excel's blank-as-zero semantics would paint blanks differently from
+// Univer's native number conditions, small ranges swap to the equivalent
+// formula so the rendered outcome matches Excel (desktop parity).
+function cellIsConfig(
+  attributes: string,
+  body: string,
+  ranges: readonly CfCellArea[],
+  style: Record<string, unknown>,
+): CfWireRule {
+  const operator = readXmlAttribute(attributes, 'operator')
+  if (operator === undefined || !CF_CELLIS_OPERATORS.has(operator)) {
+    throw new CfReadError(`Unsupported cellIs operator "${String(operator)}".`)
+  }
+  const stopIfTrue = readXmlAttribute(attributes, 'stopIfTrue') === '1'
+  const formulas = extractFormulas(body)
+  const first = formulas[0]
+  if (first === undefined) {
+    throw new CfReadError('A cellIs rule has no formula operand.')
+  }
+  const second = formulas[1]
+  if ((operator === 'between' || operator === 'notBetween') && second === undefined) {
+    throw new CfReadError('A between rule needs two formula operands.')
+  }
+  const firstNumber = Number(first)
+  const secondNumber = Number(second ?? first)
+  if (Number.isFinite(firstNumber) && (second === undefined || Number.isFinite(secondNumber))) {
+    const coveredCells = ranges.reduce(
+      (sum, range) =>
+        sum + (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1),
+      0,
+    )
+    if (
+      coveredCells > 0 &&
+      coveredCells <= CF_CELLIS_FORMULA_CELL_LIMIT &&
+      cellIsBlankDiverges(operator, firstNumber, secondNumber)
+    ) {
+      return {
+        ranges,
+        stopIfTrue,
+        rule: {
+          type: 'highlightCell',
+          subType: 'formula',
+          value: cellIsFormula(operator, anchorOf(ranges), firstNumber, secondNumber),
+          style,
+        },
+      }
+    }
+    return {
+      ranges,
+      stopIfTrue,
+      rule: {
+        type: 'highlightCell',
+        subType: 'number',
+        operator,
+        ...(operator === 'between' || operator === 'notBetween'
+          ? { value: [firstNumber, secondNumber] }
+          : { value: firstNumber }),
+        style,
+      },
+    }
+  }
+  // Quoted string operands: text equality round-trips exactly through the
+  // writer (cellIs equal/notEqual + quoted formula).
+  const quoted = /^"([\s\S]*)"$/.exec(first)
+  if (quoted && (operator === 'equal' || operator === 'notEqual')) {
+    return {
+      ranges,
+      stopIfTrue,
+      rule: {
+        type: 'highlightCell',
+        subType: 'text',
+        operator,
+        value: quoted[1]!.replaceAll('""', '"'),
+        style,
+      },
+    }
+  }
+  const anchor = anchorOf(ranges)
+  const wrap = (operand: string): string => (/^"[\s\S]*"$/.test(operand) ? operand : `(${operand})`)
+  const formula =
+    operator === 'equal'
+      ? `=${anchor}=(${first})`
+      : operator === 'notEqual'
+        ? `=${anchor}<>${wrap(first)}`
+        : operator === 'greaterThan'
+          ? `=${anchor}>${wrap(first)}`
+          : operator === 'greaterThanOrEqual'
+            ? `=${anchor}>=${wrap(first)}`
+            : operator === 'lessThan'
+              ? `=${anchor}<${wrap(first)}`
+              : operator === 'lessThanOrEqual'
+                ? `=${anchor}<=${wrap(first)}`
+                : operator === 'between'
+                  ? `=AND(${anchor}>=${wrap(first!)},${anchor}<=${wrap(second!)})`
+                  : `=NOT(AND(${anchor}>=${wrap(first!)},${anchor}<=${wrap(second!)}))`
+  return {
+    ranges,
+    stopIfTrue,
+    rule: { type: 'highlightCell', subType: 'formula', value: formula, style },
+  }
+}
+
+/// Univer offsets relative CF formulas from the top-left-sorted first range
+/// (not the file's sqref order) — desktop parity.
+function anchorOf(ranges: readonly CfCellArea[]): string {
+  const first = [...ranges].sort(
+    (left, right) => left.startRow - right.startRow || left.startColumn - right.startColumn,
+  )[0]
+  return first === undefined ? 'A1' : `${columnToLetters(first.startColumn)}${first.startRow + 1}`
+}
+
+/// True when Excel (blank = 0) and Univer's native conditions (blanks skip,
+/// except notEqual/notBetween) paint blanks differently — desktop parity.
+function cellIsBlankDiverges(operator: string, first: number, second: number): boolean {
+  let excelBlank: boolean
+  switch (operator) {
+    case 'greaterThan':
+      excelBlank = 0 > first
+      break
+    case 'greaterThanOrEqual':
+      excelBlank = 0 >= first
+      break
+    case 'lessThan':
+      excelBlank = 0 < first
+      break
+    case 'lessThanOrEqual':
+      excelBlank = 0 <= first
+      break
+    case 'equal':
+      excelBlank = first === 0
+      break
+    case 'notEqual':
+      excelBlank = first !== 0
+      break
+    case 'between':
+      excelBlank = Math.min(first, second) <= 0 && 0 <= Math.max(first, second)
+      break
+    case 'notBetween':
+      excelBlank = !(Math.min(first, second) <= 0 && 0 <= Math.max(first, second))
+      break
+    default:
+      return false
+  }
+  const univerBlank = operator === 'notEqual' || operator === 'notBetween'
+  return excelBlank !== univerBlank
+}
+
+function cellIsFormula(operator: string, anchor: string, first: number, second: number): string {
+  switch (operator) {
+    case 'equal':
+      return `=${anchor}=${first}`
+    case 'notEqual':
+      return `=${anchor}<>${first}`
+    case 'greaterThan':
+      return `=${anchor}>${first}`
+    case 'greaterThanOrEqual':
+      return `=${anchor}>=${first}`
+    case 'lessThan':
+      return `=${anchor}<${first}`
+    case 'lessThanOrEqual':
+      return `=${anchor}<=${first}`
+    case 'between':
+      return `=AND(${anchor}>=${Math.min(first, second)},${anchor}<=${Math.max(first, second)})`
+    default:
+      return `=NOT(AND(${anchor}>=${Math.min(first, second)},${anchor}<=${Math.max(first, second)}))`
+  }
+}
+
+// ── Visual families ─────────────────────────────────────────────────────────
+
+function colorScaleConfig(body: string): Record<string, unknown> {
+  const colorScale = /<colorScale\b[^>]*>([\s\S]*?)<\/colorScale>/.exec(body)?.[1] ?? ''
+  const cfvos = extractCfvos(colorScale)
+  const colors = [...colorScale.matchAll(/<color\b([^>]*)\/?>/g)].map((match) =>
+    readXmlAttribute(match[1] ?? '', 'rgb'),
+  )
+  if (cfvos.length < 2 || cfvos.length > 5) {
+    throw new CfReadError('A color scale needs two to five stops.')
+  }
+  if (colors.length !== cfvos.length) {
+    throw new CfReadError('A color scale needs one color per stop.')
+  }
+  const config = cfvos.map((cfvo, index) => {
+    const color = toHexColor(colors[index])
+    if (color === undefined) {
+      throw new CfReadError('A color scale stop color cannot be represented.')
+    }
+    return { index, color, value: cfvoValue(cfvo) }
+  })
+  return { type: 'colorScale', config }
+}
+
+function dataBarConfig(body: string): Record<string, unknown> {
+  const dataBar = /<dataBar\b([^>]*)>([\s\S]*?)<\/dataBar>/.exec(body)
+  if (dataBar === null) {
+    throw new CfReadError('A data bar rule has no dataBar element.')
+  }
+  const showValue = readXmlAttribute(dataBar[1] ?? '', 'showValue')
+  const cfvos = extractCfvos(dataBar[2] ?? '')
+  if (cfvos.length !== 2) {
+    throw new CfReadError('A data bar needs exactly two thresholds.')
+  }
+  const color = toHexColor(
+    readXmlAttribute(/<color\b([^>]*)\/?>/.exec(dataBar[2] ?? '')?.[1] ?? '', 'rgb'),
+  )
+  if (color === undefined) {
+    throw new CfReadError('A data bar color cannot be represented.')
+  }
+  return {
+    type: 'dataBar',
+    isShowValue: showValue !== '0',
+    config: {
+      min: cfvoValue(cfvos[0]!),
+      max: cfvoValue(cfvos[1]!),
+      isGradient: true,
+      positiveColor: color,
+      nativeColor: '#FF0000',
+    },
+  }
+}
+
+function iconSetConfig(body: string): Record<string, unknown> {
+  const iconSetElement = /<iconSet\b([^>]*)>([\s\S]*?)<\/iconSet>/.exec(body)
+  if (iconSetElement === null) {
+    throw new CfReadError('An icon set rule has no iconSet element.')
+  }
+  const attributes = iconSetElement[1] ?? ''
+  const iconSet = readXmlAttribute(attributes, 'iconSet') ?? ''
+  const reverse = readXmlAttribute(attributes, 'reverse') === '1'
+  const showValue = readXmlAttribute(attributes, 'showValue')
+  if (!OOXML_ICON_SETS.has(iconSet)) {
+    throw new CfReadError(`The "${iconSet}" icon set cannot be represented.`)
+  }
+  const count = ICON_SET_SIZES[iconSet] ?? 0
+  const cfvos = extractCfvos(iconSetElement[2] ?? '')
+  if (cfvos.length !== count) {
+    throw new CfReadError(`The "${iconSet}" icon set needs ${count} thresholds.`)
+  }
+  const worstFirst = WORST_FIRST_ICON_SETS.has(iconSet)
+  const flipped = reverse !== worstFirst
+  // File cfvos run ascending (worst → best); Univer's config runs
+  // best-first with per-icon thresholds — the writer's exact inverse.
+  const configs: Array<Record<string, unknown>> = []
+  for (let position = 0; position < count; position += 1) {
+    const ascendingIndex = count - 1 - position
+    const cfvo = cfvos[ascendingIndex]!
+    configs.push({
+      iconType: iconSet,
+      iconId: String(flipped ? count - 1 - position : position),
+      operator: ascendingIndex > 0 && cfvo.gte === false ? 'greaterThan' : 'greaterThanOrEqual',
+      value: ascendingIndex === 0 ? { type: 'min' } : cfvoValue(cfvo),
+    })
+  }
+  return { type: 'iconSet', isShowValue: showValue !== '0', config: configs }
+}
+
+interface ParsedCfvo {
+  readonly kind: string
+  readonly value?: string
+  readonly gte?: boolean
+}
+
+function extractCfvos(xml: string): ParsedCfvo[] {
+  const cfvos: ParsedCfvo[] = []
+  for (const match of xml.matchAll(/<cfvo\b([^>]*?)\/>|<cfvo\b([^>]*)>([\s\S]*?)<\/cfvo>/g)) {
+    const attributes = (match[1] ?? match[2] ?? '').trim()
+    const kind = readXmlAttribute(attributes, 'type')
+    if (kind === undefined) {
+      throw new CfReadError('A threshold has no type attribute.')
+    }
+    if (!['min', 'max', 'num', 'percent', 'percentile', 'formula'].includes(kind)) {
+      throw new CfReadError(`Unsupported threshold type "${kind}".`)
+    }
+    // The value normally rides the val attribute; a few producers put it
+    // in the element body instead (seen with formula thresholds).
+    const text = (match[3] ?? '').trim()
+    const value = readXmlAttribute(attributes, 'val') ?? (text === '' ? undefined : text)
+    cfvos.push({
+      kind,
+      value,
+      gte: readXmlAttribute(attributes, 'gte') !== '0',
+    })
+  }
+  return cfvos
+}
+
+function cfvoValue(cfvo: ParsedCfvo): Record<string, unknown> {
+  switch (cfvo.kind) {
+    case 'min':
+    case 'max':
+      return { type: cfvo.kind }
+    case 'percent':
+    case 'percentile': {
+      const value = Number(cfvo.value ?? 0)
+      if (!Number.isFinite(value)) {
+        throw new CfReadError('A percent threshold needs a numeric value.')
+      }
+      return { type: cfvo.kind, value }
+    }
+    case 'formula':
+      return { type: 'formula', value: `=${cfvo.value ?? '0'}` }
+    default: {
+      const numeric = Number(cfvo.value ?? 0)
+      return Number.isFinite(numeric)
+        ? { type: 'num', value: numeric }
+        : { type: 'formula', value: `=${cfvo.value ?? '0'}` }
+    }
+  }
+}
+
+// ── dxf style resolution ────────────────────────────────────────────────────
+//
+// The accepted dxf subset is the exact inverse of buildDxfXml: font marks
+// (b/i/strike/u), an rgb font color, a solid bgColor fill, and a numFmt
+// pattern. Anything else (borders, theme/indexed colors, font sizes …)
+// would not survive a CF-dirty rewrite, so the sheet fails closed instead
+// of silently dropping styling.
+
+function resolveRuleStyle(
+  attributes: string,
+  dxfAt: (dxfId: number) => string | undefined,
+): Record<string, unknown> {
+  const dxfIdText = readXmlAttribute(attributes, 'dxfId')
+  if (dxfIdText === undefined) return {}
+  const dxfId = Number(dxfIdText)
+  if (!Number.isInteger(dxfId) || dxfId < 0) {
+    throw new CfReadError(`A rule references malformed dxfId "${dxfIdText}".`)
+  }
+  const dxf = dxfAt(dxfId)
+  if (dxf === undefined) {
+    throw new CfReadError(`A rule references dxfId ${dxfId}, which styles.xml does not define.`)
+  }
+  return parseDxfStyle(dxf)
+}
+
+function parseDxfStyle(dxfXml: string): Record<string, unknown> {
+  const inner = /<dxf\b([^>]*?)\/>|<dxf\b([^>]*)>([\s\S]*?)<\/dxf>/.exec(dxfXml)
+  if (inner === null) {
+    throw new CfReadError('A dxf style entry cannot be read.')
+  }
+  const body = inner[3] ?? ''
+  const style: Record<string, unknown> = {}
+  const font = /<font\b([^>]*?)\/>|<font\b([^>]*)>([\s\S]*?)<\/font>/.exec(body)
+  if (font !== null) {
+    const fontBody = font[3] ?? ''
+    for (const element of extractTopLevelElements(fontBody)) {
+      if (/^<b\b/.test(element)) {
+        style.bl = 1
+      } else if (/^<i\b/.test(element)) {
+        style.it = 1
+      } else if (/^<strike\b/.test(element)) {
+        style.st = { s: 1 }
+      } else if (/^<u\b/.test(element)) {
+        const val = readXmlAttribute(/^<u\b([^>]*)/.exec(element)?.[1] ?? '', 'val')
+        if (val !== undefined && val !== 'single') {
+          throw new CfReadError(`A dxf underline style "${val}" cannot be represented.`)
+        }
+        style.ul = { s: 1 }
+      } else if (/^<color\b/.test(element)) {
+        const color = colorFromElement(element, 'font color')
+        if (color === undefined) {
+          throw new CfReadError('A dxf font color cannot be represented.')
+        }
+        style.cl = { rgb: color }
+      } else {
+        throw new CfReadError('A dxf font carries properties the model cannot represent.')
+      }
+    }
+  }
+  const fill = /<fill\b([^>]*?)\/>|<fill\b([^>]*)>([\s\S]*?)<\/fill>/.exec(body)
+  if (fill !== null) {
+    const fillBody = fill[3] ?? ''
+    const pattern =
+      /<patternFill\b([^>]*?)\/>|<patternFill\b([^>]*)>([\s\S]*?)<\/patternFill>/.exec(fillBody)
+    if (pattern === null) {
+      throw new CfReadError('A dxf fill cannot be represented.')
+    }
+    const patternAttributes = pattern[1] ?? pattern[2] ?? ''
+    const patternBody = pattern[3] ?? ''
+    const patternType = readXmlAttribute(patternAttributes, 'patternType')
+    const bgColor = /<bgColor\b([^>]*)\/?>/.exec(patternBody)
+    const fgColor = /<fgColor\b([^>]*)\/?>/.exec(patternBody)
+    if (fgColor !== null && bgColor === null) {
+      throw new CfReadError('A dxf foreground-only fill cannot be represented.')
+    }
+    if (bgColor !== null) {
+      if (patternType !== undefined && patternType !== 'solid') {
+        throw new CfReadError(`A dxf fill pattern "${patternType}" cannot be represented.`)
+      }
+      const color = colorFromElement(bgColor[0] ?? '', 'fill color')
+      if (color === undefined) {
+        throw new CfReadError('A dxf fill color cannot be represented.')
+      }
+      style.bg = { rgb: color }
+    }
+  }
+  const numFmt = /<numFmt\b([^>]*)\/?>/.exec(body)
+  if (numFmt !== null) {
+    const pattern = readXmlAttribute(numFmt[1] ?? '', 'formatCode')
+    if (pattern === undefined || pattern === '') {
+      throw new CfReadError('A dxf number format cannot be represented.')
+    }
+    style.n = { pattern }
+  }
+  // Any other top-level dxf child (border, alignment, protection …) would
+  // be dropped by the writer's dxf serializer — refuse instead.
+  for (const element of extractTopLevelElements(body)) {
+    if (!/^<(font|fill|numFmt)\b/.test(element)) {
+      throw new CfReadError('A dxf style carries properties the model cannot represent.')
+    }
+  }
+  return style
+}
+
+function extractTopLevelElements(xml: string): string[] {
+  const elements: string[] = []
+  const pattern = /<([A-Za-z][\w.-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(?:\/>|>([\s\S]*?)<\/\1\s*>)/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(xml)) !== null) {
+    elements.push(match[0])
+  }
+  return elements
+}
+
+function colorFromElement(element: string, what: string): string | undefined {
+  const rgb = readXmlAttribute(element, 'rgb')
+  if (rgb !== undefined) return toHexColor(rgb)
+  const theme = readXmlAttribute(element, 'theme')
+  if (theme !== undefined || readXmlAttribute(element, 'indexed') !== undefined) {
+    throw new CfReadError(`A dxf ${what} uses theme/indexed colors, which cannot be represented.`)
+  }
+  return undefined
+}
+
+/// "FFRRGGBB" / "RRGGBB" / "#RRGGBB" → "#RRGGBB" (the Univer color form).
+function toHexColor(rgb: string | undefined): string | undefined {
+  if (rgb === undefined) return undefined
+  const match = /^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.exec(rgb.trim())
+  if (match === null) return undefined
+  const hex = match[1]!.toUpperCase()
+  return `#${hex.length === 8 ? hex.slice(2) : hex}`
+}
+
+// ── shared read helpers (the xlsx-dv.ts recipe) ─────────────────────────────
+
+function readXmlAttribute(attributes: string, name: string): string | undefined {
+  const match = new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attributes)
+  return match === null ? undefined : decodeXmlText(match[1] ?? '')
+}
+
+function readPriority(attributes: string): number {
+  const priority = readXmlAttribute(attributes, 'priority')
+  const value = priority === undefined ? Number.NaN : Number(priority)
+  if (!Number.isInteger(value) || value < 1 || value > 1_000_000) {
+    throw new CfReadError('A conditional-formatting rule has no readable priority.')
+  }
+  return value
+}
+
+function parseSqref(sqref: string | undefined): readonly CfCellArea[] {
+  if (sqref === undefined || sqref.trim() === '') {
+    throw new CfReadError('conditionalFormatting has no sqref attribute.')
+  }
+  const ranges: CfCellArea[] = []
+  for (const ref of sqref.split(/\s+/)) {
+    if (ref === '') continue
+    const area = parseSqrefPart(ref)
+    if (area === null) {
+      throw new CfReadError(`conditionalFormatting sqref "${ref}" is not a readable range.`)
+    }
+    ranges.push(area)
+  }
+  if (ranges.length === 0 || ranges.length > CF_MAX_RANGES_PER_RULE) {
+    throw new CfReadError(
+      `conditionalFormatting sqref must carry 1..${CF_MAX_RANGES_PER_RULE} ranges.`,
+    )
+  }
+  return ranges
+}
+
+function parseSqrefPart(ref: string): CfCellArea | null {
+  const [startRef, endRef] = ref.split(':')
+  const start = parseA1(startRef ?? '')
+  if (!start) return null
+  const end = endRef === undefined ? start : parseA1(endRef)
+  if (!end) return null
+  const area = {
+    startRow: Math.min(start.row, end.row),
+    endRow: Math.max(start.row, end.row),
+    startColumn: Math.min(start.column, end.column),
+    endColumn: Math.max(start.column, end.column),
+  }
+  if (
+    area.startRow < 0 ||
+    area.startColumn < 0 ||
+    area.endRow > 1_048_575 ||
+    area.endColumn > 16_383
+  ) {
+    return null
+  }
+  return area
+}
+
+function parseA1(address: string): { row: number; column: number } | null {
+  const match = /^\$?([A-Z]{1,3})\$?([0-9]+)$/.exec(address)
+  if (!match) return null
+  return { column: lettersToColumn(match[1]!), row: Number(match[2]!) - 1 }
+}
+
+function lettersToColumn(letters: string): number {
+  let column = 0
+  for (const letter of letters) {
+    column = column * 26 + (letter.charCodeAt(0) - 64)
+  }
+  return column - 1
+}
+
+function extractFormulas(body: string): string[] {
+  const formulas: string[] = []
+  for (const match of body.matchAll(/<formula>([\s\S]*?)<\/formula>/g)) {
+    const text = decodeXmlText(match[1] ?? '')
+    if (text !== '') formulas.push(text)
+  }
+  return formulas
+}
+
+function decodeXmlText(input: string): string {
+  return input
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&#10;', '\n')
+    .replaceAll('&amp;', '&')
+}

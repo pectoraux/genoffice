@@ -70,7 +70,7 @@ import {
   worksheetReferencesSheet,
 } from './xlsx-sheets'
 import type { StructuralOp } from './xlsx-structure'
-import { applyCfRules, type CfWireRule } from './xlsx-cf'
+import { applyCfRules, CfReadError, parseConditionalFormatting, type CfWireRule } from './xlsx-cf'
 import {
   applyDefinedNamesState,
   DefinedNameError,
@@ -549,6 +549,28 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
     } catch (error) {
       if (!(error instanceof ChartReadError)) throw error
     }
+    // Conditional-formatting read (EXCEL-024): parse the sheet's
+    // <conditionalFormatting> sections into the canonical CfWireRule[]
+    // (the Univer wire shape, dxf style pre-resolved through the
+    // StylesheetReader). Fail closed PER SHEET — unrepresentable rules
+    // (x14 extensions, time periods, unknown types, malformed sqref,
+    // unresolvable dxf styling) surface NO cfRules plus cfLocked: true,
+    // the workbook still opens, the browser refuses CF edits on the
+    // sheet (a CF-dirty rewrite would silently drop what the model
+    // cannot hold), and a no-op save preserves the file's XML
+    // byte-for-byte.
+    let cfRules: readonly CfWireRule[] | undefined
+    let cfLocked: boolean | undefined
+    try {
+      const parsed = parseConditionalFormatting(
+        worksheetXml,
+        styleReader === null ? () => undefined : (dxfId) => styleReader.dxfAt(dxfId),
+      )
+      if (parsed.length > 0) cfRules = parsed
+    } catch (error) {
+      if (!(error instanceof CfReadError)) throw error
+      cfLocked = true
+    }
     sheets.push({
       id,
       name: decodedName,
@@ -570,6 +592,8 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
       ...(sheetTables ? { tables: sheetTables } : {}),
       ...(sheetImages ? { images: sheetImages } : {}),
       ...(sheetCharts ? { charts: sheetCharts } : {}),
+      ...(cfRules ? { cfRules } : {}),
+      ...(cfLocked ? { cfLocked } : {}),
       ...(sheetProtection ? { sheetProtection } : {}),
     })
     sheetNamesById[id] = decodedName

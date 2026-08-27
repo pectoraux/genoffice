@@ -3396,3 +3396,285 @@ export async function buildExcelChartDataOnlyFixture(): Promise<Buffer> {
     chartRels: [],
   })
 }
+
+// ── Excel conditional-formatting fixtures (EXCEL-024 E2E) ─────────────────────
+
+/**
+ * Deterministic XLSX exercising the conditional-formatting matrix.
+ *
+ *   Sheet "Data" (visible):
+ *     A1 "Name"    A2:A6 text (alpha / urgent / gamma / delta / epsilon)
+ *     B1 "Score"   B2:B6 numbers (10 / 55 / 80 / 3 / 95)
+ *     C1 "Scale"   C2:C6 numbers 1..5 (color scale range C2:C6)
+ *     D1 "Bar"     D2:D6 numbers (data bar)
+ *     E1 "Icons"   E2:E6 numbers (icon set)
+ *     F1 "Dup"     F2:F6 with a duplicate value
+ *     G1 "Top"     G2:G6 numbers (top-10 rule)
+ *     H1 "Avg"     H2:H6 numbers (above-average rule)
+ *     I1 "Expr"    I2:I6 numbers (expression rule =B2>60)
+ *     J1 "Blank"   J2:J6 with blanks (containsBlanks rule)
+ *     K1 "Multi"   K2:K6 + M2:M6 numbers (multi-range, 2 rules with
+ *                  stopIfTrue on the higher-priority one)
+ *
+ *   CF rules (dxfs: 0 = bold red font on pink fill, 1 = italic green font,
+ *   2 = yellow fill):
+ *     B2:B6  cellIs greaterThan 50        dxf 0  priority 1
+ *     A2:A6  containsText "urgent"        dxf 1  priority 2
+ *     C2:C6  3-color scale (min/50th/max)         priority 3
+ *     D2:D6  data bar (min/max, FF638EC6)          priority 4
+ *     E2:E6  iconSet 3TrafficLights1 (0/33/67)    priority 5
+ *     F2:F6  duplicateValues             dxf 2  priority 6
+ *     G2:G6  top10 rank 2                 dxf 0  priority 7
+ *     H2:H6  aboveAverage                 dxf 2  priority 8
+ *     I2:I6  expression =B2>60            dxf 1  priority 9
+ *     J2:J6  containsBlanks               dxf 2  priority 10
+ *     K2:K6 M2:M6  cellIs lessThan 5      dxf 2  priority 11 stopIfTrue
+ *     K2:K6 M2:M6  cellIs greaterThan 0   dxf 1  priority 12
+ *
+ *   Sheet "Other" (visible): A1 "Untouched"; B2:B4 cellIs greaterThan 10
+ *   (dxf 0) — the unrelated-sheet preservation control.
+ */
+export async function buildExcelCfFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Data" sheetId="1" r:id="rId1"/>
+    <sheet name="Other" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="18" uniqueCount="18">
+  <si><t>Name</t></si><si><t>alpha</t></si><si><t>urgent</t></si><si><t>gamma</t></si><si><t>delta</t></si><si><t>epsilon</t></si>
+  <si><t>Score</t></si><si><t>Scale</t></si><si><t>Bar</t></si><si><t>Icons</t></si><si><t>Dup</t></si>
+  <si><t>Top</t></si><si><t>Avg</t></si><si><t>Expr</t></si><si><t>Blank</t></si><si><t>Multi</t></si>
+  <si><t>x</t></si><si><t>Untouched</t></si>
+</sst>`,
+  )
+
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font/></fonts>
+  <fills count="1"><fill/></fills>
+  <borders count="1"><border/></borders>
+  <cellStyleXfs count="1"><xf/></cellStyleXfs>
+  <cellXfs count="1"><xf/></cellXfs>
+  <dxfs count="3">
+    <dxf><font><b/><color rgb="FF9C0006"/></font><fill><patternFill><bgColor rgb="FFFFC7CE"/></patternFill></fill></dxf>
+    <dxf><font><i/><color rgb="FF006100"/></font></dxf>
+    <dxf><fill><patternFill><bgColor rgb="FFFFEB9C"/></patternFill></fill></dxf>
+  </dxfs>
+</styleSheet>`,
+  )
+
+  const cfSections = `
+  <conditionalFormatting sqref="B2:B6"><cfRule type="cellIs" dxfId="0" priority="1" operator="greaterThan"><formula>50</formula></cfRule></conditionalFormatting>
+  <conditionalFormatting sqref="A2:A6"><cfRule type="containsText" dxfId="1" priority="2" text="urgent" operator="containsText"><formula>NOT(ISERROR(SEARCH("urgent",A2)))</formula></cfRule></conditionalFormatting>
+  <conditionalFormatting sqref="C2:C6"><cfRule type="colorScale" priority="3"><colorScale><cfvo type="min"/><cfvo type="percentile" val="50"/><cfvo type="max"/><color rgb="FFF8696B"/><color rgb="FFFFEB84"/><color rgb="FF63BE7B"/></colorScale></cfRule></conditionalFormatting>
+  <conditionalFormatting sqref="D2:D6"><cfRule type="dataBar" priority="4"><dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="FF638EC6"/></dataBar></cfRule></conditionalFormatting>
+  <conditionalFormatting sqref="E2:E6"><cfRule type="iconSet" priority="5"><iconSet iconSet="3TrafficLights1"><cfvo type="percent" val="0"/><cfvo type="num" val="33"/><cfvo type="num" val="67"/></iconSet></cfRule></conditionalFormatting>
+  <conditionalFormatting sqref="F2:F6"><cfRule type="duplicateValues" dxfId="2" priority="6"/></conditionalFormatting>
+  <conditionalFormatting sqref="G2:G6"><cfRule type="top10" dxfId="0" priority="7" rank="2"/></conditionalFormatting>
+  <conditionalFormatting sqref="H2:H6"><cfRule type="aboveAverage" dxfId="2" priority="8"/></conditionalFormatting>
+  <conditionalFormatting sqref="I2:I6"><cfRule type="expression" dxfId="1" priority="9"><formula>B2&gt;60</formula></cfRule></conditionalFormatting>
+  <conditionalFormatting sqref="J2:J6"><cfRule type="containsBlanks" dxfId="2" priority="10"><formula>LEN(TRIM(J2))=0</formula></cfRule></conditionalFormatting>
+  <conditionalFormatting sqref="K2:K6 M2:M6"><cfRule type="cellIs" dxfId="2" priority="11" stopIfTrue="1" operator="lessThan"><formula>5</formula></cfRule><cfRule type="cellIs" dxfId="1" priority="12" operator="greaterThan"><formula>0</formula></cfRule></conditionalFormatting>`
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>6</v></c><c r="C1" t="s"><v>7</v></c><c r="D1" t="s"><v>8</v></c><c r="E1" t="s"><v>9</v></c><c r="F1" t="s"><v>10</v></c><c r="G1" t="s"><v>11</v></c><c r="H1" t="s"><v>12</v></c><c r="I1" t="s"><v>13</v></c><c r="J1" t="s"><v>14</v></c><c r="K1" t="s"><v>15</v></c><c r="M1" t="s"><v>15</v></c></row>
+    <row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2"><v>10</v></c><c r="C2"><v>1</v></c><c r="D2"><v>5</v></c><c r="E2"><v>3</v></c><c r="F2" t="s"><v>16</v></c><c r="G2"><v>1</v></c><c r="H2"><v>10</v></c><c r="I2"><v>10</v></c><c r="K2"><v>4</v></c><c r="M2"><v>2</v></c></row>
+    <row r="3"><c r="A3" t="s"><v>2</v></c><c r="B3"><v>55</v></c><c r="C3"><v>3</v></c><c r="D3"><v>3</v></c><c r="E3"><v>2</v></c><c r="F3" t="s"><v>16</v></c><c r="G3"><v>2</v></c><c r="H3"><v>20</v></c><c r="I3"><v>20</v></c><c r="K3"><v>2</v></c><c r="M3"><v>6</v></c></row>
+    <row r="4"><c r="A4" t="s"><v>3</v></c><c r="B4"><v>80</v></c><c r="C4"><v>5</v></c><c r="D4"><v>8</v></c><c r="E4"><v>1</v></c><c r="F4" t="s"><v>17</v></c><c r="G4"><v>3</v></c><c r="H4"><v>30</v></c><c r="I4"><v>30</v></c><c r="J4" t="s"><v>17</v></c><c r="K4"><v>7</v></c><c r="M4"><v>1</v></c></row>
+    <row r="5"><c r="A5" t="s"><v>4</v></c><c r="B5"><v>3</v></c><c r="C5"><v>2</v></c><c r="D5"><v>1</v></c><c r="E5"><v>2</v></c><c r="F5" t="s"><v>17</v></c><c r="G5"><v>4</v></c><c r="H5"><v>40</v></c><c r="I5"><v>40</v></c><c r="K5"><v>9</v></c><c r="M5"><v>3</v></c></row>
+    <row r="6"><c r="A6" t="s"><v>5</v></c><c r="B6"><v>95</v></c><c r="C6"><v>4</v></c><c r="D6"><v>9</v></c><c r="E6"><v>3</v></c><c r="F6" t="s"><v>16</v></c><c r="G6"><v>5</v></c><c r="H6"><v>50</v></c><c r="I6"><v>50</v></c><c r="K6"><v>6</v></c><c r="M6"><v>8</v></c></row>
+  </sheetData>${cfSections}
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet2.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="s"><v>17</v></c></row>
+    <row r="2"><c r="B2"><v>5</v></c></row>
+    <row r="3"><c r="B3"><v>15</v></c></row>
+    <row r="4"><c r="B4"><v>25</v></c></row>
+  </sheetData>
+  <conditionalFormatting sqref="B2:B4"><cfRule type="cellIs" dxfId="0" priority="1" operator="greaterThan"><formula>10</formula></cfRule></conditionalFormatting>
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}
+
+/**
+ * Fail-closed fixture: Sheet "Data" carries one representable rule PLUS an
+ * x14-linked data bar (cfRule extLst) and a timePeriod rule — the sheet
+ * must open with cfLocked (no rules installed, edits refused) while
+ * Sheet "Other" still parses its own rule.
+ */
+export async function buildExcelCfLockedFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Data" sheetId="1" r:id="rId1"/>
+    <sheet name="Other" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1"><si><t>Untouched</t></si></sst>`,
+  )
+
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font/></fonts>
+  <fills count="1"><fill/></fills>
+  <borders count="1"><border/></borders>
+  <cellStyleXfs count="1"><xf/></cellStyleXfs>
+  <cellXfs count="1"><xf/></cellXfs>
+  <dxfs count="1">
+    <dxf><font><b/><color rgb="FF9C0006"/></font><fill><patternFill><bgColor rgb="FFFFC7CE"/></patternFill></fill></dxf>
+  </dxfs>
+</styleSheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="2"><c r="A2"><v>10</v></c><c r="B2"><v>5</v></c><c r="C2"><v>45000</v></c></row>
+    <row r="3"><c r="A3"><v>60</v></c><c r="B3"><v>8</v></c><c r="C3"><v>44000</v></c></row>
+    <row r="4"><c r="A4"><v>30</v></c><c r="B4"><v>2</v></c><c r="C4"><v>46000</v></c></row>
+  </sheetData>
+  <conditionalFormatting sqref="A2:A4"><cfRule type="cellIs" dxfId="0" priority="1" operator="greaterThan"><formula>25</formula></cfRule></conditionalFormatting>
+  <conditionalFormatting sqref="B2:B4"><cfRule type="dataBar" priority="2"><dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="FF638EC6"/></dataBar><extLst><ext uri="{B025F937-C7B1-47D3-BA67-4E7D1D9ED3A3}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:id>{F7C31AE2-4BEF-4D70-8C5B-56A5B3D9E1A2}</x14:id></ext></extLst></cfRule></conditionalFormatting>
+  <conditionalFormatting sqref="C2:C4"><cfRule type="timePeriod" dxfId="0" priority="3" timePeriod="yesterday"><formula>FLOOR(C2,1)=TODAY()-1</formula></cfRule></conditionalFormatting>
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet2.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="s"><v>0</v></c></row>
+    <row r="2"><c r="B2"><v>5</v></c></row>
+    <row r="3"><c r="B3"><v>15</v></c></row>
+  </sheetData>
+  <conditionalFormatting sqref="B2:B3"><cfRule type="cellIs" dxfId="0" priority="1" operator="greaterThan"><formula>10</formula></cfRule></conditionalFormatting>
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}

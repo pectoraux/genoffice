@@ -211,3 +211,15 @@ export function FunctionIcon(): ReactElement {
     </Icon>
   )
 }
+
+/** Shaded grid cells — the conditional-formatting affordance (EXCEL-024). */
+export function CfIcon(): ReactElement {
+  return (
+    <Icon>
+      <rect x="3.75" y="3.75" width="6" height="6" rx="1" />
+      <rect x="14.25" y="3.75" width="6" height="6" rx="1" />
+      <rect x="9" y="14.25" width="6" height="6" rx="1" />
+      <path d="M3.75 14.25h2.5M17.75 14.25h2.5M3.75 17.75h2.5M17.75 17.75h2.5" />
+    </Icon>
+  )
+}

@@ -7,6 +7,7 @@ import type {
 import type { SheetVisual } from './chart-visual'
 import type { SheetFilterState } from '../gateway/xlsx-filter'
 import type { DvWireRule } from '../gateway/xlsx-dv'
+import type { CfWireRule } from '../gateway/xlsx-cf'
 import type { SheetNote } from '../gateway/xlsx-notes'
 import type { SheetTableInfo } from '../gateway/xlsx-table-read'
 import type { SheetChartInfo } from '../gateway/xlsx-chart-read'
@@ -146,6 +147,37 @@ export interface WorksheetState {
    * the canonical chartEdits save family, keyed by chartPath.
    */
   readonly charts?: readonly SheetChartInfo[] | undefined
+  /**
+   * Conditional-formatting rules (EXCEL-024) parsed from the worksheet's
+   * `<conditionalFormatting>` sections. Each entry is the canonical
+   * CfWireRule — the Univer conditional-formatting model shape with the
+   * dxf style PRE-RESOLVED into rule.style (the browser installs them via
+   * the add-conditional-rule mutation without touching style XML). Rules
+   * come back priority-ascending (the install order — Univer applies
+   * rules in insertion order, and lower xlsx priority = higher
+   * precedence). Absent means the sheet carries no representable rules —
+   * including when the sections hold constructs the canonical model
+   * cannot represent (x14 extensions, time periods, unknown rule types,
+   * malformed sqref, unresolvable dxf styling), which fail closed PER
+   * SHEET with `cfLocked: true`: the browser never renders such a
+   * surface, refuses CF edits on the sheet (so a rewrite that would
+   * silently drop the unrepresentable rules can never be requested), and
+   * a no-op save preserves the file's XML byte-for-byte. The web Sheets
+   * shell (Home → Conditional Formatting) journals rule changes through
+   * the canonical `cfStates` save family and reads the state back via
+   * this field on reopen.
+   */
+  readonly cfRules?: readonly CfWireRule[] | undefined
+  /**
+   * EXCEL-024 fail-closed marker: the worksheet carries conditional
+   * formatting the canonical typed model cannot represent (see cfRules).
+   * The browser must refuse conditional-formatting mutations on this
+   * sheet — the canonical writer would rewrite every section of a
+   * CF-dirty sheet from the live-model snapshot, so an edit here would
+   * silently drop the unrepresentable rules. A no-op save (no CF edits)
+   * leaves the sheet's CF XML untouched.
+   */
+  readonly cfLocked?: boolean | undefined
   /**
    * Sheet protection state parsed from the worksheet's <sheetProtection>
    * element. Absent means the worksheet carries NO element (not

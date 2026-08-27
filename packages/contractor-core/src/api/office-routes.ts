@@ -34,7 +34,9 @@ import {
   type ChartSeriesSetEntry,
   type EditableBorderStyle,
   type SheetDvState,
+  type SheetCfState,
   type SheetFilterState,
+  OOXML_ICON_SETS,
   type SheetNoteState,
   type SheetPageSetupState,
   type SheetProtectionState,
@@ -117,6 +119,17 @@ export interface BrowserWorkbookSavePlan {
    * `<dataValidations>`.
    */
   readonly dvStates?: readonly SheetDvState[]
+  /**
+   * Per-sheet conditional-formatting states (Home → Conditional
+   * Formatting, EXCEL-024). The engine applies these AFTER structural ops,
+   * cell edits, filters, and validation — each entry REPLACES the sheet's
+   * whole `<conditionalFormatting>` set with the canonical CfWireRule[]
+   * (the full declarative rule set of a CF-dirty sheet, so editing one
+   * rule never drops its siblings; an empty rules array clears the
+   * sheet's conditional formatting). Sheets absent from the list keep
+   * their file XML byte-for-byte.
+   */
+  readonly cfStates?: readonly SheetCfState[]
   /**
    * Per-sheet legacy-note states (Review → New Comment). Each entry REPLACES
    * the sheet's whole comment set with the canonical `SheetNote[]` — an
@@ -2457,6 +2470,521 @@ function expectDvRule(value: Record<string, unknown>, field: string): Record<str
   return out
 }
 
+// ── SheetCfState validation (Home → Conditional Formatting, EXCEL-024) ──────
+//
+// Strict runtime validation of the cfStates save family — the wire shape is
+// the canonical CfWireRule (the Univer conditional-formatting model the
+// gateway's writer consumes). Everything the serializer cannot hold is
+// rejected here with a 400 BEFORE the gateway touches the source bytes:
+// unknown fields, unsupported rule families (time periods are xlsx
+// date-occurring rules the base schema cannot express), operators outside
+// the eight cell-value / ten text enums, icon sets outside the OOXML
+// whitelist (the x14-only sets), malformed ranges/colors/thresholds, and
+// guard-rail overruns. Priorities are NOT on the wire — the canonical
+// writer assigns them at serialization time.
+
+const MAX_CF_STATES = 1_000
+const MAX_CF_RULES_PER_SHEET = 500
+const MAX_CF_RANGES_PER_RULE = 100
+const MAX_CF_TEXT_LENGTH = 255
+const MAX_CF_FORMULA_LENGTH = 1_000
+const MAX_CF_NUMBER = 1e15
+
+const CF_RULE_TYPES = new Set(['highlightCell', 'colorScale', 'dataBar', 'iconSet'])
+const CF_SUB_TYPES = new Set([
+  'number',
+  'text',
+  'formula',
+  'rank',
+  'average',
+  'duplicateValues',
+  'uniqueValues',
+  'timePeriod',
+])
+const CF_NUMBER_OPERATORS = new Set([
+  'equal',
+  'notEqual',
+  'greaterThan',
+  'lessThan',
+  'greaterThanOrEqual',
+  'lessThanOrEqual',
+  'between',
+  'notBetween',
+])
+const CF_TEXT_OPERATORS = new Set([
+  'containsText',
+  'notContainsText',
+  'beginsWith',
+  'endsWith',
+  'equal',
+  'notEqual',
+  'containsBlanks',
+  'notContainsBlanks',
+  'containsErrors',
+  'notContainsErrors',
+])
+const CF_AVERAGE_OPERATORS = new Set([
+  'greaterThan',
+  'greaterThanOrEqual',
+  'lessThan',
+  'lessThanOrEqual',
+])
+const CF_VALUE_TYPES = new Set(['num', 'min', 'max', 'percent', 'percentile', 'formula'])
+
+function expectSheetCfState(value: unknown, index: number): SheetCfState {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `cfStates[${index}] must be an object`)
+  }
+  const sheetName = expectString(value.sheetName, `cfStates[${index}].sheetName`)
+  const rules = expectArray(value.rules, `cfStates[${index}].rules`, (rule, i) =>
+    expectCfWireRule(rule, `cfStates[${index}].rules[${i}]`),
+  )
+  if (rules.length > MAX_CF_RULES_PER_SHEET) {
+    throw new OfficeValidationError(
+      'validation',
+      `cfStates[${index}].rules exceeds ${MAX_CF_RULES_PER_SHEET} entries`,
+    )
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'sheetName' && key !== 'rules') {
+      throw new OfficeValidationError(
+        'validation',
+        `cfStates[${index}] carries an unknown field "${key}"`,
+      )
+    }
+  }
+  return { sheetName, rules }
+}
+
+function expectCfWireRule(
+  value: unknown,
+  field: string,
+): {
+  ranges: ReadonlyArray<{
+    startRow: number
+    endRow: number
+    startColumn: number
+    endColumn: number
+  }>
+  stopIfTrue: boolean
+  rule: Record<string, unknown>
+} {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const ranges = expectArray(value.ranges, `${field}.ranges`, (area, i) => {
+    if (!isRecord(area)) {
+      throw new OfficeValidationError('validation', `${field}.ranges[${i}] must be an object`)
+    }
+    return expectDvArea(area, `${field}.ranges[${i}]`)
+  })
+  if (ranges.length === 0 || ranges.length > MAX_CF_RANGES_PER_RULE) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.ranges must carry 1..${MAX_CF_RANGES_PER_RULE} areas`,
+    )
+  }
+  if (typeof value.stopIfTrue !== 'boolean') {
+    throw new OfficeValidationError('validation', `${field}.stopIfTrue must be a boolean`)
+  }
+  if (!isRecord(value.rule)) {
+    throw new OfficeValidationError('validation', `${field}.rule must be an object`)
+  }
+  const rule = expectCfRule(value.rule, `${field}.rule`)
+  for (const key of Object.keys(value)) {
+    if (key !== 'ranges' && key !== 'stopIfTrue' && key !== 'rule') {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return { ranges, stopIfTrue: value.stopIfTrue, rule }
+}
+
+function expectCfRule(value: Record<string, unknown>, field: string): Record<string, unknown> {
+  const type = value.type
+  if (typeof type !== 'string' || !CF_RULE_TYPES.has(type)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.type "${String(type)}" is not a supported conditional-formatting family`,
+    )
+  }
+  if (type === 'colorScale') return expectCfColorScale(value, field)
+  if (type === 'dataBar') return expectCfDataBar(value, field)
+  if (type === 'iconSet') return expectCfIconSet(value, field)
+  return expectCfHighlightCell(value, field)
+}
+
+function expectCfStyle(value: unknown, field: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const out: Record<string, unknown> = {}
+  for (const key of ['bl', 'it'] as const) {
+    if (value[key] === undefined) continue
+    if (value[key] !== 0 && value[key] !== 1) {
+      throw new OfficeValidationError('validation', `${field}.${key} must be 0 or 1`)
+    }
+    out[key] = value[key]
+  }
+  for (const key of ['st', 'ul'] as const) {
+    if (value[key] === undefined) continue
+    const deco = value[key]
+    if (!isRecord(deco) || Object.keys(deco).some((inner) => inner !== 's')) {
+      throw new OfficeValidationError('validation', `${field}.${key} must be an object { s }`)
+    }
+    if (deco.s !== 0 && deco.s !== 1) {
+      throw new OfficeValidationError('validation', `${field}.${key}.s must be 0 or 1`)
+    }
+    out[key] = { s: deco.s }
+  }
+  for (const key of ['cl', 'bg'] as const) {
+    if (value[key] === undefined) continue
+    const color = value[key]
+    if (!isRecord(color) || Object.keys(color).some((inner) => inner !== 'rgb')) {
+      throw new OfficeValidationError('validation', `${field}.${key} must be an object { rgb }`)
+    }
+    out[key] = { rgb: expectCfColor(color.rgb, `${field}.${key}.rgb`) }
+  }
+  if (value.n !== undefined) {
+    const numFmt = value.n
+    if (!isRecord(numFmt) || typeof numFmt.pattern !== 'string' || numFmt.pattern.length > 255) {
+      throw new OfficeValidationError('validation', `${field}.n must be { pattern } (≤ 255 chars)`)
+    }
+    out.n = { pattern: numFmt.pattern }
+  }
+  for (const key of Object.keys(value)) {
+    if (!['bl', 'it', 'st', 'ul', 'cl', 'bg', 'n'].includes(key)) {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return out
+}
+
+/// Univer stores colors as #RRGGBB hex or ColorKit's `rgb(r,g,b)` strings —
+/// the two forms the gateway's dxf serializer accepts.
+function expectCfColor(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.length > 64) {
+    throw new OfficeValidationError('validation', `${field} must be a color string (≤ 64 chars)`)
+  }
+  const hex = /^#?([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$/.exec(value.trim())
+  if (hex !== null) return value
+  const rgb = /^rgba?\(\s*\d+\s*[, ]\s*\d+\s*[, ]\s*\d+/.exec(value.trim())
+  if (rgb !== null) return value
+  throw new OfficeValidationError(
+    'validation',
+    `${field} "${value}" is not a supported #RRGGBB / rgb() color`,
+  )
+}
+
+function expectCfValueConfig(value: unknown, field: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const type = value.type
+  if (typeof type !== 'string' || !CF_VALUE_TYPES.has(type)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.type "${String(type)}" is not a supported threshold type`,
+    )
+  }
+  const out: Record<string, unknown> = { type }
+  if (value.value !== undefined) {
+    if (typeof value.value === 'number') {
+      if (!Number.isFinite(value.value) || Math.abs(value.value) > MAX_CF_NUMBER) {
+        throw new OfficeValidationError('validation', `${field}.value is out of range`)
+      }
+      out.value = value.value
+    } else if (typeof value.value === 'string') {
+      if (value.value.length > MAX_CF_FORMULA_LENGTH) {
+        throw new OfficeValidationError('validation', `${field}.value exceeds 1000 characters`)
+      }
+      out.value = value.value
+    } else {
+      throw new OfficeValidationError('validation', `${field}.value must be a number or string`)
+    }
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'type' && key !== 'value') {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return out
+}
+
+function expectCfHighlightCell(
+  value: Record<string, unknown>,
+  field: string,
+): Record<string, unknown> {
+  const subType = value.subType
+  if (typeof subType !== 'string' || !CF_SUB_TYPES.has(subType)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.subType "${String(subType)}" is not a supported rule family`,
+    )
+  }
+  if (subType === 'timePeriod') {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}: date-occurring rules cannot be saved to xlsx`,
+    )
+  }
+  const out: Record<string, unknown> = { type: 'highlightCell', subType }
+  if (value.style !== undefined) {
+    out.style = expectCfStyle(value.style, `${field}.style`)
+  }
+  if (subType === 'number') {
+    const operator = value.operator
+    if (typeof operator !== 'string' || !CF_NUMBER_OPERATORS.has(operator)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.operator "${String(operator)}" is not a supported cell-value operator`,
+      )
+    }
+    out.operator = operator
+    if (operator === 'between' || operator === 'notBetween') {
+      if (!Array.isArray(value.value) || value.value.length !== 2) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.value must be [min, max] for between rules`,
+        )
+      }
+      out.value = value.value.map((entry, i) => expectCfNumber(entry, `${field}.value[${i}]`))
+    } else {
+      out.value = expectCfNumber(value.value, `${field}.value`)
+    }
+  } else if (subType === 'text') {
+    const operator = value.operator
+    if (typeof operator !== 'string' || !CF_TEXT_OPERATORS.has(operator)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.operator "${String(operator)}" is not a supported text operator`,
+      )
+    }
+    out.operator = operator
+    if (value.value !== undefined && value.value !== null) {
+      if (typeof value.value !== 'string' || value.value.length > MAX_CF_TEXT_LENGTH) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.value must be a string (≤ 255 chars)`,
+        )
+      }
+      out.value = value.value
+    }
+  } else if (subType === 'formula') {
+    if (
+      typeof value.value !== 'string' ||
+      value.value.length === 0 ||
+      value.value.length > MAX_CF_FORMULA_LENGTH
+    ) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.value must be a formula string (1..1000 chars)`,
+      )
+    }
+    out.value = value.value
+  } else if (subType === 'rank') {
+    out.value = expectCfRank(value.value, `${field}.value`)
+    for (const key of ['isPercent', 'isBottom'] as const) {
+      if (value[key] === undefined) continue
+      if (typeof value[key] !== 'boolean') {
+        throw new OfficeValidationError('validation', `${field}.${key} must be a boolean`)
+      }
+      out[key] = value[key]
+    }
+  } else if (subType === 'average') {
+    const operator = value.operator
+    if (typeof operator !== 'string' || !CF_AVERAGE_OPERATORS.has(operator)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.operator "${String(operator)}" is not a supported above-average operator`,
+      )
+    }
+    out.operator = operator
+  }
+  for (const key of Object.keys(value)) {
+    if (!['type', 'subType', 'style', 'operator', 'value', 'isPercent', 'isBottom'].includes(key)) {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return out
+}
+
+function expectCfNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > MAX_CF_NUMBER) {
+    throw new OfficeValidationError('validation', `${field} must be a finite number`)
+  }
+  return value
+}
+
+function expectCfRank(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 1000) {
+    throw new OfficeValidationError('validation', `${field} must be an integer between 1 and 1000`)
+  }
+  return value
+}
+
+function expectCfColorScale(
+  value: Record<string, unknown>,
+  field: string,
+): Record<string, unknown> {
+  if (!Array.isArray(value.config) || value.config.length < 2 || value.config.length > 5) {
+    throw new OfficeValidationError('validation', `${field}.config must carry 2..5 stops`)
+  }
+  const config = value.config.map((stop, i) => {
+    if (!isRecord(stop)) {
+      throw new OfficeValidationError('validation', `${field}.config[${i}] must be an object`)
+    }
+    if (typeof stop.index !== 'number' || !Number.isInteger(stop.index) || stop.index < 0) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.config[${i}].index must be a non-negative integer`,
+      )
+    }
+    if (typeof stop.color !== 'string') {
+      throw new OfficeValidationError('validation', `${field}.config[${i}].color must be a string`)
+    }
+    expectCfColor(stop.color, `${field}.config[${i}].color`)
+    for (const key of Object.keys(stop)) {
+      if (key !== 'index' && key !== 'color' && key !== 'value') {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.config[${i}] carries an unknown field "${key}"`,
+        )
+      }
+    }
+    return {
+      index: stop.index,
+      color: stop.color,
+      value: expectCfValueConfig(stop.value, `${field}.config[${i}].value`),
+    }
+  })
+  const out: Record<string, unknown> = { type: 'colorScale', config }
+  for (const key of Object.keys(value)) {
+    if (key !== 'type' && key !== 'config') {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return out
+}
+
+function expectCfDataBar(value: Record<string, unknown>, field: string): Record<string, unknown> {
+  const config = value.config
+  if (!isRecord(config)) {
+    throw new OfficeValidationError('validation', `${field}.config must be an object`)
+  }
+  for (const key of ['min', 'max']) {
+    if (config[key] === undefined) {
+      throw new OfficeValidationError('validation', `${field}.config.${key} is required`)
+    }
+  }
+  for (const key of ['positiveColor', 'nativeColor']) {
+    if (config[key] === undefined) {
+      throw new OfficeValidationError('validation', `${field}.config.${key} is required`)
+    }
+    if (typeof config[key] !== 'string') {
+      throw new OfficeValidationError('validation', `${field}.config.${key} must be a string`)
+    }
+    expectCfColor(config[key], `${field}.config.${key}`)
+  }
+  const outConfig: Record<string, unknown> = {
+    min: expectCfValueConfig(config.min, `${field}.config.min`),
+    max: expectCfValueConfig(config.max, `${field}.config.max`),
+    positiveColor: config.positiveColor,
+    nativeColor: config.nativeColor,
+  }
+  if (config.isGradient !== undefined) {
+    if (typeof config.isGradient !== 'boolean') {
+      throw new OfficeValidationError('validation', `${field}.config.isGradient must be a boolean`)
+    }
+    outConfig.isGradient = config.isGradient
+  }
+  for (const key of Object.keys(config)) {
+    if (!['min', 'max', 'isGradient', 'positiveColor', 'nativeColor'].includes(key)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.config carries an unknown field "${key}"`,
+      )
+    }
+  }
+  const out: Record<string, unknown> = { type: 'dataBar', config: outConfig }
+  if (value.isShowValue !== undefined) {
+    if (typeof value.isShowValue !== 'boolean') {
+      throw new OfficeValidationError('validation', `${field}.isShowValue must be a boolean`)
+    }
+    out.isShowValue = value.isShowValue
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'type' && key !== 'isShowValue' && key !== 'config') {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return out
+}
+
+function expectCfIconSet(value: Record<string, unknown>, field: string): Record<string, unknown> {
+  const config = value.config
+  if (!Array.isArray(config) || config.length < 2 || config.length > 5) {
+    throw new OfficeValidationError('validation', `${field}.config must carry 2..5 icon entries`)
+  }
+  const seen = new Set<string>()
+  const entries = config.map((entry, i) => {
+    if (!isRecord(entry)) {
+      throw new OfficeValidationError('validation', `${field}.config[${i}] must be an object`)
+    }
+    if (typeof entry.iconType !== 'string' || !OOXML_ICON_SETS.has(entry.iconType)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.config[${i}].iconType "${String(entry.iconType)}" cannot be saved to xlsx (x14-only or unknown icon set)`,
+      )
+    }
+    seen.add(entry.iconType)
+    if (typeof entry.iconId !== 'string' || !/^\d+$/.test(entry.iconId)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.config[${i}].iconId must be a numeric string`,
+      )
+    }
+    if (entry.operator !== 'greaterThan' && entry.operator !== 'greaterThanOrEqual') {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.config[${i}].operator must be greaterThan or greaterThanOrEqual`,
+      )
+    }
+    for (const key of Object.keys(entry)) {
+      if (key !== 'iconType' && key !== 'iconId' && key !== 'operator' && key !== 'value') {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.config[${i}] carries an unknown field "${key}"`,
+        )
+      }
+    }
+    return {
+      iconType: entry.iconType,
+      iconId: entry.iconId,
+      operator: entry.operator,
+      value: expectCfValueConfig(entry.value, `${field}.config[${i}].value`),
+    }
+  })
+  if (seen.size !== 1) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.config mixes icon sets — mixed sets are x14-only and cannot be saved`,
+    )
+  }
+  const out: Record<string, unknown> = { type: 'iconSet', config: entries }
+  if (value.isShowValue !== undefined) {
+    if (typeof value.isShowValue !== 'boolean') {
+      throw new OfficeValidationError('validation', `${field}.isShowValue must be a boolean`)
+    }
+    out.isShowValue = value.isShowValue
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'type' && key !== 'isShowValue' && key !== 'config') {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return out
+}
+
 // ── Protection validation (Review → Protection, EXCEL-020) ───────────────────────────────────────────────────────
 
 /** Caps mirroring the desktop's workbookSheetProtectionSchema. */
@@ -3755,6 +4283,18 @@ function parseSaveWorkbookRequest(
         `savePlan.dvStates exceeds ${MAX_DV_STATES} entries`,
       )
     }
+    // EXCEL-024: per-sheet conditional-formatting snapshots (the full
+    // declarative rule set of every CF-dirty sheet).
+    const cfStates =
+      body.savePlan.cfStates !== undefined && body.savePlan.cfStates !== null
+        ? expectArray(body.savePlan.cfStates, 'savePlan.cfStates', expectSheetCfState)
+        : undefined
+    if (cfStates !== undefined && cfStates.length > MAX_CF_STATES) {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.cfStates exceeds ${MAX_CF_STATES} entries`,
+      )
+    }
     const noteStates =
       body.savePlan.noteStates !== undefined && body.savePlan.noteStates !== null
         ? expectArray(body.savePlan.noteStates, 'savePlan.noteStates', expectSheetNoteState)
@@ -3850,6 +4390,7 @@ function parseSaveWorkbookRequest(
         ...(pageSetupStates ? { pageSetupStates } : {}),
         ...(filterStates ? { filterStates } : {}),
         ...(dvStates ? { dvStates } : {}),
+        ...(cfStates ? { cfStates } : {}),
         ...(noteStates ? { noteStates } : {}),
         ...(sheetProtections ? { sheetProtections } : {}),
         ...(workbookProtectionState !== null ? { workbookProtectionState } : {}),
@@ -3929,6 +4470,7 @@ async function handleSaveWorkbook(
   const pageSetupStates = req.savePlan.pageSetupStates ?? []
   const filterStates = req.savePlan.filterStates ?? []
   const dvStates = req.savePlan.dvStates ?? []
+  const cfStates = req.savePlan.cfStates ?? []
   const noteStates = req.savePlan.noteStates ?? []
   const sheetProtections = req.savePlan.sheetProtections ?? []
   const workbookProtectionState = req.savePlan.workbookProtectionState ?? null
@@ -3963,7 +4505,7 @@ async function handleSaveWorkbook(
       undefined,
       filterStates,
       [],
-      [],
+      cfStates,
       dvStates,
       sheetProtections,
       null,

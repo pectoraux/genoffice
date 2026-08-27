@@ -526,6 +526,8 @@ export class StylesheetReader {
    * round-trip without needing a <numFmt> entry.
    */
   private readonly numFmtByCode: ReadonlyMap<number, string>
+  /** Raw `<dxf>` entries from the styles.xml dxfs section, in file order. */
+  private readonly dxfEntries: readonly string[]
   private readonly cache = new Map<number, CellFormatState | undefined>()
 
   constructor(stylesXml: string) {
@@ -535,6 +537,8 @@ export class StylesheetReader {
     this.fonts = fontsInner === null ? [] : extractElements(fontsInner, 'font')
     this.fills = fillsInner === null ? [] : extractElements(fillsInner, 'fill')
     this.cellXfs = cellXfsInner === null ? [] : extractElements(cellXfsInner, 'xf')
+    const dxfsInner = sectionInner(stylesXml, 'dxfs')
+    this.dxfEntries = dxfsInner === null ? [] : extractElements(dxfsInner, 'dxf')
     const numFmtsInner = sectionInner(stylesXml, 'numFmts')
     const numFmtEntries = numFmtsInner === null ? [] : extractElements(numFmtsInner, 'numFmt')
     const byCode = new Map<number, string>()
@@ -544,6 +548,15 @@ export class StylesheetReader {
       if (Number.isInteger(id) && code) byCode.set(id, decodeXmlText(code))
     }
     this.numFmtByCode = byCode
+  }
+
+  /**
+   * Raw `<dxf>` XML at a differential-format index; undefined when the index
+   * is out of range. EXCEL-024: the conditional-formatting reader resolves
+   * rule styling through this accessor so the browser never sees style XML.
+   */
+  dxfAt(dxfIndex: number): string | undefined {
+    return this.dxfEntries[dxfIndex]
   }
 
   /**
