@@ -28,6 +28,10 @@ import {
   readBasicWorkbook,
   type AddedVisualLocator,
   type CellEdit,
+  type ChartAdd,
+  type ChartAddSeries,
+  type ChartSeriesEdit,
+  type ChartSeriesSetEntry,
   type EditableBorderStyle,
   type SheetDvState,
   type SheetFilterState,
@@ -38,6 +42,7 @@ import {
   type SheetTableAddition,
   type SheetVisualAddition,
   type StructuralOp,
+  type WorkbookChartEdit,
   type WorkbookSnapshot,
   type WorkbookStyleEdit,
   type WorkbookVisualEdit,
@@ -143,15 +148,23 @@ export interface BrowserWorkbookSavePlan {
    */
   readonly tableAdditions?: readonly SheetTableAddition[]
   /**
-   * Session-created visuals (Insert → Picture, EXCEL-022). Each entry
-   * carries a typed image addition — the engine writes the media part,
-   * the drawing picture + anchor, the drawing relationship, and (when the
-   * sheet has no drawing yet) the worksheet drawing relationship and the
-   * [Content_Types] Default. IMAGE-ONLY on this wire: chart/shape
-   * additions are rejected (the web editor has no chart/shape UI —
-   * EXCEL-023 will widen the family when charts land). Mirrors the
-   * desktop visualAdditions journal semantics (deleting a session image
-   * drops its entry, so it is never persisted).
+   * Surgical semantic edits to file-native charts (EXCEL-023 — Chart
+   * Design). Each entry targets one chart part by its canonical
+   * xl/charts/*.xml path (the open snapshot's charts carry it) and carries
+   * at least one bounded property change: title, the six convertible
+   * chart types, series colors, legend, data labels (+ position/format),
+   * axis titles, point colors, grouping, gridlines, value-axis bounds,
+   * gap width, hole size, explosion, or a full series replacement.
+   * Mirrors the desktop preload's workbookChartEditSchema bounds.
+   */
+  readonly chartEdits?: readonly WorkbookChartEdit[]
+  /**
+   * Session-created visuals (Insert → Picture / Insert → Chart,
+   * EXCEL-022 / EXCEL-023). Each entry carries a typed visual — an image
+   * addition or a chart addition — persisted by the engine as new OOXML
+   * parts. Mirrors the desktop visualAdditions journal semantics
+   * (deleting a session visual drops its entry, so it is never
+   * persisted).
    */
   readonly visualAdditions?: readonly SheetVisualAddition[]
   /**
@@ -2522,60 +2535,887 @@ function expectDrawingAnchor(
 }
 
 /**
- * Validate one visual addition from the wire (EXCEL-022). IMAGE-ONLY: the
- * payload carries a sheetName, a bounded drawing anchor, and an image with
- * a supported media type and base64 bytes. Chart/shape additions are
- * rejected — the web editor has no chart/shape UI, so nothing unvalidated
- * may reach the generic engine family. Unknown fields are rejected.
+ * Validate one visual addition from the wire (EXCEL-022 / EXCEL-023).
+ * IMAGE or CHART: the payload carries a sheetName, a bounded drawing
+ * anchor, and exactly one typed visual — an image (supported media type
+ * + base64 bytes) or a chart (canonical ChartAdd with a supported chart
+ * type, 1-24 bounded series, and bounded style options). Shape additions
+ * remain rejected — the web editor has no shape UI. Unknown fields are
+ * rejected; nothing unvalidated reaches the generic engine family.
  */
 function expectSheetVisualAddition(value: unknown, index: number): SheetVisualAddition {
   const field = `visualAdditions[${index}]`
   if (!isRecord(value)) {
     throw new OfficeValidationError('validation', `${field} must be an object`)
   }
-  if (value.chart !== undefined || value.shape !== undefined) {
+  if (value.shape !== undefined) {
     throw new OfficeValidationError(
       'validation',
-      `${field} carries an unsupported visual kind — only image additions are supported`,
+      `${field} carries an unsupported visual kind — image and chart additions are supported`,
     )
   }
-  if (value.image === undefined) {
-    throw new OfficeValidationError('validation', `${field}.image is required`)
+  const hasImage = value.image !== undefined
+  const hasChart = value.chart !== undefined
+  if (hasImage && hasChart) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field} carries both image and chart — exactly one is required`,
+    )
+  }
+  if (!hasImage && !hasChart) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field} needs an image or a chart payload`,
+    )
   }
   const sheetName = expectString(value.sheetName, `${field}.sheetName`)
   const anchor = expectDrawingAnchor(value.anchor, `${field}.anchor`)
-  if (!isRecord(value.image)) {
-    throw new OfficeValidationError('validation', `${field}.image must be an object`)
+  let chart: ChartAdd | undefined
+  if (hasChart) {
+    chart = expectChartAdd(value.chart, `${field}.chart`)
   }
-  const mediaTypeRaw = expectString(value.image.mediaType, `${field}.image.mediaType`)
-  if (!VISUAL_MEDIA_TYPES.has(mediaTypeRaw)) {
-    throw new OfficeValidationError(
-      'validation',
-      `${field}.image.mediaType must be one of image/png, image/jpeg, image/gif`,
-    )
-  }
-  const mediaType = mediaTypeRaw as 'image/png' | 'image/jpeg' | 'image/gif'
-  const base64 = expectString(value.image.base64, `${field}.image.base64`)
-  if (base64.length > MAX_VISUAL_IMAGE_BASE64_CHARS) {
-    throw new OfficeValidationError(
-      'validation',
-      `${field}.image.base64 exceeds ${MAX_VISUAL_IMAGE_BASE64_CHARS} characters`,
-    )
-  }
-  for (const key of Object.keys(value.image)) {
-    if (key !== 'mediaType' && key !== 'base64') {
+  let image: SheetVisualAddition['image'] | undefined
+  if (hasImage) {
+    if (!isRecord(value.image)) {
+      throw new OfficeValidationError('validation', `${field}.image must be an object`)
+    }
+    const mediaTypeRaw = expectString(value.image.mediaType, `${field}.image.mediaType`)
+    if (!VISUAL_MEDIA_TYPES.has(mediaTypeRaw)) {
       throw new OfficeValidationError(
         'validation',
-        `${field}.image carries an unknown field "${key}"`,
+        `${field}.image.mediaType must be one of image/png, image/jpeg, image/gif`,
+      )
+    }
+    const mediaType = mediaTypeRaw as 'image/png' | 'image/jpeg' | 'image/gif'
+    const base64 = expectString(value.image.base64, `${field}.image.base64`)
+    if (base64.length > MAX_VISUAL_IMAGE_BASE64_CHARS) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.image.base64 exceeds ${MAX_VISUAL_IMAGE_BASE64_CHARS} characters`,
+      )
+    }
+    for (const key of Object.keys(value.image)) {
+      if (key !== 'mediaType' && key !== 'base64') {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.image carries an unknown field "${key}"`,
+        )
+      }
+    }
+    image = { mediaType, base64 }
+  }
+  for (const key of Object.keys(value)) {
+    if (!['sheetName', 'anchor', 'image', 'chart'].includes(key)) {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return {
+    sheetName,
+    anchor,
+    ...(image !== undefined ? { image } : {}),
+    ...(chart !== undefined ? { chart } : {}),
+  }
+}
+
+// ── Chart payload validation (EXCEL-023) ────────────────────────────
+
+const CHART_PATH_PATTERN = /^xl\/charts\/[A-Za-z0-9._-]+\.xml$/
+const CHART_HEX_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/
+/// Series/point index keys: 0-999 (desktop preload parity).
+const CHART_INDEX_KEY_PATTERN = /^[0-9]{1,3}$/
+const MAX_CHART_EDITS = 200
+const MAX_CHART_SERIES = 24
+const MAX_CHART_POINTS = 1_000
+
+const CHART_ADD_TYPES = new Set([
+  'column',
+  'bar',
+  'line',
+  'area',
+  'pie',
+  'scatter',
+  'radar',
+  'doughnut',
+  'combo',
+])
+const CHART_EDIT_TYPES = new Set(['column', 'bar', 'line', 'area', 'pie', 'doughnut'])
+const CHART_LEGEND_POSITIONS = new Set(['none', 'right', 'bottom', 'top', 'left'])
+const CHART_DATA_LABEL_MODES = new Set(['none', 'value', 'percent', 'category-percent'])
+const CHART_LABEL_POSITIONS = new Set(['center', 'inside-end', 'outside-end'])
+const CHART_GROUPINGS = new Set(['clustered', 'stacked', 'percentStacked', 'standard'])
+
+function expectChartHexColor(value: unknown, field: string): string {
+  const s = expectString(value, field)
+  if (!CHART_HEX_COLOR_PATTERN.test(s)) {
+    throw new OfficeValidationError('validation', `${field} must be a #RRGGBB hex color`)
+  }
+  return s
+}
+
+function expectChartIndexKey(value: unknown, field: string): string {
+  const s = expectString(value, field)
+  if (!CHART_INDEX_KEY_PATTERN.test(s)) {
+    throw new OfficeValidationError('validation', `${field} must be a series/point index (0-999)`)
+  }
+  return s
+}
+
+function expectFiniteNumberArray(value: unknown, field: string): readonly number[] {
+  const values = expectArray(value, field, (entry, position) => {
+    if (typeof entry !== 'number' || !Number.isFinite(entry)) {
+      throw new OfficeValidationError('validation', `${field}[${position}] must be a finite number`)
+    }
+    return entry
+  })
+  if (values.length > MAX_CHART_POINTS) {
+    throw new OfficeValidationError('validation', `${field} exceeds ${MAX_CHART_POINTS} entries`)
+  }
+  return values
+}
+
+function expectBoundedStringArray(value: unknown, field: string): readonly string[] {
+  const values = expectArray(value, field, (entry, position) => {
+    const text = expectString(entry, `${field}[${position}]`)
+    if (text.length > 255) {
+      throw new OfficeValidationError('validation', `${field}[${position}] exceeds 255 characters`)
+    }
+    return text
+  })
+  if (values.length > MAX_CHART_POINTS) {
+    throw new OfficeValidationError('validation', `${field} exceeds ${MAX_CHART_POINTS} entries`)
+  }
+  return values
+}
+
+function expectChartRefString(value: unknown, field: string): string | undefined {
+  const s = expectString(value, field)
+  if (s.length > 512) {
+    throw new OfficeValidationError('validation', `${field} exceeds 512 characters`)
+  }
+  return s
+}
+
+/// One chart addition series (mirrors the desktop preload's
+/// workbookVisualAddSchema.chart.series entry).
+function expectChartAddSeries(value: unknown, field: string): ChartAddSeries {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const name = expectString(value.name, `${field}.name`)
+  if (name.length > 255) {
+    throw new OfficeValidationError('validation', `${field}.name exceeds 255 characters`)
+  }
+  const values = expectFiniteNumberArray(value.values, `${field}.values`)
+  if (values.length === 0) {
+    throw new OfficeValidationError('validation', `${field}.values must not be empty`)
+  }
+  const categories = expectBoundedStringArray(value.categories, `${field}.categories`)
+  const valuesRef =
+    value.valuesRef !== undefined && value.valuesRef !== null
+      ? expectChartRefString(value.valuesRef, `${field}.valuesRef`)
+      : undefined
+  const categoriesRef =
+    value.categoriesRef !== undefined && value.categoriesRef !== null
+      ? expectChartRefString(value.categoriesRef, `${field}.categoriesRef`)
+      : undefined
+  const color =
+    value.color !== undefined && value.color !== null
+      ? expectChartHexColor(value.color, `${field}.color`)
+      : undefined
+  let pointColors: ChartAddSeries['pointColors'] | undefined
+  if (value.pointColors !== undefined && value.pointColors !== null) {
+    if (!isRecord(value.pointColors)) {
+      throw new OfficeValidationError('validation', `${field}.pointColors must be an object`)
+    }
+    const out: Record<string, string> = {}
+    for (const [key, entry] of Object.entries(value.pointColors)) {
+      expectChartIndexKey(key, `${field}.pointColors key "${key}"`)
+      out[key] = expectChartHexColor(entry, `${field}.pointColors["${key}"]`)
+    }
+    pointColors = out
+  }
+  let explosionPct: number | undefined
+  if (value.explosionPct !== undefined && value.explosionPct !== null) {
+    explosionPct = expectBoundedInteger(value.explosionPct, 0, 400, `${field}.explosionPct`)
+  }
+  let pointExplosions: ChartAddSeries['pointExplosions'] | undefined
+  if (value.pointExplosions !== undefined && value.pointExplosions !== null) {
+    if (!isRecord(value.pointExplosions)) {
+      throw new OfficeValidationError('validation', `${field}.pointExplosions must be an object`)
+    }
+    const out: Record<string, number> = {}
+    for (const [key, entry] of Object.entries(value.pointExplosions)) {
+      expectChartIndexKey(key, `${field}.pointExplosions key "${key}"`)
+      out[key] = expectBoundedInteger(
+        entry,
+        0,
+        400,
+        `${field}.pointExplosions["${key}"]`,
+      )
+    }
+    pointExplosions = out
+  }
+  for (const key of Object.keys(value)) {
+    if (
+      ![
+        'name',
+        'values',
+        'categories',
+        'valuesRef',
+        'categoriesRef',
+        'color',
+        'pointColors',
+        'explosionPct',
+        'pointExplosions',
+      ].includes(key)
+    ) {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return {
+    name,
+    values,
+    categories,
+    ...(valuesRef !== undefined ? { valuesRef } : {}),
+    ...(categoriesRef !== undefined ? { categoriesRef } : {}),
+    ...(color !== undefined ? { color } : {}),
+    ...(pointColors !== undefined ? { pointColors } : {}),
+    ...(explosionPct !== undefined ? { explosionPct } : {}),
+    ...(pointExplosions !== undefined ? { pointExplosions } : {}),
+  }
+}
+
+function expectBoundedInteger(
+  value: unknown,
+  min: number,
+  max: number,
+  field: string,
+): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field} must be an integer between ${min} and ${max}`,
+    )
+  }
+  return value
+}
+
+/// One chart addition (mirrors the desktop preload's
+/// workbookVisualAddSchema.chart — the canonical engine ChartAdd).
+function expectChartAdd(value: unknown, field: string): ChartAdd {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const chartTypeRaw = expectString(value.chartType, `${field}.chartType`)
+  if (!CHART_ADD_TYPES.has(chartTypeRaw)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.chartType must be one of column, bar, line, area, pie, scatter, radar, doughnut, combo`,
+    )
+  }
+  const chartType = chartTypeRaw as ChartAdd['chartType']
+  const title = expectString(value.title, `${field}.title`)
+  if (title.length > 255) {
+    throw new OfficeValidationError('validation', `${field}.title exceeds 255 characters`)
+  }
+  const series = expectArray(value.series, `${field}.series`, (entry, position) =>
+    expectChartAddSeries(entry, `${field}.series[${position}]`),
+  )
+  if (series.length === 0) {
+    throw new OfficeValidationError('validation', `${field}.series must not be empty`)
+  }
+  if (series.length > MAX_CHART_SERIES) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.series exceeds ${MAX_CHART_SERIES} entries`,
+    )
+  }
+  let legend: ChartAdd['legend']
+  if (value.legend !== undefined && value.legend !== null) {
+    const legendRaw = expectString(value.legend, `${field}.legend`)
+    if (!CHART_LEGEND_POSITIONS.has(legendRaw)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.legend must be one of none, right, bottom, top, left`,
+      )
+    }
+    legend = legendRaw as ChartAdd['legend']
+  }
+  let dataLabels: ChartAdd['dataLabels']
+  if (value.dataLabels !== undefined && value.dataLabels !== null) {
+    const labelsRaw = expectString(value.dataLabels, `${field}.dataLabels`)
+    if (!CHART_DATA_LABEL_MODES.has(labelsRaw)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.dataLabels must be one of none, value, percent, category-percent`,
+      )
+    }
+    dataLabels = labelsRaw as ChartAdd['dataLabels']
+  }
+  let dataLabelPosition: ChartAdd['dataLabelPosition']
+  if (value.dataLabelPosition !== undefined && value.dataLabelPosition !== null) {
+    const positionRaw = expectString(value.dataLabelPosition, `${field}.dataLabelPosition`)
+    if (!CHART_LABEL_POSITIONS.has(positionRaw)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.dataLabelPosition must be one of center, inside-end, outside-end`,
+      )
+    }
+    dataLabelPosition = positionRaw as ChartAdd['dataLabelPosition']
+  }
+  let dataLabelFormat: string | undefined
+  if (value.dataLabelFormat !== undefined && value.dataLabelFormat !== null) {
+    dataLabelFormat = expectString(value.dataLabelFormat, `${field}.dataLabelFormat`)
+    if (dataLabelFormat.length > 64) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.dataLabelFormat exceeds 64 characters`,
+      )
+    }
+  }
+  let axisTitles: ChartAdd['axisTitles']
+  if (value.axisTitles !== undefined && value.axisTitles !== null) {
+    if (!isRecord(value.axisTitles)) {
+      throw new OfficeValidationError('validation', `${field}.axisTitles must be an object`)
+    }
+    const category =
+      value.axisTitles.category !== undefined && value.axisTitles.category !== null
+        ? expectString(value.axisTitles.category, `${field}.axisTitles.category`)
+        : undefined
+    const valueTitle =
+      value.axisTitles.value !== undefined && value.axisTitles.value !== null
+        ? expectString(value.axisTitles.value, `${field}.axisTitles.value`)
+        : undefined
+    for (const side of [category, valueTitle]) {
+      if (side !== undefined && side.length > 255) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.axisTitles entries exceed 255 characters`,
+        )
+      }
+    }
+    for (const key of Object.keys(value.axisTitles)) {
+      if (key !== 'category' && key !== 'value') {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.axisTitles carries an unknown field "${key}"`,
+        )
+      }
+    }
+    axisTitles = {
+      ...(category !== undefined ? { category } : {}),
+      ...(valueTitle !== undefined ? { value: valueTitle } : {}),
+    }
+  }
+  let grouping: ChartAdd['grouping']
+  if (value.grouping !== undefined && value.grouping !== null) {
+    const groupingRaw = expectString(value.grouping, `${field}.grouping`)
+    if (!CHART_GROUPINGS.has(groupingRaw)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.grouping must be one of clustered, stacked, percentStacked, standard`,
+      )
+    }
+    grouping = groupingRaw as ChartAdd['grouping']
+  }
+  let gridlines: boolean | undefined
+  if (value.gridlines !== undefined && value.gridlines !== null) {
+    gridlines = expectBoolean(value.gridlines, `${field}.gridlines`)
+  }
+  let valueAxis: ChartAdd['valueAxis']
+  if (value.valueAxis !== undefined && value.valueAxis !== null) {
+    if (!isRecord(value.valueAxis)) {
+      throw new OfficeValidationError('validation', `${field}.valueAxis must be an object`)
+    }
+    const min =
+      value.valueAxis.min !== undefined && value.valueAxis.min !== null
+        ? expectFiniteNumber(value.valueAxis.min, `${field}.valueAxis.min`)
+        : undefined
+    const max =
+      value.valueAxis.max !== undefined && value.valueAxis.max !== null
+        ? expectFiniteNumber(value.valueAxis.max, `${field}.valueAxis.max`)
+        : undefined
+    for (const key of Object.keys(value.valueAxis)) {
+      if (key !== 'min' && key !== 'max') {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.valueAxis carries an unknown field "${key}"`,
+        )
+      }
+    }
+    valueAxis = {
+      ...(min !== undefined ? { min } : {}),
+      ...(max !== undefined ? { max } : {}),
+    }
+  }
+  let gapWidthPct: number | undefined
+  if (value.gapWidthPct !== undefined && value.gapWidthPct !== null) {
+    gapWidthPct = expectBoundedInteger(value.gapWidthPct, 0, 500, `${field}.gapWidthPct`)
+  }
+  let holeSizePct: number | undefined
+  if (value.holeSizePct !== undefined && value.holeSizePct !== null) {
+    holeSizePct = expectBoundedInteger(value.holeSizePct, 10, 90, `${field}.holeSizePct`)
+  }
+  for (const key of Object.keys(value)) {
+    if (
+      ![
+        'chartType',
+        'title',
+        'series',
+        'legend',
+        'dataLabels',
+        'dataLabelPosition',
+        'dataLabelFormat',
+        'axisTitles',
+        'grouping',
+        'gridlines',
+        'valueAxis',
+        'gapWidthPct',
+        'holeSizePct',
+      ].includes(key)
+    ) {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return {
+    chartType,
+    title,
+    series,
+    ...(legend !== undefined ? { legend } : {}),
+    ...(dataLabels !== undefined ? { dataLabels } : {}),
+    ...(dataLabelPosition !== undefined ? { dataLabelPosition } : {}),
+    ...(dataLabelFormat !== undefined ? { dataLabelFormat } : {}),
+    ...(axisTitles !== undefined ? { axisTitles } : {}),
+    ...(grouping !== undefined ? { grouping } : {}),
+    ...(gridlines !== undefined ? { gridlines } : {}),
+    ...(valueAxis !== undefined ? { valueAxis } : {}),
+    ...(gapWidthPct !== undefined ? { gapWidthPct } : {}),
+    ...(holeSizePct !== undefined ? { holeSizePct } : {}),
+  }
+}
+
+function expectFiniteNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new OfficeValidationError('validation', `${field} must be a finite number`)
+  }
+  return value
+}
+
+/// One full-replacement series entry for a chart edit (desktop preload
+/// workbookChartEditSchema.seriesSet entry).
+function expectChartSeriesSetEntry(value: unknown, field: string): ChartSeriesSetEntry {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const name = expectString(value.name, `${field}.name`)
+  if (name.length > 255) {
+    throw new OfficeValidationError('validation', `${field}.name exceeds 255 characters`)
+  }
+  const values = expectFiniteNumberArray(value.values, `${field}.values`)
+  const categories =
+    value.categories !== undefined && value.categories !== null
+      ? expectBoundedStringArray(value.categories, `${field}.categories`)
+      : undefined
+  const valuesRef =
+    value.valuesRef !== undefined && value.valuesRef !== null
+      ? expectChartRefString(value.valuesRef, `${field}.valuesRef`)
+      : undefined
+  const categoriesRef =
+    value.categoriesRef !== undefined && value.categoriesRef !== null
+      ? expectChartRefString(value.categoriesRef, `${field}.categoriesRef`)
+      : undefined
+  const color =
+    value.color !== undefined && value.color !== null
+      ? expectChartHexColor(value.color, `${field}.color`)
+      : undefined
+  for (const key of Object.keys(value)) {
+    if (!['name', 'values', 'valuesRef', 'categories', 'categoriesRef', 'color'].includes(key)) {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return {
+    name,
+    values,
+    ...(valuesRef !== undefined ? { valuesRef } : {}),
+    ...(categories !== undefined ? { categories } : {}),
+    ...(categoriesRef !== undefined ? { categoriesRef } : {}),
+    ...(color !== undefined ? { color } : {}),
+  }
+}
+
+/// One index-keyed series edit (desktop workbookChartEditSchema.series
+/// entry — needs a name or data).
+function expectChartSeriesEdit(value: unknown, field: string): ChartSeriesEdit {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const index = expectBoundedInteger(value.index, 0, 255, `${field}.index`)
+  const name =
+    value.name !== undefined && value.name !== null
+      ? expectString(value.name, `${field}.name`)
+      : undefined
+  if (name !== undefined && name.length > 255) {
+    throw new OfficeValidationError('validation', `${field}.name exceeds 255 characters`)
+  }
+  const valuesRef =
+    value.valuesRef !== undefined && value.valuesRef !== null
+      ? expectChartRefString(value.valuesRef, `${field}.valuesRef`)
+      : undefined
+  const values =
+    value.values !== undefined && value.values !== null
+      ? expectFiniteNumberArray(value.values, `${field}.values`)
+      : undefined
+  const categoriesRef =
+    value.categoriesRef !== undefined && value.categoriesRef !== null
+      ? expectChartRefString(value.categoriesRef, `${field}.categoriesRef`)
+      : undefined
+  const categories =
+    value.categories !== undefined && value.categories !== null
+      ? expectBoundedStringArray(value.categories, `${field}.categories`)
+      : undefined
+  if (
+    name === undefined &&
+    values === undefined &&
+    categories === undefined &&
+    valuesRef === undefined &&
+    categoriesRef === undefined
+  ) {
+    throw new OfficeValidationError('validation', `${field} needs a name or data`)
+  }
+  for (const key of Object.keys(value)) {
+    if (
+      !['index', 'name', 'valuesRef', 'values', 'categoriesRef', 'categories'].includes(key)
+    ) {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return {
+    index,
+    ...(name !== undefined ? { name } : {}),
+    ...(valuesRef !== undefined ? { valuesRef } : {}),
+    ...(values !== undefined ? { values } : {}),
+    ...(categoriesRef !== undefined ? { categoriesRef } : {}),
+    ...(categories !== undefined ? { categories } : {}),
+  }
+}
+
+/**
+ * Validate one chart edit from the wire (EXCEL-023 — Chart Design edits
+ * on file-native charts). The edit targets a chart part by its canonical
+ * xl/charts/*.xml path and carries at least one supported property
+ * change, all bounded (desktop preload workbookChartEditSchema parity).
+ * Unknown fields are rejected; nothing unvalidated reaches the engine.
+ */
+function expectWorkbookChartEdit(value: unknown, index: number): WorkbookChartEdit {
+  const field = `chartEdits[${index}]`
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  const chartPath = expectString(value.chartPath, `${field}.chartPath`)
+  if (!CHART_PATH_PATTERN.test(chartPath)) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.chartPath must be an xl/charts/*.xml package path`,
+    )
+  }
+  let title: string | undefined
+  if (value.title !== undefined && value.title !== null) {
+    title = expectString(value.title, `${field}.title`)
+    if (title.length > 255) {
+      throw new OfficeValidationError('validation', `${field}.title exceeds 255 characters`)
+    }
+  }
+  let chartType: WorkbookChartEdit['chartType']
+  if (value.chartType !== undefined && value.chartType !== null) {
+    const typeRaw = expectString(value.chartType, `${field}.chartType`)
+    if (!CHART_EDIT_TYPES.has(typeRaw)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.chartType must be one of column, bar, line, area, pie, doughnut`,
+      )
+    }
+    chartType = typeRaw as WorkbookChartEdit['chartType']
+  }
+  let seriesColors: Record<string, string> | undefined
+  if (value.seriesColors !== undefined && value.seriesColors !== null) {
+    if (!isRecord(value.seriesColors)) {
+      throw new OfficeValidationError('validation', `${field}.seriesColors must be an object`)
+    }
+    const out: Record<string, string> = {}
+    for (const [key, entry] of Object.entries(value.seriesColors)) {
+      expectChartIndexKey(key, `${field}.seriesColors key "${key}"`)
+      out[key] = expectChartHexColor(entry, `${field}.seriesColors["${key}"]`)
+    }
+    seriesColors = out
+  }
+  let legend: WorkbookChartEdit['legend']
+  if (value.legend !== undefined && value.legend !== null) {
+    const legendRaw = expectString(value.legend, `${field}.legend`)
+    if (!CHART_LEGEND_POSITIONS.has(legendRaw)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.legend must be one of none, right, bottom, top, left`,
+      )
+    }
+    legend = legendRaw as WorkbookChartEdit['legend']
+  }
+  let dataLabels: WorkbookChartEdit['dataLabels']
+  if (value.dataLabels !== undefined && value.dataLabels !== null) {
+    const labelsRaw = expectString(value.dataLabels, `${field}.dataLabels`)
+    if (!CHART_DATA_LABEL_MODES.has(labelsRaw)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.dataLabels must be one of none, value, percent, category-percent`,
+      )
+    }
+    dataLabels = labelsRaw as WorkbookChartEdit['dataLabels']
+  }
+  let dataLabelPosition: WorkbookChartEdit['dataLabelPosition']
+  if (value.dataLabelPosition !== undefined && value.dataLabelPosition !== null) {
+    const positionRaw = expectString(value.dataLabelPosition, `${field}.dataLabelPosition`)
+    if (!CHART_LABEL_POSITIONS.has(positionRaw)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.dataLabelPosition must be one of center, inside-end, outside-end`,
+      )
+    }
+    dataLabelPosition = positionRaw as WorkbookChartEdit['dataLabelPosition']
+  }
+  let dataLabelFormat: string | undefined
+  if (value.dataLabelFormat !== undefined && value.dataLabelFormat !== null) {
+    dataLabelFormat = expectString(value.dataLabelFormat, `${field}.dataLabelFormat`)
+    if (dataLabelFormat.length > 64) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.dataLabelFormat exceeds 64 characters`,
+      )
+    }
+  }
+  let axisTitles: WorkbookChartEdit['axisTitles']
+  if (value.axisTitles !== undefined && value.axisTitles !== null) {
+    if (!isRecord(value.axisTitles)) {
+      throw new OfficeValidationError('validation', `${field}.axisTitles must be an object`)
+    }
+    const category =
+      value.axisTitles.category === undefined || value.axisTitles.category === null
+        ? null
+        : expectString(value.axisTitles.category, `${field}.axisTitles.category`)
+    const valueTitle =
+      value.axisTitles.value === undefined || value.axisTitles.value === null
+        ? null
+        : expectString(value.axisTitles.value, `${field}.axisTitles.value`)
+    for (const side of [category, valueTitle]) {
+      if (side !== null && side.length > 255) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.axisTitles entries exceed 255 characters`,
+        )
+      }
+    }
+    for (const key of Object.keys(value.axisTitles)) {
+      if (key !== 'category' && key !== 'value') {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.axisTitles carries an unknown field "${key}"`,
+        )
+      }
+    }
+    axisTitles = {
+      ...(category !== null ? { category } : {}),
+      ...(valueTitle !== null ? { value: valueTitle } : {}),
+    }
+  }
+  let pointColors: Record<string, Record<string, string>> | undefined
+  if (value.pointColors !== undefined && value.pointColors !== null) {
+    if (!isRecord(value.pointColors)) {
+      throw new OfficeValidationError('validation', `${field}.pointColors must be an object`)
+    }
+    const out: Record<string, Record<string, string>> = {}
+    for (const [seriesKey, seriesEntry] of Object.entries(value.pointColors)) {
+      expectChartIndexKey(seriesKey, `${field}.pointColors key "${seriesKey}"`)
+      if (!isRecord(seriesEntry)) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.pointColors["${seriesKey}"] must be an object`,
+        )
+      }
+      const points: Record<string, string> = {}
+      for (const [pointKey, pointEntry] of Object.entries(seriesEntry)) {
+        expectChartIndexKey(pointKey, `${field}.pointColors["${seriesKey}"] key "${pointKey}"`)
+        points[pointKey] = expectChartHexColor(
+          pointEntry,
+          `${field}.pointColors["${seriesKey}"]["${pointKey}"]`,
+        )
+      }
+      out[seriesKey] = points
+    }
+    pointColors = out
+  }
+  let grouping: WorkbookChartEdit['grouping']
+  if (value.grouping !== undefined && value.grouping !== null) {
+    const groupingRaw = expectString(value.grouping, `${field}.grouping`)
+    if (!CHART_GROUPINGS.has(groupingRaw)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.grouping must be one of clustered, stacked, percentStacked, standard`,
+      )
+    }
+    grouping = groupingRaw as WorkbookChartEdit['grouping']
+  }
+  let gridlines: boolean | undefined
+  if (value.gridlines !== undefined && value.gridlines !== null) {
+    gridlines = expectBoolean(value.gridlines, `${field}.gridlines`)
+  }
+  let valueAxis: WorkbookChartEdit['valueAxis']
+  if (value.valueAxis !== undefined && value.valueAxis !== null) {
+    if (!isRecord(value.valueAxis)) {
+      throw new OfficeValidationError('validation', `${field}.valueAxis must be an object`)
+    }
+    const min =
+      value.valueAxis.min === undefined || value.valueAxis.min === null
+        ? null
+        : expectFiniteNumber(value.valueAxis.min, `${field}.valueAxis.min`)
+    const max =
+      value.valueAxis.max === undefined || value.valueAxis.max === null
+        ? null
+        : expectFiniteNumber(value.valueAxis.max, `${field}.valueAxis.max`)
+    for (const key of Object.keys(value.valueAxis)) {
+      if (key !== 'min' && key !== 'max') {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.valueAxis carries an unknown field "${key}"`,
+        )
+      }
+    }
+    valueAxis = {
+      ...(min !== null ? { min } : {}),
+      ...(max !== null ? { max } : {}),
+    }
+    if (min === null && max === null) {
+      throw new OfficeValidationError('validation', `${field}.valueAxis needs min or max`)
+    }
+  }
+  let gapWidthPct: number | undefined
+  if (value.gapWidthPct !== undefined && value.gapWidthPct !== null) {
+    gapWidthPct = expectBoundedInteger(value.gapWidthPct, 0, 500, `${field}.gapWidthPct`)
+  }
+  let holeSizePct: number | undefined
+  if (value.holeSizePct !== undefined && value.holeSizePct !== null) {
+    holeSizePct = expectBoundedInteger(value.holeSizePct, 10, 90, `${field}.holeSizePct`)
+  }
+  let explosionPct: number | undefined
+  if (value.explosionPct !== undefined && value.explosionPct !== null) {
+    explosionPct = expectBoundedInteger(value.explosionPct, 0, 400, `${field}.explosionPct`)
+  }
+  let pointExplosions: Record<string, number> | undefined
+  if (value.pointExplosions !== undefined && value.pointExplosions !== null) {
+    if (!isRecord(value.pointExplosions)) {
+      throw new OfficeValidationError('validation', `${field}.pointExplosions must be an object`)
+    }
+    const out: Record<string, number> = {}
+    for (const [key, entry] of Object.entries(value.pointExplosions)) {
+      expectChartIndexKey(key, `${field}.pointExplosions key "${key}"`)
+      out[key] = expectBoundedInteger(entry, 0, 400, `${field}.pointExplosions["${key}"]`)
+    }
+    pointExplosions = out
+  }
+  let seriesSet: readonly ChartSeriesSetEntry[] | undefined
+  if (value.seriesSet !== undefined && value.seriesSet !== null) {
+    seriesSet = expectArray(value.seriesSet, `${field}.seriesSet`, (entry, position) =>
+      expectChartSeriesSetEntry(entry, `${field}.seriesSet[${position}]`),
+    )
+    if (seriesSet.length === 0) {
+      throw new OfficeValidationError('validation', `${field}.seriesSet must not be empty`)
+    }
+    if (seriesSet.length > MAX_CHART_SERIES) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.seriesSet exceeds ${MAX_CHART_SERIES} entries`,
+      )
+    }
+  }
+  let series: readonly ChartSeriesEdit[] | undefined
+  if (value.series !== undefined && value.series !== null) {
+    series = expectArray(value.series, `${field}.series`, (entry, position) =>
+      expectChartSeriesEdit(entry, `${field}.series[${position}]`),
+    )
+    if (series.length > MAX_CHART_SERIES) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.series exceeds ${MAX_CHART_SERIES} entries`,
       )
     }
   }
   for (const key of Object.keys(value)) {
-    if (!['sheetName', 'anchor', 'image'].includes(key)) {
+    if (
+      ![
+        'chartPath',
+        'title',
+        'chartType',
+        'seriesColors',
+        'legend',
+        'dataLabels',
+        'dataLabelPosition',
+        'dataLabelFormat',
+        'axisTitles',
+        'pointColors',
+        'grouping',
+        'gridlines',
+        'valueAxis',
+        'gapWidthPct',
+        'holeSizePct',
+        'explosionPct',
+        'pointExplosions',
+        'seriesSet',
+        'series',
+      ].includes(key)
+    ) {
       throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
     }
   }
-  return { sheetName, anchor, image: { mediaType, base64 } }
+  const hasAnyChange =
+    title !== undefined ||
+    chartType !== undefined ||
+    (seriesColors !== undefined && Object.keys(seriesColors).length > 0) ||
+    (pointColors !== undefined && Object.keys(pointColors).length > 0) ||
+    legend !== undefined ||
+    axisTitles !== undefined ||
+    dataLabels !== undefined ||
+    dataLabelPosition !== undefined ||
+    dataLabelFormat !== undefined ||
+    grouping !== undefined ||
+    gridlines !== undefined ||
+    valueAxis !== undefined ||
+    gapWidthPct !== undefined ||
+    holeSizePct !== undefined ||
+    explosionPct !== undefined ||
+    (pointExplosions !== undefined && Object.keys(pointExplosions).length > 0) ||
+    (seriesSet !== undefined && seriesSet.length > 0) ||
+    (series !== undefined && series.length > 0)
+  if (!hasAnyChange) {
+    throw new OfficeValidationError('validation', `${field} needs at least one property change`)
+  }
+  return {
+    chartPath,
+    ...(title !== undefined ? { title } : {}),
+    ...(chartType !== undefined ? { chartType } : {}),
+    ...(seriesColors !== undefined ? { seriesColors } : {}),
+    ...(legend !== undefined ? { legend } : {}),
+    ...(dataLabels !== undefined ? { dataLabels } : {}),
+    ...(dataLabelPosition !== undefined ? { dataLabelPosition } : {}),
+    ...(dataLabelFormat !== undefined ? { dataLabelFormat } : {}),
+    ...(axisTitles !== undefined ? { axisTitles } : {}),
+    ...(pointColors !== undefined ? { pointColors } : {}),
+    ...(grouping !== undefined ? { grouping } : {}),
+    ...(gridlines !== undefined ? { gridlines } : {}),
+    ...(valueAxis !== undefined ? { valueAxis } : {}),
+    ...(gapWidthPct !== undefined ? { gapWidthPct } : {}),
+    ...(holeSizePct !== undefined ? { holeSizePct } : {}),
+    ...(explosionPct !== undefined ? { explosionPct } : {}),
+    ...(pointExplosions !== undefined ? { pointExplosions } : {}),
+    ...(seriesSet !== undefined ? { seriesSet } : {}),
+    ...(series !== undefined ? { series } : {}),
+  }
 }
 
 /**
@@ -3004,6 +3844,18 @@ function parseSaveWorkbookRequest(
         `savePlan.visualEdits exceeds ${MAX_VISUAL_EDITS} entries`,
       )
     }
+    // EXCEL-023: surgical semantic edits to file-native charts. Strictly
+    // validated — nothing unvalidated reaches the engine.
+    const chartEdits =
+      body.savePlan.chartEdits !== undefined && body.savePlan.chartEdits !== null
+        ? expectArray(body.savePlan.chartEdits, 'savePlan.chartEdits', expectWorkbookChartEdit)
+        : undefined
+    if (chartEdits !== undefined && chartEdits.length > MAX_CHART_EDITS) {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.chartEdits exceeds ${MAX_CHART_EDITS} entries`,
+      )
+    }
     return {
       fileName,
       fileBytes,
@@ -3019,6 +3871,7 @@ function parseSaveWorkbookRequest(
         ...(tableAdditions && tableAdditions.length > 0 ? { tableAdditions } : {}),
         ...(visualAdditions && visualAdditions.length > 0 ? { visualAdditions } : {}),
         ...(visualEdits && visualEdits.length > 0 ? { visualEdits } : {}),
+        ...(chartEdits && chartEdits.length > 0 ? { chartEdits } : {}),
       },
     }
   }
@@ -3097,6 +3950,7 @@ async function handleSaveWorkbook(
   const tableAdditions = req.savePlan.tableAdditions ?? []
   const visualAdditions = req.savePlan.visualAdditions ?? []
   const visualEdits = req.savePlan.visualEdits ?? []
+  const chartEdits = req.savePlan.chartEdits ?? []
   let mutation
   try {
     // filterStates is argument 6 (after chartEdits/sheetPlan): the canonical
@@ -3120,7 +3974,7 @@ async function handleSaveWorkbook(
       buf,
       edits,
       structuralOps,
-      [],
+      chartEdits,
       undefined,
       filterStates,
       [],

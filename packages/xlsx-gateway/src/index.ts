@@ -66,6 +66,9 @@ export type {
   WorkbookVisualEdit,
 } from './types.js'
 
+// ── Chart additions (drawing-add family) ──
+export type { ChartAdd, ChartAddSeries } from './gateway/xlsx-drawing-add.js'
+
 // ── Sheet edit plan ──
 export type { SheetEditPlan, SheetAllocation } from './gateway/xlsx-sheets.js'
 export { SheetEditError, validateSheetName } from './gateway/xlsx-sheets.js'
