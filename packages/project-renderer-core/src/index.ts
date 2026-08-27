@@ -18,7 +18,12 @@
  * the PROJECT-025 calendar visualization surface (the injected canonical
  * working-time query — no second calendar engine — the calendar catalog
  * echo, the working/non-working band projection, and the timeline /
- * per-row calendar surfaces).
+ * per-row calendar surfaces), and the PROJECT-026 critical-path / resource
+ * visualization surfaces (the canonical critical/float echo projected from
+ * the DerivedSchedule join — no second CPM engine — the slack-bar geometry,
+ * and the both-endpoints critical-link classification; the injected
+ * canonical resource-allocation query — no second capacity engine — the
+ * utilization band projection with the authority's over-allocation flag).
  * Hosts (Electron desktop, web) render these projections and dispatch these
  * intents; the renderer core owns NO Project semantics — scheduling
  * authority stays with the scheduling engine, semantic mutations stay
@@ -175,3 +180,22 @@ export {
   buildCalendarSurface,
   classifyCalendarBands,
 } from './calendar.js'
+// ---- PROJECT-026 — critical-path / resource visualization ----
+export {
+  type ProjectCriticalPathSurface,
+  type ProjectTaskFloat,
+  type ProjectTaskSlackGeometry,
+  buildCriticalPath,
+} from './critical-path.js'
+export {
+  RESOURCE_ALLOCATION_FAILED,
+  type ProjectResourceBand,
+  type ProjectResourceUtilization,
+  type ProjectResourceViewSurface,
+  type ResourceAllocation,
+  type ResourceAllocationQuery,
+  type ResourceAllocationSegment,
+  type ResourceSurfaceStatus,
+  type ResourceViewInput,
+  buildResourceUtilization,
+} from './resources.js'

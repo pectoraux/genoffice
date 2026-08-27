@@ -5,6 +5,7 @@ export * from './graph.js'
 export * from './schedule.js'
 export * from './baseline.js'
 export * from './leveling.js'
+export * from './allocation.js'
 
 // PROJECT-013: register the canonical resource leveler with the engine
 // package's `LevelResources` command dispatch. The leveler lives in the

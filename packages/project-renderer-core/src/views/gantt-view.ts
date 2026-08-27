@@ -29,9 +29,16 @@
  * the timeline's calendar surfaces. It is a per-render input like the
  * layout inputs — never persisted view state — and is ADDITIVE: the
  * geometry surfaces are identical with or without it.
+ *
+ * PROJECT-026: the optional `resources` parameter threads the injected
+ * canonical allocation query + the current derived schedule into the
+ * timeline's resource-visualization surface (the critical-path surface
+ * joins automatically from the projection's schedule — no input needed).
+ * Per-render input, ADDITIVE geometry, exactly like `calendar`.
  */
 import type { ProjectDocument, TaskId } from '@genoffice/project-contracts'
 import type { CalendarViewInput } from '../calendar.js'
+import type { ResourceViewInput } from '../resources.js'
 import type { ProjectViewProjection } from '../projection.js'
 import type { ProjectViewState } from '../state.js'
 import { type ProjectTaskGrid, buildTaskGrid } from './grid.js'
@@ -52,7 +59,8 @@ export type GanttViewLayout = RowWindowInput
 /**
  * Builds the synchronized Gantt view: one shared row window, both panes.
  * Pure and deterministic: the same `(document, projection, state, layout,
- * calendar?)` always produces the same view; inputs are never mutated.
+ * calendar?, resources?)` always produces the same view; inputs are never
+ * mutated.
  */
 export function buildGanttView(
   document: ProjectDocument,
@@ -60,6 +68,7 @@ export function buildGanttView(
   state: ProjectViewState,
   layout: GanttViewLayout,
   calendar?: CalendarViewInput,
+  resources?: ResourceViewInput,
 ): ProjectGanttView {
   const rowWindow = buildRowWindow(projection.rows.length, layout)
   return {
@@ -71,7 +80,19 @@ export function buildGanttView(
     // PROJECT-025: the calendar input threads the injected canonical
     // working-time query into the timeline's calendar surfaces (absent →
     // no surfaces, never invented).
-    timeline: buildTimeline(document, projection, state.viewport, rowWindow, state, calendar),
+    // PROJECT-026: the resources input threads the injected canonical
+    // allocation query + the current derived schedule into the
+    // resource-visualization surface; the critical-path surface joins
+    // automatically from the projection's schedule join.
+    timeline: buildTimeline(
+      document,
+      projection,
+      state.viewport,
+      rowWindow,
+      state,
+      calendar,
+      resources,
+    ),
   }
 }
 
