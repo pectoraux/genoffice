@@ -266,6 +266,59 @@ describe('PROJECT-021 architecture — package boundaries', () => {
     expect(dependencies).toContain('readonly editingField?: EditableDependencyField')
   })
 
+  it('exposes the PROJECT-025 calendar-visualization surface from the index (query, catalog, bands, surfaces)', () => {
+    const index = srcModules['../src/index.ts'] ?? ''
+    for (const symbol of [
+      'type CalendarWorkingInterval',
+      'type CalendarWorkingTimeQuery',
+      'type CalendarSurfaceStatus',
+      'type CalendarViewInput',
+      'type ProjectCalendarBand',
+      'type ProjectCalendarCatalog',
+      'type ProjectCalendarCatalogEntry',
+      'type ProjectCalendarSurface',
+      'type ProjectRowCalendar',
+      'CALENDAR_EVALUATION_FAILED',
+      'buildCalendarCatalog',
+      'buildCalendarSurface',
+      'classifyCalendarBands',
+    ]) {
+      expect(index).toContain(symbol)
+    }
+    // The timeline carries the additive calendar surfaces (optional —
+    // present iff a working-time query was threaded, never invented).
+    const timeline = srcModules['../src/views/timeline.ts'] ?? ''
+    expect(timeline).toContain('readonly calendar?: ProjectCalendarSurface')
+    expect(timeline).toContain('readonly rowCalendars?: readonly ProjectRowCalendar[]')
+    // The gantt view threads the calendar input.
+    const ganttView = srcModules['../src/views/gantt-view.ts'] ?? ''
+    expect(ganttView).toContain('calendar?: CalendarViewInput')
+  })
+
+  it('keeps the calendar projection free of calendar-evaluation semantics (no second calendar engine)', () => {
+    // The calendar module may echo definitions and do interval algebra, but
+    // it must never DECOMPOSE a date (weekday/date-part extraction is the
+    // primitive every calendar evaluation needs) nor key exceptions by
+    // date — without these, no working-time derivation is possible.
+    const calendar = srcModules['../src/calendar.ts'] ?? ''
+    expect(calendar).not.toMatch(
+      /getUTCDay|getUTCFullYear|getUTCMonth|getUTCDate|getUTCHours|getUTCMinutes/,
+    )
+    expect(calendar).not.toMatch(/new Date\(Date\.UTC\(|dateKey/)
+    expect(calendar).not.toContain('toISOString().slice')
+    // The only evaluation entry is the INJECTED query (a type declaration,
+    // never an implementation) — the ScheduleRunner precedent.
+    expect(calendar).toContain('export type CalendarWorkingTimeQuery =')
+    expect(calendar).toContain('workingTime: CalendarWorkingTimeQuery')
+    // The scheduling package stays un-imported (also covered by the global
+    // import scan; asserted here for the calendar surface explicitly).
+    expect(calendar).not.toContain("from '@genoffice/project-scheduling'")
+    // The timeline composes surfaces through the injected query only.
+    const timeline = srcModules['../src/views/timeline.ts'] ?? ''
+    expect(timeline).toContain('buildCalendarSurface')
+    expect(timeline).not.toContain("from '@genoffice/project-scheduling'")
+  })
+
   it('keeps the view models free of pixel/DOM APIs (fraction space only)', () => {
     const viewFiles = Object.entries(srcModules).filter(([file]) =>
       file.startsWith('../src/views/'),
@@ -324,6 +377,14 @@ describe('PROJECT-021 architecture — CI and spec lockstep', () => {
     expect(workItems).toContain('commitTaskEditThroughSession')
     expect(dependencyGraph).toContain('Package dependency edges (PROJECT-023)')
     expect(verificationMatrix).toContain('PROJECT-023 evidence requirements')
+  })
+
+  it('the spec set carries the PROJECT-025 sections in lockstep', () => {
+    expect(requirements).toContain('PROJECT-025 — Calendar visualization')
+    expect(workItems).toMatch(/\|\s*PROJECT-025\s*\|/)
+    expect(workItems).toContain('CalendarWorkingTimeQuery')
+    expect(dependencyGraph).toContain('Package dependency edges (PROJECT-025)')
+    expect(verificationMatrix).toContain('PROJECT-025 evidence requirements')
   })
 
   it('leaves the frozen architecture lock untouched (renderer boundary already sanctioned)', () => {

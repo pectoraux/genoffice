@@ -23,8 +23,15 @@
  * requires a pixel tolerance against the route polyline and stays a host
  * concern. What hosts DO with a hit (selection intents, editing) is
  * PROJECT-023/024 scope.
+ *
+ * PROJECT-025: the optional `calendar` parameter threads the injected
+ * canonical working-time query (+ optional background calendar id) into
+ * the timeline's calendar surfaces. It is a per-render input like the
+ * layout inputs — never persisted view state — and is ADDITIVE: the
+ * geometry surfaces are identical with or without it.
  */
 import type { ProjectDocument, TaskId } from '@genoffice/project-contracts'
+import type { CalendarViewInput } from '../calendar.js'
 import type { ProjectViewProjection } from '../projection.js'
 import type { ProjectViewState } from '../state.js'
 import { type ProjectTaskGrid, buildTaskGrid } from './grid.js'
@@ -44,14 +51,15 @@ export type GanttViewLayout = RowWindowInput
 
 /**
  * Builds the synchronized Gantt view: one shared row window, both panes.
- * Pure and deterministic: the same `(document, projection, state, layout)`
- * always produces the same view; inputs are never mutated.
+ * Pure and deterministic: the same `(document, projection, state, layout,
+ * calendar?)` always produces the same view; inputs are never mutated.
  */
 export function buildGanttView(
   document: ProjectDocument,
   projection: ProjectViewProjection,
   state: ProjectViewState,
   layout: GanttViewLayout,
+  calendar?: CalendarViewInput,
 ): ProjectGanttView {
   const rowWindow = buildRowWindow(projection.rows.length, layout)
   return {
@@ -60,7 +68,10 @@ export function buildGanttView(
     // PROJECT-024: the full state (not just the viewport) flows into the
     // timeline so the dependency-link surface carries the interaction-state
     // reflection (selected/editingField) alongside its geometry.
-    timeline: buildTimeline(document, projection, state.viewport, rowWindow, state),
+    // PROJECT-025: the calendar input threads the injected canonical
+    // working-time query into the timeline's calendar surfaces (absent →
+    // no surfaces, never invented).
+    timeline: buildTimeline(document, projection, state.viewport, rowWindow, state, calendar),
   }
 }
 

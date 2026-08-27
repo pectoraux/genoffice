@@ -14,7 +14,11 @@
  * through the session), and the PROJECT-024 dependency-editing surface
  * (deterministic link-identity allocation and creation defaults, link
  * selection/editing intents, the dependency draft → semantic-command
- * commit flow, and the dependency-link interaction-state reflection).
+ * commit flow, and the dependency-link interaction-state reflection), and
+ * the PROJECT-025 calendar visualization surface (the injected canonical
+ * working-time query — no second calendar engine — the calendar catalog
+ * echo, the working/non-working band projection, and the timeline /
+ * per-row calendar surfaces).
  * Hosts (Electron desktop, web) render these projections and dispatch these
  * intents; the renderer core owns NO Project semantics — scheduling
  * authority stays with the scheduling engine, semantic mutations stay
@@ -108,7 +112,12 @@ export {
   type ProjectLinkPoint,
   buildDependencies,
 } from './views/dependencies.js'
-export { type ProjectTimeline, type ProjectTimelineRow, buildTimeline } from './views/timeline.js'
+export {
+  type ProjectTimeline,
+  type ProjectTimelineRow,
+  type ProjectRowCalendar,
+  buildTimeline,
+} from './views/timeline.js'
 export {
   type GanttHitPoint,
   type GanttHitTarget,
@@ -151,3 +160,18 @@ export {
   initialDependencyEditDraft,
 } from './dependency-editing.js'
 export { type DependencyEditFlowOutcome, commitDependencyEditThroughSession } from './edit-flow.js'
+// ---- PROJECT-025 — calendar visualization ----
+export {
+  CALENDAR_EVALUATION_FAILED,
+  type CalendarSurfaceStatus,
+  type CalendarViewInput,
+  type CalendarWorkingInterval,
+  type CalendarWorkingTimeQuery,
+  type ProjectCalendarBand,
+  type ProjectCalendarCatalog,
+  type ProjectCalendarCatalogEntry,
+  type ProjectCalendarSurface,
+  buildCalendarCatalog,
+  buildCalendarSurface,
+  classifyCalendarBands,
+} from './calendar.js'
