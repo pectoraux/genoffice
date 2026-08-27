@@ -1127,3 +1127,24 @@ Stage Summary:
 
 - Format-gate defect found by CI and corrected (this is exactly why the remote CI gate matters — the sandbox-only verification missed it).
 - Workflow state: PR_OPEN (PR #20). NOT VERIFIED — architect owns that transition.
+
+---
+
+Task ID: EXCEL-022-ci-round2
+Agent: Z.ai (Implementation Operator)
+Task: CI evidence on the format-corrected head 0a559f3 (PR #20).
+
+Work Log:
+
+- Round-2 CI on 0a559f3 (run 33033335267), all four checks final:
+  - `web` (the canonical office gate): SUCCESS — every step green. Typecheck (@contractor/web) clean; unit tests web 216/216 + web-host 78/78 + contractor-core 423 passed + 4 skipped; production build green; Playwright browser E2E **101 passed (9.7m)** on GitHub's infrastructure — including the 12 new ribbon-images tests and the architect's sort/formula semantic gate.
+  - `test`: FAILURE — pre-existing lint debt. All 20 annotations live in frozen/pre-existing files (apps/docs, apps/sheets, apps/slides, apps/web/src/screens/BOQ.tsx). Cross-checked against the PR's changed-file list: ZERO overlap with EXCEL-022 files. Identical in character to the documented baseline that also failed on project-office and every prior office PR.
+  - `e2e`: FAILURE — the frozen desktop Electron suite (InvalidSessionError/sandbox), untouched by this PR (frozen surfaces = empty diff); same documented baseline as EXCEL-018/020.
+  - `foundation`: FAILURE — the branch-isolation guard rejects ANY branch touching packages/xlsx-gateway/ by design; verified identical failures on excel-020-protection, excel-021-tables, and web-office-editor before their merges. Not an office-gate signal.
+- Round-1 → round-2 delta: the ONLY new failure round 1 exposed was the Prettier format violation (fixed in 0a559f3); round 2 confirms `test` now fails only on the pre-existing debt set.
+
+Stage Summary:
+
+- The canonical web gate is GREEN in CI on 0a559f3 with the full 101-test browser E2E. EXCEL-022 stands at PR_OPEN with complete local + CI evidence.
+- Remaining pre-merge step per the mandated ordering: architect review of the actual diff (PR #20). Post-merge: production deploy → deployed E2E against genoffice.vercel.app → independent byte inspection.
+- Workflow state: PR_OPEN. NOT VERIFIED — the architect owns that transition.
