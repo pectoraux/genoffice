@@ -1167,3 +1167,22 @@ Stage Summary:
 
 - Both architect blockers corrected at the root: the browser image module now reaches Univer ONLY through the public facade surface (guarded by a new architecture test), and absolute-anchored pictures fail closed — omitted from the browser model, never relocated, preserved untouched in the file.
 - Workflow state: CHANGES REQUESTED → corrections pushed for re-review (PR #20). NOT VERIFIED — the architect owns that transition and explicitly re-reviews the corrected diff.
+
+---
+
+Task ID: EXCEL-022-architect-review-ci
+Agent: Z.ai (Implementation Operator)
+Task: CI evidence for the architect-review correction head 4b59a2c (PR #20).
+
+Work Log:
+
+- CI on 4b59a2c (the correction commit), all four checks final:
+  - `web` (the canonical office gate): SUCCESS — typecheck clean, web unit 217/217, web-host 78/78, contractor-core 423+4sk, production build green, Playwright browser E2E **102 passed (10.4m)** on GitHub's infrastructure — including the 13 ribbon-images tests (move/resize exercise the new public toBuilder().buildAsync() geometry read end-to-end; test 15 proves the absolute-anchor fail-closed omission).
+  - `test`: FAILURE — pre-existing lint debt; all 9 annotated files are frozen/pre-existing, ZERO overlap with the EXCEL-022 file set, and ZERO format annotations (the round-1 Prettier defect stays corrected).
+  - `e2e`: FAILURE — the frozen desktop Electron suite baseline (untouched; frozen surfaces = empty diff).
+  - `foundation`: FAILURE — the branch-isolation guard that rejects any branch touching packages/xlsx-gateway/ by design (identical on every prior office PR).
+
+Stage Summary:
+
+- Both architect blockers corrected, all local gates green, and the web CI gate green with the full 102-test browser E2E on the correction head 4b59a2c.
+- Workflow state: CHANGES REQUESTED → corrections pushed, awaiting architect re-review of the actual diff. NOT VERIFIED — the architect owns that transition.
