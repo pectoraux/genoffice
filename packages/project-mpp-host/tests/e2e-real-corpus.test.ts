@@ -169,10 +169,20 @@ async function rawMspdi(filename: string): Promise<Uint8Array> {
   return (conversion as { mspdiBytes: Uint8Array }).mspdiBytes
 }
 
+// Every test in this file spawns REAL JVM sidecar conversions under the
+// enforced isolation wrapper. The vitest default per-test budget (5 s) is
+// marginal for the file's FIRST cold conversion on a slow shared CI runner
+// (observed >5 s on pull_request runners while the identical suite passes
+// on the push runner and locally — the documented PROJECT-019/020 transient
+// class). Each conversion test therefore carries an EXPLICIT budget: 30 s
+// for single-pass pipelines (6–10× the observed wall time; still catches
+// real hangs) and 120 s for the two-pass I12 determinism runs — the exact
+// discipline the PROJECT-020 CI round applied to e2e-compatibility.test.ts.
+
 // ── I01–I04: version imports ───────────────────────────────────────────
 
 describe('I01 — MPP8 import (DurationTest8.mpp, Project 98)', () => {
-  it('imports deterministically to the manifest contract', async () => {
+  it('imports deterministically to the manifest contract', { timeout: 30_000 }, async () => {
     const { document, derived } = await importCorpusFile('DurationTest8.mpp')
     // MPP8-specific evidence: 8 real tasks, one baseline, milestone-free
     expect(document.tasks.every((t) => t.milestone === false)).toBe(true)
@@ -184,27 +194,35 @@ describe('I01 — MPP8 import (DurationTest8.mpp, Project 98)', () => {
 })
 
 describe('I02 — MPP9 import (SubprojectA-9.mpp, Project 2000/2002)', () => {
-  it('imports the local subproject tasks, dependency, and calendar', async () => {
-    const { document, derived } = await importCorpusFile('SubprojectA-9.mpp')
-    expect(document.dependencies).toHaveLength(1)
-    expect(document.calendars.map((c) => c.id)).toContain('c1')
-    expect(derived.projectFinish).toBe('2006-08-29T17:00:00.000Z')
-    // Cross-file subproject expansion is out of the canonical model
-    // (documented Tier-C boundary): only the local tasks imported.
-  })
+  it(
+    'imports the local subproject tasks, dependency, and calendar',
+    { timeout: 30_000 },
+    async () => {
+      const { document, derived } = await importCorpusFile('SubprojectA-9.mpp')
+      expect(document.dependencies).toHaveLength(1)
+      expect(document.calendars.map((c) => c.id)).toContain('c1')
+      expect(derived.projectFinish).toBe('2006-08-29T17:00:00.000Z')
+      // Cross-file subproject expansion is out of the canonical model
+      // (documented Tier-C boundary): only the local tasks imported.
+    },
+  )
 })
 
 describe('I03 — MPP12 import (mpp12relations.mpp, Project 2003/2007)', () => {
-  it('imports with the same structural contract as its MPP14 sibling', async () => {
-    const { document, derived } = await importCorpusFile('mpp12relations.mpp')
-    expect(document.dependencies).toHaveLength(4)
-    expect(document.tasks).toHaveLength(5)
-    expect(derived.projectFinish).toBe('2006-09-26T17:00:00.000Z')
-  })
+  it(
+    'imports with the same structural contract as its MPP14 sibling',
+    { timeout: 30_000 },
+    async () => {
+      const { document, derived } = await importCorpusFile('mpp12relations.mpp')
+      expect(document.dependencies).toHaveLength(4)
+      expect(document.tasks).toHaveLength(5)
+      expect(derived.projectFinish).toBe('2006-09-26T17:00:00.000Z')
+    },
+  )
 })
 
 describe('I04 — MPP14 import (mpp14relations.mpp, Project 2010+)', () => {
-  it('imports tasks and predecessor links', async () => {
+  it('imports tasks and predecessor links', { timeout: 30_000 }, async () => {
     const { document } = await importCorpusFile('mpp14relations.mpp')
     expect(document.dependencies).toHaveLength(4)
     expect(document.dependencies.every((d) => d.type.length === 2)).toBe(true)
@@ -214,185 +232,241 @@ describe('I04 — MPP14 import (mpp14relations.mpp, Project 2010+)', () => {
 // ── I05–I09: the five normalizations against REAL files ────────────────
 
 describe('I05 — N1 sentinel CalendarUID strip (SubprojectA-9.mpp)', () => {
-  it('every stripped sentinel is diagnosed with a task entity id', async () => {
-    const { result } = await importCorpusFile('SubprojectA-9.mpp')
-    const n1 = result.diagnostics.filter((d) => d.code === MPP_NORMALIZED_SENTINEL_REFERENCE)
-    expect(n1).toHaveLength(3)
-    expect(n1.every((d) => /^t\d+$/.test(d.entityId ?? ''))).toBe(true)
-  })
+  it(
+    'every stripped sentinel is diagnosed with a task entity id',
+    { timeout: 30_000 },
+    async () => {
+      const { result } = await importCorpusFile('SubprojectA-9.mpp')
+      const n1 = result.diagnostics.filter((d) => d.code === MPP_NORMALIZED_SENTINEL_REFERENCE)
+      expect(n1).toHaveLength(3)
+      expect(n1.every((d) => /^t\d+$/.test(d.entityId ?? ''))).toBe(true)
+    },
+  )
 
-  it('negative control: the RAW payload fails in the accepted importer', async () => {
-    const raw = await rawMspdi('SubprojectA-9.mpp')
-    expect(
-      importMspdi(raw).diagnostics.some(
-        (d) => d.code === 'INVALID_MSPDI_REFERENCE' && d.severity === 'error',
-      ),
-    ).toBe(true)
-  })
+  it(
+    'negative control: the RAW payload fails in the accepted importer',
+    { timeout: 30_000 },
+    async () => {
+      const raw = await rawMspdi('SubprojectA-9.mpp')
+      expect(
+        importMspdi(raw).diagnostics.some(
+          (d) => d.code === 'INVALID_MSPDI_REFERENCE' && d.severity === 'error',
+        ),
+      ).toBe(true)
+    },
+  )
 })
 
 describe('I06 — N2 sentinel BaseCalendarUID strip (SubprojectA-9.mpp)', () => {
-  it('the base-calendar sentinel is diagnosed with a calendar entity id', async () => {
-    const { result } = await importCorpusFile('SubprojectA-9.mpp')
-    const n2 = result.diagnostics.filter((d) => d.code === MPP_NORMALIZED_BASE_CALENDAR_SENTINEL)
-    expect(n2).toHaveLength(1)
-    expect(n2[0].entityId).toMatch(/^c\d+$/)
-  })
+  it(
+    'the base-calendar sentinel is diagnosed with a calendar entity id',
+    { timeout: 30_000 },
+    async () => {
+      const { result } = await importCorpusFile('SubprojectA-9.mpp')
+      const n2 = result.diagnostics.filter((d) => d.code === MPP_NORMALIZED_BASE_CALENDAR_SENTINEL)
+      expect(n2).toHaveLength(1)
+      expect(n2[0].entityId).toMatch(/^c\d+$/)
+    },
+  )
 
-  it('negative control: the RAW payload reports MISSING_BASE_CALENDAR', async () => {
-    const raw = await rawMspdi('SubprojectA-9.mpp')
-    expect(importMspdi(raw).diagnostics.some((d) => d.code === 'MISSING_BASE_CALENDAR')).toBe(true)
-  })
+  it(
+    'negative control: the RAW payload reports MISSING_BASE_CALENDAR',
+    { timeout: 30_000 },
+    async () => {
+      const raw = await rawMspdi('SubprojectA-9.mpp')
+      expect(importMspdi(raw).diagnostics.some((d) => d.code === 'MISSING_BASE_CALENDAR')).toBe(
+        true,
+      )
+    },
+  )
 })
 
 describe('I07 — N3 hidden placeholder records (mpp14relations.mpp)', () => {
-  it('the uid-0 placeholder task AND the null-name placeholder resource are filtered', async () => {
-    const { result, document } = await importCorpusFile('mpp14relations.mpp')
-    const n3 = result.diagnostics.filter((d) => d.code === MPP_NORMALIZED_PLACEHOLDER_RECORD)
-    expect(n3).toHaveLength(2)
-    expect(n3.map((d) => d.entityId).sort()).toEqual(['r0', 't0'])
-    expect(document.tasks.some((t) => t.id === 't0')).toBe(false)
-  })
+  it(
+    'the uid-0 placeholder task AND the null-name placeholder resource are filtered',
+    { timeout: 30_000 },
+    async () => {
+      const { result, document } = await importCorpusFile('mpp14relations.mpp')
+      const n3 = result.diagnostics.filter((d) => d.code === MPP_NORMALIZED_PLACEHOLDER_RECORD)
+      expect(n3).toHaveLength(2)
+      expect(n3.map((d) => d.entityId).sort()).toEqual(['r0', 't0'])
+      expect(document.tasks.some((t) => t.id === 't0')).toBe(false)
+    },
+  )
 
-  it('negative control: the RAW payload reports INVALID_OUTLINE_LEVEL', async () => {
-    const raw = await rawMspdi('mpp14relations.mpp')
-    expect(importMspdi(raw).diagnostics.some((d) => d.code === 'INVALID_OUTLINE_LEVEL')).toBe(true)
-  })
+  it(
+    'negative control: the RAW payload reports INVALID_OUTLINE_LEVEL',
+    { timeout: 30_000 },
+    async () => {
+      const raw = await rawMspdi('mpp14relations.mpp')
+      expect(importMspdi(raw).diagnostics.some((d) => d.code === 'INVALID_OUTLINE_LEVEL')).toBe(
+        true,
+      )
+    },
+  )
 })
 
 describe('I08 — N4 until-midnight working periods (sample.mpp)', () => {
-  it('the Night Shift calendar keeps its 23:00→24:00 period as endMinute 1440', async () => {
-    const { document } = await importCorpusFile('sample.mpp')
-    const nightShift = document.calendars.find((c) => c.name === 'Night Shift')
-    expect(nightShift).toBeDefined()
-    // Some weekday of the night-shift calendar carries {1380, 1440}:
-    const allPeriods = Object.values(nightShift!.workingWeek).flat()
-    expect(allPeriods).toContainEqual({ startMinute: 1380, endMinute: 1440 })
-  })
+  it(
+    'the Night Shift calendar keeps its 23:00→24:00 period as endMinute 1440',
+    { timeout: 30_000 },
+    async () => {
+      const { document } = await importCorpusFile('sample.mpp')
+      const nightShift = document.calendars.find((c) => c.name === 'Night Shift')
+      expect(nightShift).toBeDefined()
+      // Some weekday of the night-shift calendar carries {1380, 1440}:
+      const allPeriods = Object.values(nightShift!.workingWeek).flat()
+      expect(allPeriods).toContainEqual({ startMinute: 1380, endMinute: 1440 })
+    },
+  )
 
-  it('negative control: the RAW payload drops the period with INVALID_MSPDI_CALENDAR', async () => {
-    const raw = await rawMspdi('sample.mpp')
-    expect(
-      importMspdi(raw).diagnostics.some(
-        (d) => d.code === 'INVALID_MSPDI_CALENDAR' && d.severity === 'error',
-      ),
-    ).toBe(true)
-  })
+  it(
+    'negative control: the RAW payload drops the period with INVALID_MSPDI_CALENDAR',
+    { timeout: 30_000 },
+    async () => {
+      const raw = await rawMspdi('sample.mpp')
+      expect(
+        importMspdi(raw).diagnostics.some(
+          (d) => d.code === 'INVALID_MSPDI_CALENDAR' && d.severity === 'error',
+        ),
+      ).toBe(true)
+    },
+  )
 })
 
 describe('I09 — N5 unassigned assignments (mpp14relations.mpp)', () => {
-  it('all five -65535 placeholder assignments are dropped with warnings; none survive', async () => {
-    const { result, document } = await importCorpusFile('mpp14relations.mpp')
-    const n5 = result.diagnostics.filter((d) => d.code === MPP_DROPPED_UNASSIGNED_ASSIGNMENT)
-    expect(n5).toHaveLength(5)
-    expect(n5.every((d) => d.severity === 'warning')).toBe(true)
-    expect(document.assignments).toHaveLength(0)
-  })
+  it(
+    'all five -65535 placeholder assignments are dropped with warnings; none survive',
+    { timeout: 30_000 },
+    async () => {
+      const { result, document } = await importCorpusFile('mpp14relations.mpp')
+      const n5 = result.diagnostics.filter((d) => d.code === MPP_DROPPED_UNASSIGNED_ASSIGNMENT)
+      expect(n5).toHaveLength(5)
+      expect(n5.every((d) => d.severity === 'warning')).toBe(true)
+      expect(document.assignments).toHaveLength(0)
+    },
+  )
 
-  it('negative control: the RAW payload fails with reference errors', async () => {
-    const raw = await rawMspdi('mpp14relations.mpp')
-    expect(
-      importMspdi(raw).diagnostics.some(
-        (d) => d.code === 'INVALID_MSPDI_REFERENCE' && d.severity === 'error',
-      ),
-    ).toBe(true)
-  })
+  it(
+    'negative control: the RAW payload fails with reference errors',
+    { timeout: 30_000 },
+    async () => {
+      const raw = await rawMspdi('mpp14relations.mpp')
+      expect(
+        importMspdi(raw).diagnostics.some(
+          (d) => d.code === 'INVALID_MSPDI_REFERENCE' && d.severity === 'error',
+        ),
+      ).toBe(true)
+    },
+  )
 })
 
 // ── I10: comprehensive import (sample.mpp) ──────────────────────────────
 
 describe('I10 — comprehensive MPP import (sample.mpp)', () => {
-  it('maps every canonical surface with correct provenance-staged diagnostics', async () => {
-    const { result, document, derived } = await importCorpusFile('sample.mpp')
+  it(
+    'maps every canonical surface with correct provenance-staged diagnostics',
+    { timeout: 30_000 },
+    async () => {
+      const { result, document, derived } = await importCorpusFile('sample.mpp')
 
-    // Tasks: names, uids, hierarchy, WBS, milestones, summaries:
-    expect(document.tasks.map((t) => t.name).slice(0, 3)).toEqual([
-      'First Task',
-      'Second Task',
-      'Third task',
-    ])
-    expect(document.tasks.find((t) => t.id === 't1')).toMatchObject({
-      uid: 1,
-      name: 'First Task',
-      wbs: '1',
-      priority: 500,
-    })
-    expect(document.tasks.find((t) => t.id === 't2')?.parentTaskId).toBe('t1')
-    expect(document.tasks.find((t) => t.id === 't2')?.wbs).toBe('1.1')
-    expect(document.tasks.filter((t) => t.milestone)).toHaveLength(1)
-    expect(document.tasks.filter((t) => t.summary)).toHaveLength(4)
+      // Tasks: names, uids, hierarchy, WBS, milestones, summaries:
+      expect(document.tasks.map((t) => t.name).slice(0, 3)).toEqual([
+        'First Task',
+        'Second Task',
+        'Third task',
+      ])
+      expect(document.tasks.find((t) => t.id === 't1')).toMatchObject({
+        uid: 1,
+        name: 'First Task',
+        wbs: '1',
+        priority: 500,
+      })
+      expect(document.tasks.find((t) => t.id === 't2')?.parentTaskId).toBe('t1')
+      expect(document.tasks.find((t) => t.id === 't2')?.wbs).toBe('1.1')
+      expect(document.tasks.filter((t) => t.milestone)).toHaveLength(1)
+      expect(document.tasks.filter((t) => t.summary)).toHaveLength(4)
 
-    // Dependencies: all four relationship types + non-trivial lags:
-    const depTypes = new Set(document.dependencies.map((d) => d.type))
-    expect(depTypes).toEqual(new Set(['FS', 'SS', 'FF', 'SF']))
-    expect(document.dependencies.map((d) => d.lagMinutes)).toContain(480)
-    expect(document.dependencies.map((d) => d.lagMinutes)).toContain(-480)
+      // Dependencies: all four relationship types + non-trivial lags:
+      const depTypes = new Set(document.dependencies.map((d) => d.type))
+      expect(depTypes).toEqual(new Set(['FS', 'SS', 'FF', 'SF']))
+      expect(document.dependencies.map((d) => d.lagMinutes)).toContain(480)
+      expect(document.dependencies.map((d) => d.lagMinutes)).toContain(-480)
 
-    // Constraints: the corpus carries none (recorded honestly — the
-    // constraint surface is proven by the synthetic suites):
-    expect(document.tasks.filter((t) => t.constraint !== undefined)).toHaveLength(0)
+      // Constraints: the corpus carries none (recorded honestly — the
+      // constraint surface is proven by the synthetic suites):
+      expect(document.tasks.filter((t) => t.constraint !== undefined)).toHaveLength(0)
 
-    // Resources + assignments:
-    expect(document.resources.map((r) => r.kind)).toEqual(['work', 'work'])
-    expect(document.assignments).toHaveLength(4)
-    expect(new Set(document.assignments.map((a) => a.resourceId))).toEqual(new Set(['r1', 'r2']))
+      // Resources + assignments:
+      expect(document.resources.map((r) => r.kind)).toEqual(['work', 'work'])
+      expect(document.assignments).toHaveLength(4)
+      expect(new Set(document.assignments.map((a) => a.resourceId))).toEqual(new Set(['r1', 'r2']))
 
-    // Calendars: base + derived with inheritance preserved:
-    expect(document.calendars.map((c) => [c.id, c.name, c.baseCalendarId])).toEqual([
-      ['c1', 'Standard', undefined],
-      ['c2', 'Night Shift', undefined],
-      ['c3', 'First Resource', 'c1'],
-      ['c4', 'Second Resource', 'c2'],
-    ])
+      // Calendars: base + derived with inheritance preserved:
+      expect(document.calendars.map((c) => [c.id, c.name, c.baseCalendarId])).toEqual([
+        ['c1', 'Standard', undefined],
+        ['c2', 'Night Shift', undefined],
+        ['c3', 'First Resource', 'c1'],
+        ['c4', 'Second Resource', 'c2'],
+      ])
 
-    // Scheduling: exact derived values (hand-verified against the scheduler):
-    expect(derived.projectFinish).toBe('2003-05-26T17:00:00.000Z')
-    expect(Object.values(derived.taskSchedules).filter((s) => s.critical)).toHaveLength(2)
-    const t1 = derived.taskSchedules['t1']
-    expect(t1?.earlyStart).toBe('2003-01-07T08:00:00.000Z')
-    expect(t1?.earlyFinish).toBe('2003-05-26T17:00:00.000Z')
-    expect(t1?.critical).toBe(true)
+      // Scheduling: exact derived values (hand-verified against the scheduler):
+      expect(derived.projectFinish).toBe('2003-05-26T17:00:00.000Z')
+      expect(Object.values(derived.taskSchedules).filter((s) => s.critical)).toHaveLength(2)
+      const t1 = derived.taskSchedules['t1']
+      expect(t1?.earlyStart).toBe('2003-01-07T08:00:00.000Z')
+      expect(t1?.earlyFinish).toBe('2003-05-26T17:00:00.000Z')
+      expect(t1?.critical).toBe(true)
 
-    // Diagnostics provenance (test item #26): every stage is one of the five
-    // documented values; normalization + mspdi stages are present; zero errors.
-    const stages = new Set(result.diagnostics.map((d) => d.stage))
-    expect(
-      [...stages].every((s) =>
-        ['sidecar', 'normalization', 'mspdi', 'canonical', 'scheduling'].includes(s),
-      ),
-    ).toBe(true)
-    expect(stages.has('normalization')).toBe(true)
-    expect(stages.has('mspdi')).toBe(true)
-    expect(result.diagnostics.filter((d) => d.severity === 'error')).toHaveLength(0)
-  })
+      // Diagnostics provenance (test item #26): every stage is one of the five
+      // documented values; normalization + mspdi stages are present; zero errors.
+      const stages = new Set(result.diagnostics.map((d) => d.stage))
+      expect(
+        [...stages].every((s) =>
+          ['sidecar', 'normalization', 'mspdi', 'canonical', 'scheduling'].includes(s),
+        ),
+      ).toBe(true)
+      expect(stages.has('normalization')).toBe(true)
+      expect(stages.has('mspdi')).toBe(true)
+      expect(result.diagnostics.filter((d) => d.severity === 'error')).toHaveLength(0)
+    },
+  )
 })
 
 // ── I11: malformed / unsupported inputs (through the REAL sidecar) ─────
 
 describe('I11 — malformed/unsupported inputs', () => {
-  it('garbage bytes are deterministically refused as MPP_UNSUPPORTED_FORMAT', async () => {
-    const result = await (async () => {
-      const path = join(scratch, 'garbage.mpp')
-      writeFileSync(path, Buffer.from('this is definitely not a CFB container'))
-      return importMppFromFile(path, { launcher })
-    })()
-    expect(result.document).toEqual(emptyProjectDocument())
-    const unsupported = result.diagnostics.filter((d) => d.code === MPP_UNSUPPORTED_FORMAT)
-    expect(unsupported).toHaveLength(1)
-    expect(unsupported[0].severity).toBe('error')
-    expect(unsupported[0].stage).toBe('sidecar')
-    expect(result.diagnostics.every((d) => d.stage === 'sidecar')).toBe(true)
-  })
+  it(
+    'garbage bytes are deterministically refused as MPP_UNSUPPORTED_FORMAT',
+    { timeout: 30_000 },
+    async () => {
+      const result = await (async () => {
+        const path = join(scratch, 'garbage.mpp')
+        writeFileSync(path, Buffer.from('this is definitely not a CFB container'))
+        return importMppFromFile(path, { launcher })
+      })()
+      expect(result.document).toEqual(emptyProjectDocument())
+      const unsupported = result.diagnostics.filter((d) => d.code === MPP_UNSUPPORTED_FORMAT)
+      expect(unsupported).toHaveLength(1)
+      expect(unsupported[0].severity).toBe('error')
+      expect(unsupported[0].stage).toBe('sidecar')
+      expect(result.diagnostics.every((d) => d.stage === 'sidecar')).toBe(true)
+    },
+  )
 
-  it('a ZIP-magic file (not an OLE2 container) is refused the same way', async () => {
-    const path = join(scratch, 'zipped.mpp')
-    writeFileSync(path, Buffer.from([0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 4]))
-    const result = await importMppFromFile(path, { launcher })
-    expect(result.diagnostics.filter((d) => d.code === MPP_UNSUPPORTED_FORMAT)).toHaveLength(1)
-    expect(result.document).toEqual(emptyProjectDocument())
-  })
+  it(
+    'a ZIP-magic file (not an OLE2 container) is refused the same way',
+    { timeout: 30_000 },
+    async () => {
+      const path = join(scratch, 'zipped.mpp')
+      writeFileSync(path, Buffer.from([0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 4]))
+      const result = await importMppFromFile(path, { launcher })
+      expect(result.diagnostics.filter((d) => d.code === MPP_UNSUPPORTED_FORMAT)).toHaveLength(1)
+      expect(result.document).toEqual(emptyProjectDocument())
+    },
+  )
 
-  it('an empty file is refused the same way', async () => {
+  it('an empty file is refused the same way', { timeout: 30_000 }, async () => {
     const path = join(scratch, 'empty.mpp')
     writeFileSync(path, Buffer.alloc(0))
     const result = await importMppFromFile(path, { launcher })
@@ -415,31 +489,39 @@ describe('I12 — determinism: repeated full-pipeline runs + .gproj save/reopen'
   ]
 
   for (const filename of ALL_FILES) {
-    it(`${filename}: MPP → MPXJ → MSPDI → canonical is byte-identical across runs`, async () => {
-      const first = await importMppFromFile(join(CORPUS, filename), { launcher })
-      const second = await importMppFromFile(join(CORPUS, filename), { launcher })
-      // Canonical-document determinism (the sidecar's <CurrentDate> save
-      // stamp is non-semantic — the accepted importer ignores it):
-      expect(serializeGproj(second.document)).toEqual(serializeGproj(first.document))
-      // Scheduling determinism:
-      expect(JSON.stringify(schedule(second.document))).toBe(
-        JSON.stringify(schedule(first.document)),
-      )
-      // Diagnostic determinism (same codes, same order):
-      expect(second.diagnostics).toEqual(first.diagnostics)
-    })
+    it(
+      `${filename}: MPP → MPXJ → MSPDI → canonical is byte-identical across runs`,
+      { timeout: 120_000 },
+      async () => {
+        const first = await importMppFromFile(join(CORPUS, filename), { launcher })
+        const second = await importMppFromFile(join(CORPUS, filename), { launcher })
+        // Canonical-document determinism (the sidecar's <CurrentDate> save
+        // stamp is non-semantic — the accepted importer ignores it):
+        expect(serializeGproj(second.document)).toEqual(serializeGproj(first.document))
+        // Scheduling determinism:
+        expect(JSON.stringify(schedule(second.document))).toBe(
+          JSON.stringify(schedule(first.document)),
+        )
+        // Diagnostic determinism (same codes, same order):
+        expect(second.diagnostics).toEqual(first.diagnostics)
+      },
+    )
 
-    it(`${filename}: MPP → .gproj → reopen preserves canonical semantics and the schedule`, async () => {
-      const imported = await importMppFromFile(join(CORPUS, filename), { launcher })
-      const gproj = serializeGproj(imported.document)
-      const reopened = deserializeGproj(gproj)
-      // Reopen is byte-stable (the accepted PROJECT-014 invariant):
-      expect(serializeGproj(reopened.document)).toEqual(gproj)
-      // The schedule over the reopened document is identical:
-      expect(JSON.stringify(schedule(reopened.document))).toBe(
-        JSON.stringify(schedule(imported.document)),
-      )
-      expect(reopened.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
-    })
+    it(
+      `${filename}: MPP → .gproj → reopen preserves canonical semantics and the schedule`,
+      { timeout: 30_000 },
+      async () => {
+        const imported = await importMppFromFile(join(CORPUS, filename), { launcher })
+        const gproj = serializeGproj(imported.document)
+        const reopened = deserializeGproj(gproj)
+        // Reopen is byte-stable (the accepted PROJECT-014 invariant):
+        expect(serializeGproj(reopened.document)).toEqual(gproj)
+        // The schedule over the reopened document is identical:
+        expect(JSON.stringify(schedule(reopened.document))).toBe(
+          JSON.stringify(schedule(imported.document)),
+        )
+        expect(reopened.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
+      },
+    )
   }
 })

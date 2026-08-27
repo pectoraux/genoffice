@@ -37,7 +37,7 @@ jobs:
           done
       - name: Verify foundation package boundaries
         run: |
-          ! grep -R -nE "from ['\"]react|from ['\"]electron|from ['\"]node:|from ['\"]http|from ['\"]https" packages/project-contracts packages/project-engine packages/project-scheduling packages/project-file --include='*.ts'
+          ! grep -R -nE "from ['\"]react|from ['\"]electron|from ['\"]node:|from ['\"]http|from ['\"]https" packages/project-contracts packages/project-engine packages/project-scheduling packages/project-file packages/project-renderer-core --include='*.ts'
       - name: Typecheck contracts
         run: npm run typecheck -w @genoffice/project-contracts
       - name: Test contracts
@@ -54,6 +54,10 @@ jobs:
         run: npm run typecheck -w @genoffice/project-file
       - name: Test project-file
         run: npm test -w @genoffice/project-file
+      - name: Typecheck project-renderer-core
+        run: npm run typecheck -w @genoffice/project-renderer-core
+      - name: Test project-renderer-core
+        run: npm test -w @genoffice/project-renderer-core
       - name: Setup Java (MPXJ sidecar)
         uses: actions/setup-java@v4
         with:
