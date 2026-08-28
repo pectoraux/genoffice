@@ -168,3 +168,24 @@ describe('the menu transport lockstep', () => {
     expect(menuSource.includes('data-menu-id') || menuSource.includes('menuId')).toBe(true)
   })
 })
+
+describe('the shared ribbon (PROJECT-029)', () => {
+  it('the web shell adds NO ribbon of its own — the shared binding owns it', () => {
+    // The shared host binding's DOM layer mounts the ribbon in BOTH
+    // shells; the web chrome stays the menu bar + the transport bridge.
+    for (const [name, source] of Object.entries(webSources)) {
+      expect(source.includes('gp-ribbon'), `${name} must not build ribbon DOM`).toBe(false)
+      expect(
+        source.includes('createRibbon'),
+        `${name} must not construct a ribbon (the shared binding renders it)`,
+      ).toBe(false)
+      expect(
+        source.includes('RIBBON_'),
+        `${name} must not define a private ribbon vocabulary (the shared contract owns it)`,
+      ).toBe(false)
+    }
+    // The entry still mounts ONLY the shared binding (which carries the
+    // ribbon) — no additional host package is pulled in.
+    expect(webSources['main.ts']).toContain("from '@genoffice/project-host'")
+  })
+})

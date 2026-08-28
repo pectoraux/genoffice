@@ -142,6 +142,11 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
       uiState.timelineWidth = width
       render()
     },
+    // The shared ribbon (PROJECT-029): control activation flows through the
+    // SAME menu-command path as menu activation — one translation table
+    // (translateMenuCommand), one execution pipeline; the ribbon invents
+    // no dispatch of its own.
+    onRibbonCommand: (command) => menuCommand(command),
   })
 
   /** Host layout state (pixels): scroll window + pane width. Never view state. */

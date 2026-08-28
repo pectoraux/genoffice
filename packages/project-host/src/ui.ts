@@ -27,6 +27,9 @@ import type {
 import { hitTestGantt, viewportFraction } from '@genoffice/project-renderer-core'
 import type { HostFileFormat } from './document.js'
 import type { StatusMessage } from './app.js'
+import type { MenuCommandId } from './bridge.js'
+import { createRibbon } from './ribbon.js'
+import type { Ribbon } from './ribbon.js'
 
 /** Host pixel constants (presentation only — never canonical). */
 export const ROW_HEIGHT = 28
@@ -83,6 +86,9 @@ export interface UICallbacks {
   onDraftChange(draft: string): void
   onScroll(firstRow: number): void
   onWidthChange(width: number): void
+  /** Shared-ribbon control activation (routed through the controller's
+   * menu-command path — one translation, the same as menu activation). */
+  onRibbonCommand(command: MenuCommandId): void
 }
 
 export interface UIUpdateInputs {
@@ -123,6 +129,13 @@ export function createUI(root: HTMLElement, callbacks: UICallbacks): UI {
   const app = el('div', 'gp-app')
   app.dataset.testid = 'project-app'
 
+  // The shared ribbon (PROJECT-029) — mounted by the shared DOM layer so
+  // both hosts render the identical command surface (no shell ribbon code).
+  const ribbonHost = el('div', 'gp-ribbon-host')
+  const ribbon: Ribbon = createRibbon(ribbonHost, {
+    onCommand: (command) => callbacks.onRibbonCommand(command),
+  })
+
   const workspace = el('div', 'gp-workspace')
 
   const gridPane = el('div', 'gp-grid')
@@ -150,7 +163,7 @@ export function createUI(root: HTMLElement, callbacks: UICallbacks): UI {
   const statusbar = el('div', 'gp-statusbar')
   statusbar.dataset.testid = 'statusbar'
 
-  app.append(workspace, statusbar)
+  app.append(ribbonHost, workspace, statusbar)
   root.appendChild(app)
 
   // The persistent editor input (moved + refocused per active edit; the
@@ -436,6 +449,14 @@ export function createUI(root: HTMLElement, callbacks: UICallbacks): UI {
   // ---- update ----------------------------------------------------------------
 
   function update(inputs: UIUpdateInputs): void {
+    // The shared ribbon's four presentation echoes (PROJECT-029) — plain
+    // booleans the pipeline already computes; the ribbon reads nothing else.
+    ribbon.update({
+      canUndo: inputs.canUndo,
+      canRedo: inputs.canRedo,
+      dirty: inputs.dirty,
+      hasSelection: inputs.viewState.tasks.taskIds.length > 0,
+    })
     const view = inputs.view
     const rowCount = inputs.projection.rows.length
 

@@ -61,8 +61,8 @@ PROJECT-049 ← 046, 047, 048
 The objectively accepted state and the next authorized product increment (the authorization gate below applies):
 
 ```text
-Accepted: PROJECT-001..PROJECT-027 (PROJECT-019 completed as the 019A rescope decision record)
-Next authorized: PROJECT-028
+Accepted: PROJECT-001..PROJECT-028 (PROJECT-019 completed as the 019A rescope decision record)
+Next authorized: PROJECT-029
 ```
 
 A work item cannot be authorized until all direct dependencies are objectively accepted. A dependency change requires synchronized updates to `work-items.md`, this file, and `architecture-lock.md` when the change affects a frozen invariant.
@@ -268,3 +268,21 @@ PROJECT-028 (Web shell) adds TWO new workspace packages and changes no existing 
 The desktop host's own layering is unchanged from PROJECT-027 (main/preload native transport only, both correction-round transport invariants intact — the bounded-read guards and the userData-before-lock ordering are still asserted, still negative-validated by the desktop suite; the desktop renderer surface is now the ENTRY only, importing the shared binding — a new desktop-suite guard pins that the shell never re-implements the controller/DOM/translation surface). The desktop E2E battery (24/24) is the regression proof that the extraction is behavior-transparent. The work-item edge `021 + 022 → 028` completes on acceptance; `021 + 023 → 029` (shared Project ribbon) remains gated on 028's acceptance. MPP import through the Java sidecar remains deliberately unwired in BOTH shells (the work item's file surface is the canonical file adapter; the browser has no sidecar).
 
 CI: the Project foundation gate's foundation job grows by four steps (`Typecheck project-host`, `Test project-host`, `Typecheck project-web`, `Test project-web` — 26 steps total) plus the NEW `web-e2e` job (ubuntu-latest: `npm install --ignore-scripts` → `npx playwright install --with-deps chromium` → `vite build` → the static Node/Electron bundle scan over `apps/project-web/dist/` → `npm run test:e2e -w @genoffice/project-web` driving the real built bundle through `vite preview` in headless chromium) — the second Project CI stage running the product as an application, and the first in a browser.
+
+## Package dependency edges (PROJECT-029)
+
+PROJECT-029 (shared Project ribbon) adds NO new package and changes NO existing edge — the ribbon lives ENTIRELY INSIDE the accepted shared host binding, which is the point of the increment: one implementation, two host surfaces, zero shell-side ribbon code.
+
+```text
+@genoffice/project-host → @genoffice/project-renderer-core (unchanged)
+@genoffice/project-host → @genoffice/project-contracts (unchanged)
+@genoffice/project-host → @genoffice/project-scheduling (unchanged — bindings.ts remains the single import site)
+@genoffice/project-host → @genoffice/project-file (unchanged)
+
+@genoffice/project-desktop → @genoffice/project-host (unchanged — the shell gains the ribbon BY CONSUMING the shared binding; no desktop source changes)
+@genoffice/project-web → @genoffice/project-host (unchanged — the same, zero web source changes)
+```
+
+The ribbon module (`packages/project-host/src/ribbon.ts`) imports ONLY `./bridge.js` (the `MenuCommandId` vocabulary — pinned by the host discipline suite's exact-import scan): no contract, renderer-core, scheduling, or file import; no document, schedule, or projection type. `RIBBON_TABS`/`RIBBON_COMMAND_IDS` arrange the COMPLETE shared `MENU_COMMAND_IDS` vocabulary (all 15 commands) as tabs → groups → controls; control activation forwards through the injected callback, which the controller wires to its existing `menuCommand` path — the SAME `translateMenuCommand` table the native menu, the DOM menu bar, and the keyboard path flow through (one translation, four input surfaces; the wiring is pinned by the host architecture suite's source scan). The shared DOM layer (`ui.ts`) mounts the ribbon above the workspace inside the app skeleton — both shells therefore render the IDENTICAL command surface with NO shell code (each shell's discipline suite adds the no-private-ribbon guard: no `gp-ribbon` DOM, no `createRibbon` call, no `RIBBON_` vocabulary in any shell source). The ribbon reflects exactly FOUR presentation echoes (`canUndo`/`canRedo`/`dirty`/`hasSelection` — plain booleans the controller's update pipeline already computes) and reads no canonical state; the four-dependency manifest, the browser-safety rules, and every 028 discipline are untouched (the ribbon module is covered by the same generic scans: no scheduling import, no semantic primitive, no date computation, no `ProjectCommand` literal, no Electron/Node import).
+
+CI is unchanged: the existing Project foundation gate already typechecks/tests `project-host` and both shells (the ribbon's 29 new unit tests live in `project-host`; the shell suites grow only the no-private-ribbon guards), and the `desktop-e2e`/`web-e2e` jobs already boot both real applications — the E15/W16 ribbon batteries ride them. The work-item edge `021 + 023 → 029` completes on acceptance; `022 + 023 + 029 → 031` (presentation-parity lockstep) remains gated on 029's and 030's acceptance.

@@ -9,7 +9,11 @@
  *   the canonical calendar/allocation inputs threaded per render, the
  *   document open/save flows over the canonical file adapters, dirty
  *   tracking by document identity, and the close-guard handshake.
- * - `createUI` — the DOM rendering layer over the pure view models.
+ * - `createUI` — the DOM rendering layer over the pure view models (which
+ *   mounts the shared ribbon, PROJECT-029).
+ * - `createRibbon` / `RIBBON_TABS` / `RIBBON_COMMAND_IDS` — the shared
+ *   tabbed command surface both hosts render through `createUI` (the
+ *   ribbon vocabulary is the shared `MENU_COMMAND_IDS` exactly).
  * - `translateKeyDown` / `translateMenuCommand` — the input translation
  *   tables (keyboard + menu converge on one action vocabulary).
  * - `newProjectDocument` / import/export composition — the document flows
@@ -39,6 +43,14 @@ export {
   PROJECT_FILE_FILTERS,
   type ProjectHostBridge,
 } from './bridge.js'
+export {
+  createRibbon,
+  RIBBON_COMMAND_IDS,
+  type Ribbon,
+  type RibbonCallbacks,
+  type RibbonState,
+  RIBBON_TABS,
+} from './ribbon.js'
 export {
   adapterForFormat,
   defaultFileNameFor,

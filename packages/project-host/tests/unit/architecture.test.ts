@@ -28,6 +28,7 @@ import bindings from '../../src/bindings.ts?raw'
 import bridge from '../../src/bridge.ts?raw'
 import documentSource from '../../src/document.ts?raw'
 import indexSource from '../../src/index.ts?raw'
+import ribbonSource from '../../src/ribbon.ts?raw'
 import translateSource from '../../src/translate.ts?raw'
 import uiSource from '../../src/ui.ts?raw'
 
@@ -37,6 +38,7 @@ const packageSources: Record<string, string> = {
   'bridge.ts': bridge,
   'document.ts': documentSource,
   'index.ts': indexSource,
+  'ribbon.ts': ribbonSource,
   'translate.ts': translateSource,
   'ui.ts': uiSource,
 }
@@ -183,6 +185,10 @@ describe('the package is browser-safe (the binding both shells load)', () => {
       'translateKeyDown',
       'translateMenuCommand',
       'createUI',
+      'createRibbon',
+      'RIBBON_COMMAND_IDS',
+      'RIBBON_TABS',
+      'RibbonState',
     ]) {
       expect(indexSource.includes(name), `the public surface must export "${name}"`).toBe(true)
     }
@@ -193,6 +199,38 @@ describe('the package is browser-safe (the binding both shells load)', () => {
     expect(new Set(MENU_COMMAND_IDS).size).toBe(15)
     for (const id of MENU_COMMAND_IDS) {
       expect(bridge).toContain(`'${id}'`)
+    }
+  })
+})
+
+describe('the shared ribbon (PROJECT-029)', () => {
+  it('ribbon.ts imports ONLY the shared command vocabulary (no document, schedule, or projection type)', () => {
+    const imports = [...ribbonSource.matchAll(/from '([^']+)'/g)].map((match) => match[1]!)
+    expect(imports).toEqual(['./bridge.js'])
+  })
+
+  it('the controller routes ribbon activation through the SAME menu-command path (one translation)', () => {
+    expect(appSource).toContain('onRibbonCommand: (command) => menuCommand(command)')
+  })
+
+  it('the shared DOM layer mounts the ribbon above the workspace (both hosts inherit it)', () => {
+    expect(uiSource).toContain("const ribbonHost = el('div', 'gp-ribbon-host')")
+    expect(uiSource).toContain('app.append(ribbonHost, workspace, statusbar)')
+    expect(uiSource).toContain('ribbon.update({')
+  })
+
+  it('the ribbon reflects exactly the four presentation echoes — no other state input', () => {
+    // The RibbonState shape: the four booleans, nothing else.
+    expect(ribbonSource).toContain('readonly canUndo: boolean')
+    expect(ribbonSource).toContain('readonly canRedo: boolean')
+    expect(ribbonSource).toContain('readonly dirty: boolean')
+    expect(ribbonSource).toContain('readonly hasSelection: boolean')
+    // The module reads no engine/session/projection surface.
+    for (const marker of ['session', 'document.tasks', 'schedule', 'projection', 'buildGantt']) {
+      expect(
+        ribbonSource.includes(marker),
+        `ribbon.ts must not read "${marker}" (echoes only)`,
+      ).toBe(false)
     }
   })
 })
