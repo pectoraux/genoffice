@@ -1,7 +1,10 @@
 /// Declarative defined-names save: rewrites workbook.xml's `<definedNames>`
 /// from the editor's model. Entries the editor never models — `_xlnm.*`
 /// built-ins, hidden names, and names it failed to install (`preserveNames`)
-/// — stay byte-verbatim.
+/// — stay byte-verbatim. The preserve list matches case-insensitively (Excel
+/// resolves names case-insensitively): a modeled `Foo` collides with a
+/// preserved `foo`, and EVERY case-variant element of a preserved name is
+/// kept verbatim — never dropped by a case mismatch, never serialized twice.
 
 export class DefinedNameError extends Error {}
 
@@ -32,11 +35,17 @@ const NAME_PATTERN = /^[\p{L}_\\][\p{L}\p{N}_.\\]*$/u
 const CELL_REF_PATTERN = /^(?:[A-Za-z]{1,3}[0-9]+|[Rr][0-9]*[Cc][0-9]*)$/
 
 export function applyDefinedNamesState(workbookXml: string, state: DefinedNamesState): string {
-  const preserved = new Set(state.preserveNames)
+  // The preserve list is name-granular and matches CASE-INSENSITIVELY — the
+  // same rule Excel applies when resolving names. The reader groups a
+  // same-scope case-variant pair (`Foo` + `foo`) as ONE genuine duplicate
+  // (winner modeled, loser preserved); a case-sensitive guard here would
+  // let both variants through and serialize a duplicate Excel cannot
+  // distinguish, so the collision fails closed in every case combination.
+  const preserved = new Set(state.preserveNames.map((name) => name.toLowerCase()))
   const seen = new Set<string>()
   for (const entry of state.names) {
     validateName(entry.name)
-    if (preserved.has(entry.name)) {
+    if (preserved.has(entry.name.toLowerCase())) {
       throw new DefinedNameError(
         `The name "${entry.name}" also exists in a form the editor cannot model — ` +
           'saving would duplicate it.',
@@ -59,10 +68,13 @@ export function applyDefinedNamesState(workbookXml: string, state: DefinedNamesS
     (element) => {
       const name = /\bname="([^"]*)"/.exec(element)?.[1] ?? ''
       const unescaped = unescapeXml(name)
+      // Case-insensitive family preservation: every element whose name
+      // matches a preserve entry in ANY case stays verbatim — a case
+      // mismatch must never silently drop an unmodeled element.
       const keep =
         unescaped.startsWith('_xlnm') ||
         /\bhidden="(?:1|true)"/.test(element) ||
-        preserved.has(unescaped)
+        preserved.has(unescaped.toLowerCase())
       return keep ? element : ''
     },
   )
@@ -192,11 +204,13 @@ export function parseDefinedNamesState(workbookXml: string, sheetCount: number):
   const names: DefinedNameEntry[] = []
   const preserveNames: string[] = []
   /// Names preserved because an ELEMENT could not be modeled at all
-  /// (dangling scope, empty body, unsaveable name). preserveNames is
-  /// name-granular — the writer keeps every element carrying a preserved
-  /// name verbatim and rejects ANY modeled entry with it — so these names
-  /// must never carry a modeled entry either (a live sibling at another
-  /// scope stays file-only rather than poisoning every names-dirty save).
+  /// (dangling scope, empty body, unsaveable name), stored LOWERCASED —
+  /// preserveNames is name-granular and the writer matches it
+  /// case-insensitively (the writer keeps every element carrying a
+  /// case-variant of a preserved name verbatim and rejects ANY modeled
+  /// entry with it), so no CASE VARIANT of these names may carry a modeled
+  /// entry either (a live case-variant sibling at another scope stays
+  /// file-only rather than poisoning every names-dirty save).
   /// Duplicate-group losers below are deliberately NOT in this set: their
   /// modeled winner + preserved loser is the architect-endorsed fail-closed
   /// combination the writer rejects at save time.
@@ -229,7 +243,7 @@ export function parseDefinedNamesState(workbookXml: string, sheetCount: number):
         // Scoped to a sheet the workbook does not contain (Excel leaves such
         // names behind when a sheet is deleted). Not modelable — preserve.
         preserveNames.push(name)
-        poisonedNames.add(name)
+        poisonedNames.add(name.toLowerCase())
         continue
       }
       sheetIndex = parsed
@@ -240,12 +254,12 @@ export function parseDefinedNamesState(workbookXml: string, sheetCount: number):
       // verbatim, but an empty element body cannot survive the declarative
       // rewrite as a modeled entry — preserve it verbatim instead.
       preserveNames.push(name)
-      poisonedNames.add(name)
+      poisonedNames.add(name.toLowerCase())
       continue
     }
     if (!nameIsSaveable(name)) {
       preserveNames.push(name)
-      poisonedNames.add(name)
+      poisonedNames.add(name.toLowerCase())
       continue
     }
     names.push({ name, formula, ...(sheetIndex === undefined ? {} : { sheetIndex }) })
@@ -282,11 +296,12 @@ export function parseDefinedNamesState(workbookXml: string, sheetCount: number):
     for (const loser of sorted.slice(1)) preserveNames.push(loser.name)
   }
   // A name preserved for an UNMODELABLE element never carries a modeled
-  // entry either (see poisonedNames) — modeling one element of such a name
-  // would make every names-dirty save fail the writer's collision guard.
-  // The whole name stays file-only, byte-preserved, and uneditable.
+  // entry — in ANY case variant (see poisonedNames) — modeling one element
+  // of such a name would make every names-dirty save fail the writer's
+  // case-insensitive collision guard. The whole case-variant family stays
+  // file-only, byte-preserved, and uneditable.
   for (let i = modeled.length - 1; i >= 0; i -= 1) {
-    if (poisonedNames.has(modeled[i]!.name)) {
+    if (poisonedNames.has(modeled[i]!.name.toLowerCase())) {
       preserveNames.push(modeled[i]!.name)
       modeled.splice(i, 1)
     }

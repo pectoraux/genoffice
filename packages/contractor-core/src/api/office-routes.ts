@@ -3039,10 +3039,12 @@ const MAX_ANCHOR_COLUMN = 16_383
  * pass the canonical writer's predicate (imported from the gateway — one
  * rule set, no copy), formula bodies bounded, sheet scopes bounded
  * integers, per-(name, scope) duplicates rejected, and the
- * modeled∩preserve collision the writer fails closed on surfaces here as
- * a 400 BEFORE the engine touches bytes. preserveNames entries are
- * exempt from the saveable-name predicate by design — they are exactly
- * the names the editor could NOT model.
+ * modeled∩preserve collision the writer fails closed on — matched
+ * CASE-INSENSITIVELY, the way Excel resolves names ('Foo' collides with a
+ * preserved 'foo'; serializing both would write a duplicate Excel cannot
+ * distinguish) — surfaces here as a 400 BEFORE the engine touches bytes.
+ * preserveNames entries are exempt from the saveable-name predicate by
+ * design — they are exactly the names the editor could NOT model.
  */
 function expectDefinedNamesState(value: unknown, field: string): DefinedNamesState {
   if (!isRecord(value)) {
@@ -3135,9 +3137,13 @@ function expectDefinedNamesState(value: unknown, field: string): DefinedNamesSta
       `${field}.preserveNames exceeds ${MAX_DEFINED_NAME_PRESERVE} entries`,
     )
   }
-  const preserved = new Set(preserveNames)
+  // The writer's collision guard, mirrored: the preserve list matches
+  // case-insensitively (Excel resolves names case-insensitively), so a
+  // modeled 'Foo' collides with a preserved 'foo' in every case
+  // combination — the route rejects it BEFORE the engine touches bytes.
+  const preserved = new Set(preserveNames.map((name) => name.toLowerCase()))
   for (const entry of names) {
-    if (preserved.has(entry.name)) {
+    if (preserved.has(entry.name.toLowerCase())) {
       throw new OfficeValidationError(
         'validation',
         `The name "${entry.name}" also exists in a form the editor cannot model — ` +

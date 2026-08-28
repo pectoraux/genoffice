@@ -22,10 +22,13 @@
  * reader-preserved unmodelable names), the SAME-NAME CROSS-SCOPE pair
  * (workbook + worksheet definitions of one name coexist, resolve, and
  * edit independently — the architect's blocker correction), the
- * fail-closed GENUINE same-scope duplicate, the split-save (names never
- * ride the same save as structural ops), the no-op byte preservation,
- * the structural-op reference shift, and the namesLocked fail-closed
- * surface.
+ * fail-closed GENUINE same-scope duplicate, the CASE-VARIANT collision
+ * rules (same-scope 'Foo'+'foo' fails the save closed at the writer's
+ * case-insensitive guard while the case-variant cross-scope pair
+ * round-trips — the architect's second blocker correction), the
+ * split-save (names never ride the same save as structural ops), the
+ * no-op byte preservation, the structural-op reference shift, and the
+ * namesLocked fail-closed surface.
  *
  * No browser-side OOXML. The browser only ever exchanges typed
  * DefinedNamesState snapshots taken from Univer's live model.
@@ -43,6 +46,8 @@ import {
   buildExcelNamesLockedFixture,
   buildExcelNamesCollisionFixture,
   buildExcelNamesSameNameFixture,
+  buildExcelNamesCaseCollisionFixture,
+  buildExcelNamesCasePairFixture,
   readZipEntry,
 } from './fixtures'
 
@@ -1045,6 +1050,133 @@ test.describe('Formulas tab — Named Ranges persist through the canonical pipel
     await openFixture(page, saved, 'e2e-ribbon-names-pair-reopen-create.xlsx')
     const live = await readLiveNames(page)
     expect(live.filter((n) => n.name === 'Total')).toHaveLength(3)
+
+    expect(pageErrors).toEqual([])
+  })
+
+  test('18: a case-variant same-scope duplicate (Foo + foo) fails the save closed', async ({
+    page,
+  }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    const fixture = await buildExcelNamesCaseCollisionFixture()
+    await openFixture(page, fixture, 'e2e-ribbon-names-case-collision.xlsx')
+
+    // The fixture carries 'Foo' (live) + 'foo' (#REF! residue) BOTH at
+    // workbook scope — ONE genuine same-scope duplicate under Excel's
+    // case-insensitive resolution. The reader models the live winner and
+    // preserves the case-variant loser.
+    const live = await readLiveNames(page)
+    const fooFamily = live.filter(
+      (n) => n.name.toLowerCase() === 'foo' && n.localSheetId === 'AllDefaultWorkbook',
+    )
+    expect(fooFamily).toHaveLength(1)
+    expect(fooFamily[0]?.ref).toBe('Data!$D$1')
+
+    // Editing the OTHER name still fails the save: the declarative
+    // snapshot carries the modeled 'Foo' while the preserve list carries
+    // its case-variant twin 'foo' — the canonical writer's CASE-INSENSITIVE
+    // collision guard rejects the combination (a case-sensitive guard would
+    // silently serialize BOTH variants, writing a duplicate Excel cannot
+    // distinguish).
+    await openNameManager(page)
+    await page.getByTestId('name-manager-row').filter({ hasText: 'GlobalTotal' }).click()
+    await page.getByTestId('name-manager-ref').fill('=Data!$A$1:$A$3')
+    await page.getByTestId('name-manager-apply').click()
+    await expect(page.getByText('Defined names updated')).toBeVisible({ timeout: 5_000 })
+    await page
+      .getByTestId('name-manager-dialog')
+      .getByRole('button', { name: 'Close', exact: true })
+      .click()
+
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByText('Save failed: The name "Foo" also exists')).toBeVisible({
+      timeout: 15_000,
+    })
+
+    // Creating the case-variant name is refused up front too — at the Data
+    // sheet scope (where no live sibling shadows the check), the browser
+    // mirrors the canonical rule: 'FOO' matches the preserved 'foo'
+    // case-insensitively, so it can never be modeled.
+    await openNameManager(page)
+    await page.getByTestId('name-manager-name').fill('FOO')
+    await page.getByTestId('name-manager-ref').fill('=Data!$E$1')
+    await page.getByTestId('name-manager-scope').selectOption({ label: 'Data' })
+    await page.getByTestId('name-manager-apply').click()
+    // Scope the assertion to the dialog: the status bar still carries the
+    // save-failure toast, which contains the same phrase.
+    await expect(
+      page.getByTestId('name-manager-dialog').getByText('exists in a form the editor cannot model'),
+    ).toBeVisible({ timeout: 5_000 })
+    await page
+      .getByTestId('name-manager-dialog')
+      .getByRole('button', { name: 'Close', exact: true })
+      .click()
+
+    expect(pageErrors).toEqual([])
+  })
+
+  test('19: a case-variant cross-scope pair (Total + total) round-trips validly', async ({
+    page,
+  }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    const fixture = await buildExcelNamesCasePairFixture()
+    await openFixture(page, fixture, 'e2e-ribbon-names-case-pair.xlsx')
+
+    // Scope dominates case in the canonical uniqueness key: 'Total' at
+    // workbook scope + 'total' at Data scope is a LEGAL Excel pair — both
+    // install (the sheet-scoped twin rides the sibling path).
+    const live = await readLiveNames(page)
+    const totals = live.filter((n) => n.name.toLowerCase() === 'total')
+    expect(totals).toHaveLength(2)
+    expect(totals.find((n) => n.localSheetId === 'AllDefaultWorkbook')?.ref).toBe('Data!$B$2:$B$4')
+    const scoped = totals.find((n) => n.localSheetId !== 'AllDefaultWorkbook')
+    expect(scoped?.localSheetId).toBeTruthy()
+    expect(scoped?.ref).toBe('Data!$C$7:$C$9')
+
+    // Edit the WORKBOOK-scoped Total and save: the save must succeed —
+    // the case-insensitive collision guard does NOT over-block the
+    // cross-scope pair — and the case-variant sheet-scoped twin survives
+    // byte-verbatim.
+    await openNameManager(page)
+    await page.getByTestId('name-manager-row').filter({ hasText: 'Data!$B$2:$B$4' }).click()
+    await page.getByTestId('name-manager-ref').fill('=Data!$B$2:$B$6')
+    await page.getByTestId('name-manager-apply').click()
+    await expect(page.getByText('Defined names updated')).toBeVisible({ timeout: 5_000 })
+    await page
+      .getByTestId('name-manager-dialog')
+      .getByRole('button', { name: 'Close', exact: true })
+      .click()
+
+    const saved = await clickSaveAndCaptureDownload(page, 'Save')
+    const xml = await readZipEntry(saved, 'xl/workbook.xml')
+    expect(xml).toContain('<definedName name="Total">Data!$B$2:$B$6</definedName>')
+    // THE INVARIANT: the case-variant sheet-scoped twin survives verbatim.
+    expect(xml).toContain('<definedName name="total" localSheetId="0">Data!$C$7:$C$9</definedName>')
+    expect(xml).toContain('<definedName name="GlobalTotal">Data!$A$1:$A$5</definedName>')
+    expect(xml).toContain('name="_xlnm.Print_Titles"')
+
+    // REOPEN: both case-variant definitions are the file truth.
+    await openFixture(page, saved, 'e2e-ribbon-names-case-pair-reopen.xlsx')
+    const reopened = await readLiveNames(page)
+    expect(reopened.filter((n) => n.name.toLowerCase() === 'total')).toHaveLength(2)
+    expect(
+      reopened.find((n) => n.name === 'Total' && n.localSheetId === 'AllDefaultWorkbook')?.ref,
+    ).toBe('Data!$B$2:$B$6')
+    expect(
+      reopened.find((n) => n.name === 'total' && n.localSheetId !== 'AllDefaultWorkbook')?.ref,
+    ).toBe('Data!$C$7:$C$9')
 
     expect(pageErrors).toEqual([])
   })

@@ -2494,10 +2494,21 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     const nameTakenAnywhere = (name: string): boolean =>
       live.some((entry) => entry.name.toLowerCase() === name.toLowerCase())
     // The writer keeps every element carrying a preserved name verbatim and
-    // rejects any modeled entry with it — a name in either preserve set can
-    // never be modeled, so creating or renaming to it is refused up front.
-    const namePreserved = (name: string): boolean =>
-      namesPreserveFileRef.current.has(name) || namesUninstalledRef.current.has(name)
+    // rejects any modeled entry with it — CASE-INSENSITIVELY, the way Excel
+    // resolves names ('FOO' collides with a preserved 'Foo', mirroring the
+    // canonical writer's and the route's collision guards) — so a name in
+    // either preserve set can never be modeled, and creating or renaming to
+    // it in ANY case is refused up front.
+    const namePreserved = (name: string): boolean => {
+      const lower = name.toLowerCase()
+      for (const candidate of namesPreserveFileRef.current) {
+        if (candidate.toLowerCase() === lower) return true
+      }
+      for (const candidate of namesUninstalledRef.current) {
+        if (candidate.toLowerCase() === lower) return true
+      }
+      return false
+    }
     try {
       if (action.kind === 'add') {
         if (nameTakenAtScope(action.name, action.sheetId, null)) {

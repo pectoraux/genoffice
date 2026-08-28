@@ -4029,3 +4029,179 @@ export async function buildExcelNamesSameNameFixture(): Promise<Buffer> {
 
   return toBytes(zip)
 }
+
+/**
+ * Case-variant collision fixture (the architect's second EXCEL-025 blocker
+ * scenario): the name "Foo" and its case variant "foo" are BOTH defined at
+ * workbook scope — a GENUINE same-scope duplicate under Excel's
+ * case-insensitive name resolution (which Excel itself never writes;
+ * hand-crafted files can). The reader models the winner and preserves the
+ * loser, and the canonical writer's CASE-INSENSITIVE collision guard must
+ * fail the names-dirty save closed — a case-sensitive guard would let both
+ * variants serialize, writing a duplicate Excel cannot distinguish.
+ * "GlobalTotal" rides along so the test can dirty the names model by
+ * editing an unrelated name.
+ */
+export async function buildExcelNamesCaseCollisionFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Data" sheetId="1" r:id="rId1"/>
+  </sheets>
+  <definedNames>
+    <definedName name="GlobalTotal">Data!$A$1:$A$5</definedName>
+    <definedName name="Foo">Data!$D$1</definedName>
+    <definedName name="foo">#REF!</definedName>
+  </definedNames>
+  <calcPr calcId="191029"/>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1"><v>10</v></c><c r="D1"><v>99</v></c></row>
+    <row r="2"><c r="A2"><v>20</v></c></row>
+  </sheetData>
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}
+
+/**
+ * Case-variant cross-scope pair fixture (the architect's positive EXCEL-025
+ * regression): "Total" at workbook scope and its case variant "total" at
+ * Data-sheet scope (localSheetId=0). Scope dominates case in the canonical
+ * uniqueness key (case-insensitive name, scope), so this is a LEGAL Excel
+ * pair: both are modeled, both install, and a names-dirty save must
+ * round-trip BOTH — proving the case-insensitive collision guards do not
+ * over-block the cross-scope construct. The built-in print titles ride
+ * along for the preservation assertions.
+ */
+export async function buildExcelNamesCasePairFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Data" sheetId="1" r:id="rId1"/>
+    <sheet name="Other" sheetId="2" r:id="rId2"/>
+  </sheets>
+  <definedNames>
+    <definedName name="_xlnm.Print_Titles" localSheetId="0">Data!$1:$1</definedName>
+    <definedName name="GlobalTotal">Data!$A$1:$A$5</definedName>
+    <definedName name="Total">Data!$B$2:$B$4</definedName>
+    <definedName name="total" localSheetId="0">Data!$C$7:$C$9</definedName>
+  </definedNames>
+  <calcPr calcId="191029"/>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1"><v>10</v></c></row>
+    <row r="2"><c r="A2"><v>20</v></c></row>
+    <row r="3"><c r="A3"><v>30</v></c></row>
+    <row r="4"><c r="A4"><v>40</v></c></row>
+    <row r="5"><c r="A5"><v>50</v></c></row>
+    <row r="7"><c r="C7"><v>7</v></c></row>
+    <row r="8"><c r="C8"><v>8</v></c></row>
+    <row r="9"><c r="C9"><v>9</v></c></row>
+  </sheetData>
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet2.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="2"><c r="B2"><v>5</v></c></row>
+  </sheetData>
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}

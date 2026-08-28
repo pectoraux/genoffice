@@ -214,6 +214,45 @@ describe('parseDefinedNamesState', () => {
     expect(state.preserveNames).toEqual(['foo'])
   })
 
+  it('poisons the whole case-variant family when one element is unmodelable', () => {
+    // 'Foo' is scoped to a sheet the workbook does not contain; its
+    // case-variant sibling 'foo' IS modelable. The writer's collision
+    // guard matches the preserve list case-insensitively, so modeling
+    // 'foo' would fail EVERY names-dirty save on a guaranteed collision —
+    // the case-variant family stays file-only instead (byte-preserved,
+    // uneditable, never lost), and every OTHER name remains editable.
+    const state = parseDefinedNamesState(
+      wb(
+        '<definedNames>' +
+          '<definedName name="Foo" localSheetId="9">Data!$A$1</definedName>' +
+          '<definedName name="foo">Data!$A$2</definedName>' +
+          '<definedName name="Other">Data!$A$3</definedName>' +
+          '</definedNames>',
+      ),
+      2,
+    )
+    expect(state.names).toEqual([{ name: 'Other', formula: 'Data!$A$3' }])
+    expect(state.preserveNames).toEqual(['Foo', 'foo'])
+  })
+
+  it('a case-variant same-scope pair is one genuine duplicate (winner modeled, loser preserved)', () => {
+    // The architect's fail-closed regression input: 'Foo' + 'foo' at one
+    // scope. The reader models the winner and preserves the loser — the
+    // state the writer's case-insensitive collision guard then rejects
+    // at save time (fail closed), never serializing both variants.
+    const state = parseDefinedNamesState(
+      wb(
+        '<definedNames>' +
+          '<definedName name="Foo">Data!$A$1</definedName>' +
+          '<definedName name="foo">#REF!</definedName>' +
+          '</definedNames>',
+      ),
+      2,
+    )
+    expect(state.names).toEqual([{ name: 'Foo', formula: 'Data!$A$1' }])
+    expect(state.preserveNames).toEqual(['foo'])
+  })
+
   it('keeps #REF! residues modelable (they round-trip verbatim)', () => {
     const state = parseDefinedNamesState(
       wb('<definedNames><definedName name="Version">#REF!</definedName></definedNames>'),

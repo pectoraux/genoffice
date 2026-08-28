@@ -222,6 +222,48 @@ describe('workbooks/save definedNamesState validation', () => {
     expect(JSON.stringify(res.body)).toContain('saving would duplicate it')
   })
 
+  it('rejects a case-variant modeled-preserve collision up front (every case combination)', async () => {
+    // The architect's fail-closed regression: 'Foo' + 'foo' at the same
+    // scope. The reader models the winner and preserves the loser; Excel
+    // resolves names case-insensitively, so the writer's collision guard
+    // matches the preserve list case-insensitively — mirrored here as a
+    // 400 BEFORE the engine touches bytes, in every case combination.
+    const cases: Array<[string, string]> = [
+      ['Foo', 'foo'],
+      ['FOO', 'foo'],
+      ['foo', 'FOO'],
+      ['Foo', 'FOO'],
+    ]
+    for (const [modeled, preserved] of cases) {
+      const res = await save({
+        definedNamesState: {
+          names: [{ name: modeled, formula: 'Data!$A$1' }],
+          preserveNames: [preserved],
+        },
+      })
+      expect(res.status).toBe(400)
+      expect(JSON.stringify(res.body)).toContain('saving would duplicate it')
+    }
+  })
+
+  it('accepts the same name at workbook and sheet scope with an empty preserve list (valid round-trip shape)', async () => {
+    // The architect's positive regression: 'Total' at workbook scope +
+    // 'Total' at sheet scope is a LEGAL Excel pair — the case-insensitive
+    // collision guard must not over-block it. Validation passes and the
+    // request reaches the engine stage.
+    const res = await save({
+      definedNamesState: {
+        names: [
+          { name: 'Total', formula: 'Data!$B$2:$B$4' },
+          { name: 'Total', formula: 'Data!$C$7:$C$9', sheetIndex: 0 },
+        ],
+        preserveNames: [],
+      },
+    })
+    expect(res.status).toBe(400)
+    expect(JSON.stringify(res.body)).toContain(ENGINE_STAGE_REACHED)
+  })
+
   it('rejects malformed preserve entries', async () => {
     const empty = await save({
       definedNamesState: { names: [], preserveNames: [''] },
