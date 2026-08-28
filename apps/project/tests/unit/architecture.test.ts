@@ -1,21 +1,24 @@
 /**
- * PROJECT-027 — the desktop host architecture discipline suite.
+ * The Project desktop host architecture discipline suite (PROJECT-027; the
+ * renderer-binding scans moved with the modules to
+ * `@genoffice/project-host`'s own suite at PROJECT-028).
  *
- * Static source guards pinning the host's structural contract:
+ * Static source guards pinning the DESKTOP transport's structural contract:
  *
  * 1. The MAIN process and PRELOAD are native transport only — NO
- *    `@genoffice/*` imports of any kind.
- * 2. `bindings.ts` is the ONLY renderer module importing the scheduling
- *    package; the host never re-implements scheduling/calendar/allocation
- *    semantics (no working-time primitives, no leveler, no date arithmetic
- *    anywhere in host src).
- * 3. The host never constructs a `ProjectCommand` literal — commands are
- *    built by the renderer-core builders/edit flows only.
- * 4. The native menu never registers an accelerator (the single keyboard
+ *    `@genoffice/*` imports of any kind (direct or through the shared IPC
+ *    module, which stays self-contained so the main-process bundle never
+ *    pulls a `@genoffice/*` package).
+ * 2. The native menu never registers an accelerator (the single keyboard
  *    translation path) and its ids are the complete `MenuCommandId`
- *    vocabulary.
- * 5. The preload bridge and the shared IPC contract stay in lockstep (every
- *    channel crossed).
+ *    vocabulary — in lockstep with the shared contract's `MENU_COMMAND_IDS`.
+ * 3. The preload bridge and the shared IPC contract stay in lockstep (every
+ *    channel crossed), and the desktop bridge contract is structurally
+ *    identical to the shared `ProjectHostBridge` the controller consumes.
+ * 4. The corrected transport invariants (the ONE bounded read helper; the
+ *    userData path installed BEFORE the single-instance lock).
+ * 5. The renderer entry consumes the SHARED host binding — the desktop
+ *    shell never re-implements controller/DOM/translation surface.
  *
  * Raw-source scans (vitest `?raw` imports) — the accepted discipline-suite
  * pattern of the Project packages.
@@ -26,31 +29,12 @@ import mainMenu from '../../src/main/menu.ts?raw'
 import boundedRead from '../../src/main/bounded-read.ts?raw'
 import preloadIndex from '../../src/preload/index.ts?raw'
 import sharedIpc from '../../src/shared/ipc.ts?raw'
-import bindings from '../../src/renderer/bindings.ts?raw'
-import appSource from '../../src/renderer/app.ts?raw'
-import documentSource from '../../src/renderer/document.ts?raw'
-import translateSource from '../../src/renderer/translate.ts?raw'
-import uiSource from '../../src/renderer/ui.ts?raw'
 import mainEntry from '../../src/renderer/main.ts?raw'
 import { MENU_COMMAND_IDS } from '../../src/main/menu.js'
 import { PROJECT_IPC } from '../../src/shared/ipc.js'
-const rendererSources: Record<string, string> = {
-  'app.ts': appSource,
-  'document.ts': documentSource,
-  'translate.ts': translateSource,
-  'ui.ts': uiSource,
-  'main.ts': mainEntry,
-}
-
-const allHostSources: Record<string, string> = {
-  'main/index.ts': mainIndex,
-  'main/menu.ts': mainMenu,
-  'main/bounded-read.ts': boundedRead,
-  'preload/index.ts': preloadIndex,
-  'shared/ipc.ts': sharedIpc,
-  'renderer/bindings.ts': bindings,
-  ...rendererSources,
-}
+import { MENU_COMMAND_IDS as SHARED_MENU_COMMAND_IDS } from '@genoffice/project-host'
+import type { ProjectHostBridge } from '@genoffice/project-host'
+import type { ProjectDesktopBridge } from '../../src/shared/ipc.js'
 
 describe('the main process and preload are native transport only', () => {
   it('no main/preload module imports any @genoffice package', () => {
@@ -59,10 +43,11 @@ describe('the main process and preload are native transport only', () => {
       'main/index.ts': mainIndex,
       'main/menu.ts': mainMenu,
       'preload/index.ts': preloadIndex,
+      'shared/ipc.ts': sharedIpc,
     })) {
       expect(
         importPattern.test(source),
-        `${name} must not import @genoffice packages (native transport only)`,
+        `${name} must not import @genoffice packages (native transport only — the main-process bundle stays package-free)`,
       ).toBe(false)
     }
   })
@@ -70,112 +55,6 @@ describe('the main process and preload are native transport only', () => {
   it('the main process owns the Electron surface (app/window/dialog/ipc) and node fs', () => {
     expect(mainIndex.includes("from 'electron'")).toBe(true)
     expect(mainIndex.includes("from 'node:fs/promises'")).toBe(true)
-  })
-})
-
-describe('the renderer binding surface', () => {
-  it('bindings.ts is the ONLY module importing the scheduling package', () => {
-    for (const [name, source] of Object.entries(rendererSources)) {
-      expect(
-        source.includes('@genoffice/project-scheduling'),
-        `${name} must not import the scheduling package (bindings.ts is the single site)`,
-      ).toBe(false)
-    }
-    expect(bindings.includes('@genoffice/project-scheduling')).toBe(true)
-  })
-
-  it('bindings.ts wires exactly the three canonical injections and nothing else', () => {
-    const schedulingImports = [
-      ...bindings.matchAll(/import\s*\{([^}]*)\}\s*from\s*'@genoffice\/project-scheduling'/g),
-    ]
-      .flatMap((match) => match[1]!.split(','))
-      .map((name) => name.trim())
-      .filter((name) => name.length > 0 && !name.startsWith('type'))
-    expect(schedulingImports.sort()).toEqual([
-      'resolveCalendar',
-      'resourceAllocations',
-      'schedule',
-      'workingIntervals',
-    ])
-    // The three documented injection seams (PROJECT-021/025/026).
-    expect(bindings).toContain('ScheduleRunner')
-    expect(bindings).toContain('CalendarWorkingTimeQuery')
-    expect(bindings).toContain('ResourceAllocationQuery')
-  })
-
-  it('no host module re-implements scheduling/calendar/allocation semantics', () => {
-    const semanticMarkers = [
-      'addWorkingTime',
-      'subtractWorkingTime',
-      'workingDuration',
-      'isWorking(',
-      'levelResources',
-      'registerLeveler',
-    ]
-    for (const [name, source] of Object.entries(allHostSources)) {
-      for (const marker of semanticMarkers) {
-        expect(
-          source.includes(marker),
-          `${name} must not touch the canonical semantic primitive "${marker}"`,
-        ).toBe(false)
-      }
-    }
-  })
-
-  it('no host module computes dates (the canonical time model is never re-derived)', () => {
-    const dateMarkers = [
-      'Date.now(',
-      'new Date(',
-      'Date.UTC(',
-      'getUTCFullYear',
-      'getUTCMonth',
-      'getUTCDate',
-      'toISOString(',
-      'getTime()',
-    ]
-    for (const [name, source] of Object.entries(allHostSources)) {
-      for (const marker of dateMarkers) {
-        expect(
-          source.includes(marker),
-          `${name} must not compute dates ("${marker}") — display formats slice ISO strings`,
-        ).toBe(false)
-      }
-    }
-  })
-
-  it('the host never constructs a ProjectCommand literal', () => {
-    const commandTypes = [
-      'CreateTask',
-      'DeleteTask',
-      'RenameTask',
-      'IndentTask',
-      'OutdentTask',
-      'AddDependency',
-      'RemoveDependency',
-      'ChangeDependencyType',
-      'ChangeLag',
-      'SetTaskDuration',
-      'SetTaskStart',
-      'SetTaskFinish',
-      'SetConstraint',
-      'SetDeadline',
-      'AssignResource',
-      'UnassignResource',
-      'SetAssignmentUnits',
-      'SetPercentComplete',
-      'CreateBaseline',
-      'LevelResources',
-    ]
-    const commandLiteral = new RegExp(`\\{\\s*type:\\s*'(?:${commandTypes.join('|')})'`)
-    for (const [name, source] of Object.entries({
-      ...rendererSources,
-      'renderer/bindings.ts': bindings,
-    })) {
-      expect(
-        commandLiteral.test(source),
-        `${name} must not hand-build ProjectCommand values (renderer-core builders only)`,
-      ).toBe(false)
-    }
   })
 })
 
@@ -196,6 +75,10 @@ describe('the native menu discipline', () => {
       (match) => match[1]!,
     )
     expect(ids.sort()).toEqual([...MENU_COMMAND_IDS].sort())
+  })
+
+  it('the desktop menu vocabulary is in lockstep with the shared host contract', () => {
+    expect([...MENU_COMMAND_IDS].sort()).toEqual([...SHARED_MENU_COMMAND_IDS].sort())
   })
 })
 
@@ -222,6 +105,20 @@ describe('the bridge and the IPC contract stay in lockstep', () => {
     expect(preloadIndex.includes('contextBridge.exposeInMainWorld')).toBe(true)
     expect((preloadIndex.match(/ipcRenderer\.invoke/g) ?? []).length).toBe(6)
   })
+
+  it('the desktop bridge contract is structurally identical to the shared ProjectHostBridge', () => {
+    // Compile-time structural equivalence, production direction (the
+    // PROJECT-020 injected-runner precedent): the self-contained desktop
+    // contract is assignable to the host-neutral contract the shared
+    // controller consumes — the desktop bridge can never drift from the
+    // contract `createProjectApp` owns. (The desktop `appInfo` narrows
+    // `platform` to NodeJS.Platform, a subtype of the contract's string —
+    // method covariance.)
+    const desktopBridgeSatisfiesHost: (bridge: ProjectDesktopBridge) => ProjectHostBridge = (
+      bridge,
+    ) => bridge
+    expect(desktopBridgeSatisfiesHost).toBeDefined()
+  })
 })
 
 describe('the canonical bounded native read (PROJECT-027 correction)', () => {
@@ -242,8 +139,13 @@ describe('the canonical bounded native read (PROJECT-027 correction)', () => {
 
   it('the transport cap is defined exactly once (bounded-read.ts)', () => {
     expect(boundedRead.includes('export const MAX_FILE_BYTES')).toBe(true)
-    for (const [name, source] of Object.entries(allHostSources)) {
-      if (name === 'main/bounded-read.ts') continue
+    for (const [name, source] of Object.entries({
+      'main/index.ts': mainIndex,
+      'main/menu.ts': mainMenu,
+      'preload/index.ts': preloadIndex,
+      'shared/ipc.ts': sharedIpc,
+      'renderer/main.ts': mainEntry,
+    })) {
       expect(
         source.includes('MAX_FILE_BYTES ='),
         `${name} must not re-define the transport cap (the helper owns it)`,
@@ -267,19 +169,28 @@ describe('the canonical bounded native read (PROJECT-027 correction)', () => {
   })
 })
 
-describe('the renderer entry wiring', () => {
+describe('the renderer entry consumes the shared host binding (PROJECT-028)', () => {
+  it('the entry mounts the controller and stylesheet from @genoffice/project-host', () => {
+    expect(mainEntry.includes("from '@genoffice/project-host'")).toBe(true)
+    expect(mainEntry.includes("import '@genoffice/project-host/styles.css'")).toBe(true)
+    expect(mainEntry.includes('createProjectApp')).toBe(true)
+  })
+
   it('keyboard events flow through the translation table (capture, no raw handlers)', () => {
     expect(mainEntry.includes('translateKeyDown')).toBe(true)
     expect(mainEntry.includes("'keydown'")).toBe(true)
   })
 
-  it('the renderer never touches Electron or Node APIs directly', () => {
-    for (const [name, source] of Object.entries(rendererSources)) {
-      expect(
-        /from ['"](electron|node:)/.test(source),
-        `${name} must not import Electron/Node APIs (the bridge is the only transport)`,
-      ).toBe(false)
-      expect(source.includes('require('), `${name} must not use CommonJS require`).toBe(false)
-    }
+  it('the entry never touches Electron or Node APIs directly', () => {
+    expect(/from ['"](electron|node:)/.test(mainEntry)).toBe(false)
+    expect(mainEntry.includes('require(')).toBe(false)
+  })
+
+  it('the desktop shell does not re-implement the shared host binding', () => {
+    // The renderer surface is the ENTRY ONLY — the controller, DOM layer,
+    // translation tables, document flows, and scheduling bindings live in
+    // the shared package both shells consume.
+    expect(mainEntry.includes('function createUI')).toBe(false)
+    expect(mainEntry.includes('function createProjectApp')).toBe(false)
   })
 })

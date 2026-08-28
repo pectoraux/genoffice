@@ -7,7 +7,8 @@
  *
  * Every accelerator is DISPLAYED but deliberately NOT registered
  * (`registerAccelerator: false`): the renderer's keyboard translation
- * (`src/renderer/translate.ts`) is the single execution path for accelerator
+ * (the shared `@genoffice/project-host` translation table) is the single
+ * execution path for accelerator
  * keys, so an active cell editor keeps its own keys (native text undo, caret
  * movement, text deletion) instead of menu commands firing mid-edit. Menu
  * clicks still arrive through the menu-command channel.

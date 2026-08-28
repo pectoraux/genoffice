@@ -58,10 +58,18 @@ jobs:
         run: npm run typecheck -w @genoffice/project-renderer-core
       - name: Test project-renderer-core
         run: npm test -w @genoffice/project-renderer-core
+      - name: Typecheck project-host
+        run: npm run typecheck -w @genoffice/project-host
+      - name: Test project-host
+        run: npm test -w @genoffice/project-host
       - name: Typecheck project-desktop
         run: npm run typecheck -w @genoffice/project-desktop
       - name: Test project-desktop
         run: npm test -w @genoffice/project-desktop
+      - name: Typecheck project-web
+        run: npm run typecheck -w @genoffice/project-web
+      - name: Test project-web
+        run: npm test -w @genoffice/project-web
       - name: Setup Java (MPXJ sidecar)
         uses: actions/setup-java@v4
         with:
@@ -115,5 +123,49 @@ jobs:
           name: project-desktop-e2e-artifacts
           path: |
             apps/project/e2e/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # PROJECT-028 — web E2E: builds the real production bundle of the Project
+  # web shell (the shared @genoffice/project-host binding + the web
+  # transport, mounted by Vite with NO Node/Electron polyfills), statically
+  # scans that bundle for Node/Electron markers (the structural "no
+  # Node/Electron dependencies in the browser-side implementation" proof),
+  # and drives the full browser pipeline in headless chromium via
+  # Playwright (picker/drag-and-drop/adapter → engine → scheduler →
+  # projection, download saves, beforeunload guard, determinism, bounded
+  # web reads).
+  web-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+      - name: Build the Project web app
+        run: npm run build -w @genoffice/project-web
+      - name: Scan the built bundle (no Node/Electron in the browser-side implementation)
+        run: |
+          if grep -rEn 'electron|node:fs|node:path|node:os|node:child_process|node:url|require\(.node:' apps/project-web/dist/ ; then
+            echo 'The web bundle carries a Node/Electron marker — the browser-side implementation must import none of it.' >&2
+            exit 1
+          fi
+      - name: Web E2E (chromium)
+        run: npm run test:e2e -w @genoffice/project-web
+      - name: Upload E2E artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-web-e2e-artifacts
+          path: |
+            apps/project-web/e2e/test-results
           retention-days: 7
           if-no-files-found: ignore

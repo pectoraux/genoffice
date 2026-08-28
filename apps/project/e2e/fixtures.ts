@@ -1,6 +1,7 @@
 /**
  * PROJECT-027 — E2E fixtures: REAL canonical documents exported through the
- * REAL `.gproj` adapter. The fixture builder composes the host's own
+ * REAL `.gproj` adapter (the new-document template comes from the shared
+ * host binding since PROJECT-028). The fixture builder composes the host's own
  * new-document template with document data (contracts types + the
  * renderer-core default-task builder), schedules nothing itself, and the
  * bytes the app opens are the adapter's own deterministic output.
@@ -18,7 +19,7 @@ import {
 import type { ProjectDocument } from '@genoffice/project-contracts'
 import { gprojFileAdapter } from '@genoffice/project-file'
 import { defaultNewTask } from '@genoffice/project-renderer-core'
-import { newProjectDocument } from '../src/renderer/document.js'
+import { newProjectDocument } from '@genoffice/project-host'
 
 /**
  * The canonical E2E fixture document:

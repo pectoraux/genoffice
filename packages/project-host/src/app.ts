@@ -1,7 +1,10 @@
 /**
- * PROJECT-027 — the Project desktop host controller.
+ * The Project host controller — the shared binding both shells run
+ * (established as the desktop host controller at PROJECT-027; moved to the
+ * shared `@genoffice/project-host` layer at PROJECT-028 so the web shell
+ * runs the exact same controller).
  *
- * Binds the shared renderer core to a desktop window: one
+ * Binds the shared renderer core to a host window: one
  * `ProjectRendererSession` (the canonical scheduling authority injected),
  * one `ProjectViewState`, the projection + `buildGanttView` pipeline with
  * the canonical calendar/allocation inputs threaded, the document
@@ -15,8 +18,9 @@
  * session; every view change is an intent through the reducer; every
  * scheduling value is the injected authority's. The UI module (`ui.ts`)
  * maps the resulting view models to DOM; this module never touches a
- * pixel. The desktop bridge is injected (the preload surface in
- * production, an in-memory fake in tests).
+ * pixel. The host bridge is injected (the Electron preload surface in the
+ * desktop shell, the web bridge in the browser shell, an in-memory fake in
+ * tests).
  */
 import type {
   ImportDiagnostic,
@@ -50,7 +54,7 @@ import type {
   ProjectViewIntent,
   ResourceViewInput,
 } from '@genoffice/project-renderer-core'
-import type { MenuCommandId, ProjectDesktopBridge } from '../shared/ipc.js'
+import type { MenuCommandId, ProjectHostBridge } from './bridge.js'
 import { allocationQuery, scheduleRunner, workingTimeQuery } from './bindings.js'
 import {
   defaultFileNameFor,
@@ -82,13 +86,13 @@ export interface HostAppState {
 }
 
 export interface AppDependencies {
-  readonly bridge: ProjectDesktopBridge
+  readonly bridge: ProjectHostBridge
   readonly root: HTMLElement
   readonly initialDocument?: ProjectDocument
 }
 
-/** The app surface consumed by the renderer entry and the unit tests. */
-export interface ProjectDesktopApp {
+/** The app surface consumed by the host entries and the unit tests. */
+export interface ProjectHostApp {
   readonly state: HostAppState
   readonly dirty: boolean
   start(): void
@@ -102,7 +106,7 @@ export interface ProjectDesktopApp {
   handleCloseRequested(): Promise<void>
 }
 
-export function createProjectDesktopApp(deps: AppDependencies): ProjectDesktopApp {
+export function createProjectApp(deps: AppDependencies): ProjectHostApp {
   const { bridge, root } = deps
   const initial = deps.initialDocument ?? newProjectDocument()
 

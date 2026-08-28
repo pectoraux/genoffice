@@ -1293,3 +1293,49 @@ Project engine / scheduler / file adapters
 ### Scope discipline and evidence
 
 Out of scope and NOT implemented: MPP import through the Java sidecar (the work item's file surface is the canonical file adapter — the `project-mpp-host` pipeline integration is a later host increment), packaging/installer artifacts (`electron-builder` — the E2E drives the built app directly), theming beyond the deterministic host stylesheet, project-properties editing (no commands exist in the frozen union), calendar editing (no commands), resource/assignment editing surfaces (commands exist; the interactive surface is later scope), and the web shell (PROJECT-028 — unauthorized). Determinism: the host never computes time (display formats slice canonical ISO strings; the discipline suite scans for date arithmetic), never uses `localeCompare`, wall clock, or randomness; the two-boot E2E scenario asserts the rendered canonical DOM is byte-identical across fresh launches.
+
+## PROJECT-028 — Web shell
+
+Establishes the web host around the same shared renderer binding the desktop shell runs — the point where the Project initiative becomes a browser application with a SECOND host, completing the architecture-lock §3 runtime topology for the current frontier. The host stack is exactly the lock's web rule ("Project web code will use shared renderer contracts and host transport; it will not import Electron or Node APIs"):
+
+```text
+Browser
+   ↓ (DOM events / File API / Blob downloads — the only transport)
+Project web host  (apps/project-web — @genoffice/project-web)
+   ↓ (imports)
+@genoffice/project-host  (the shared host binding, extracted at this increment)
+   ↓ (imports + injected authorities)
+project-renderer-core
+   ↓
+Project engine / scheduler / file adapters
+```
+
+**The web host introduces NO scheduling, dependency, calendar, resource, or other Project semantics of its own.** It is transport + chrome only; every semantic value it renders is a projection of the canonical authorities through the SAME controller, DOM layer, translation tables, document flows, and scheduling bindings the desktop shell runs. This is enforced STRUCTURALLY, not by convention: the web architecture suite (`apps/project-web/tests/unit/web-architecture.test.ts`) fails the build when a web module imports Electron/Node APIs, the scheduling/engine packages, computes dates, or hand-builds a `ProjectCommand` literal — and the CI `web-e2e` job scans the BUILT bundle for Node/Electron markers before driving it in a real browser.
+
+### The shared host binding extraction (`@genoffice/project-host`)
+
+The PROJECT-027 desktop renderer binding was designed host-neutral (the controller depends on the injected bridge interface, never on Electron — the 027 requirement text), and PROJECT-028 completes that design: the controller (`app.ts`), the DOM layer (`ui.ts`), the translation tables (`translate.ts`), the document flows (`document.ts`), the scheduling bindings (`bindings.ts`), the deterministic stylesheet, and the host-neutral bridge CONTRACT move from `apps/project/src/renderer/**` into the new workspace package `packages/project-host` — a host-layer package (DOM is its job; Electron/Node are forbidden in it, asserted by its own discipline suite), exactly the office-suite `renderer-bridge`/`platform` precedent for shared host-binding code. The desktop host keeps the Electron transport (`src/main/**`, `src/preload/**`, the renderer entry) and imports the shared binding; the desktop E2E battery (24/24, byte-identical scenarios) is the regression proof that the extraction is behavior-transparent. The moved controller is renamed to its host-neutral truth (`createProjectApp`, `ProjectHostApp`, `ProjectHostBridge`, `HostAppInfo`); the desktop's self-contained `src/shared/ipc.ts` contract (unchanged at its accepted 027 shape — the main process still imports no `@genoffice/*` package, directly or transitively) is pinned structurally identical to the shared contract at compile time by the desktop architecture suite (the PROJECT-020 injected-runner structural-typing precedent), so the desktop bridge can never drift from the contract the shared controller owns.
+
+### The web transport bridge
+
+`apps/project-web/src/web-bridge.ts` implements the shared `ProjectHostBridge` over browser primitives only:
+
+- **`pickOpenFile`** — a real `<input type="file">` picker (the accept vocabulary derived from the shared `PROJECT_FILE_FILTERS`), driven end-to-end by the E2E through Playwright's `filechooser`.
+- **The ONE bounded web read** — every File the bridge delivers, on the picker path AND the external/staged path, crosses ONE helper (`readCapped`): the File's size is checked BEFORE a byte is read (the browser analog of the desktop's stat-first rejection), then read whole (a File is already a host-managed, size-known object — there is no window to race). Results are `NativeReadResult` VALUES on every surface: errors are never thrown and the error variant carries NO bytes — the renderer can never receive uncapped file contents, the PROJECT-027 desktop transport invariant mirrored browser-side (the discipline suite pins the single helper, the once-only cap definition, the size-before-read ordering, and the no-bytes-in-error shape).
+- **`pickSaveFile` / `writeFile`** — the browser's download flow IS the save dialog: the shared document flow's default name (or the opened file's name for a plain save) is returned, and the write is a Blob + anchor download; the E2E captures the REAL download event, saves the bytes, and re-imports them through the canonical adapter in-test.
+- **`confirmDiscard`** — a three-button DOM dialog (Save / Don't Save / Cancel — `window.confirm` is two-button and cannot express the contract), with Escape-cancel and the dialog named after the project; the SAME shared-controller save/discard/cancel flow the desktop close guard runs.
+- **`onCloseRequested` / `approveClose`** — the beforeunload guard: the browser cannot await the controller's async handshake during unload, so the bridge consults a registered DIRTY PROBE synchronously (the entry registers `() => app.dirty`) and asks the user natively when the document is dirty. The browser-native leave prompt is the web close guard's belt; the controller's dialog flow still governs every in-app destructive action (New/Open over unsaved changes) — both are E2E-proven.
+- **`onOpenRequested` / `readFile`** — drag-and-drop is the web analog of the desktop argv/second-instance open: the dropped File is staged in the bridge and the request flows through the controller's `onOpenRequested` path, so the unsaved-changes gate, the bounded read, and the adapter import all run in the SHARED controller code.
+- **`onMenuCommand`** — the DOM menu bar's activation path (below).
+
+### The DOM menu bar
+
+`apps/project-web/src/menu.ts` is the web analog of the native application menu: transport chrome only. Every item carries a `MenuCommandId` from the shared contract vocabulary (`MENU_COMMAND_IDS`, exported by the shared bridge contract as the canonical runtime list) and forwards ACTIVATION through the bridge's menu-command path — the same surface the native menu's IPC channel feeds on desktop. Accelerators are DISPLAYED but execute nothing (the web entry's keyboard listener + the shared translation table are the single execution path — the exact desktop discipline, so an active cell editor keeps its own keys). While a dropdown is open the menu owns the keyboard (native-menu parity) — the entry consults the menu's open state and swallows keys. The web menu's vocabulary is pinned equal to the shared `MENU_COMMAND_IDS` by the web suite; the desktop menu's ids are pinned equal to the same list by the desktop suite (transport lockstep across hosts). The menu's labels/accelerator strings are the web presentation of the vocabulary (mirroring the desktop labels); presentation-parity lockstep is PROJECT-031 scope.
+
+### The web entry and the browser-side purity gate
+
+`apps/project-web/src/main.ts` mirrors the desktop renderer entry: it mounts the shared controller + stylesheet, exposes the bridge as `window.projectWeb` (the `window.projectDesktop` parity), wires the dirty probe, the menu dispatch, the drag-and-drop staging, and the capture-phase keyboard path through the shared translation table. The whole web host is a plain Vite browser build with NO Node/Electron polyfills: an accidental `node:`/`electron` import fails the build, the CI job scans the BUILT bundle for Node/Electron markers (the static proof), and the E2E booting that bundle in a real chromium with zero console errors is the runtime proof (three layers, mirroring the foundation boundary-grep + discipline-suite + E2E pattern).
+
+### Scope discipline and evidence
+
+Out of scope and NOT implemented: URL routing / multi-page web app concerns (the shell is a single page, like the desktop window), service workers / offline / PWA packaging, browser tab synchronization (the single-instance concept is desktop-only — the browser's own per-tab model is the analog, and the desktop E14 isolation suite has no web counterpart by design), MPP import through the Java sidecar (unchanged — the canonical file adapter is the file surface; the browser has no sidecar), theming beyond the shared deterministic stylesheet, project-properties/calendar/resource editing surfaces (unchanged scope), and the shared Project ribbon (PROJECT-029, which now has TWO host surfaces to target). Determinism: the web host inherits the shared binding's discipline unchanged — no wall clock, no `localeCompare`, no randomness (the web suite scans for date computation); the two-load E2E scenario asserts the rendered canonical DOM is byte-identical across fresh page loads, and the canonical projection values asserted are the SAME constants the desktop battery asserts (cross-host parity of the shared experience, by construction).

@@ -1,7 +1,9 @@
 /**
- * PROJECT-027 — the host-side canonical authority bindings.
+ * The host-side canonical authority bindings — shared by both shells
+ * (established at PROJECT-027; moved to the shared `@genoffice/project-host`
+ * layer at PROJECT-028).
  *
- * THE ONLY module in the desktop host that imports
+ * THE ONLY module in the host binding that imports
  * `@genoffice/project-scheduling`. Every scheduling, calendar, and
  * allocation value the host renders or schedules flows through these three
  * bindings — the renderer-core injection seams the accepted PROJECT-021/025/
