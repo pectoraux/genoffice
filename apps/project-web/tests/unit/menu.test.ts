@@ -1,10 +1,13 @@
 /**
  * PROJECT-028 — the web menu bar battery (jsdom): the bar's vocabulary,
  * the dropdown open/close behavior, the activation dispatch, and the
- * lockstep with the shared menu contract.
+ * lockstep with the shared menu contract. PROJECT-031 adds the
+ * rendered-presentation parity pin: the bar renders the SHARED menu
+ * presentation table (labels + accelerator display strings), so the web
+ * menu and the desktop native menu cannot drift.
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { MENU_COMMAND_IDS } from '@genoffice/project-host'
+import { MENU_COMMAND_IDS, MENU_PRESENTATION } from '@genoffice/project-host'
 import { createMenuBar, WEB_MENU_COMMAND_IDS } from '../../src/menu.js'
 import type { MenuCommandId } from '@genoffice/project-host'
 
@@ -123,5 +126,30 @@ describe('the web menu bar', () => {
     const open = document.querySelector<HTMLElement>('[data-menu-id="file.open"]')!
     expect(open.textContent).toContain('Open Project')
     expect(open.textContent).toContain('Ctrl+O')
+  })
+
+  it('renders EXACTLY the shared presentation table — sections, labels, and accelerator displays (PROJECT-031)', () => {
+    for (const section of MENU_PRESENTATION) {
+      const top = document.querySelector<HTMLButtonElement>(
+        `[data-menu-top="${section.label.toLowerCase()}"]`,
+      )!
+      expect(top, `the ${section.label} top exists`).not.toBeNull()
+      click(top)
+      const items = [...document.querySelectorAll('[data-menu-id]')]
+      expect(items.map((item) => item.getAttribute('data-menu-id'))).toEqual(
+        section.items.map((item) => item.id),
+      )
+      for (const [index, item] of section.items.entries()) {
+        const rendered = items[index]!
+        expect(rendered.textContent).toContain(item.label)
+        const accelerator = rendered.querySelector('.gp-web-menu-accelerator')
+        if (item.accelerator === undefined) {
+          expect(accelerator).toBeNull()
+        } else {
+          expect(accelerator?.textContent).toBe(item.accelerator)
+        }
+      }
+      click(top)
+    }
   })
 })

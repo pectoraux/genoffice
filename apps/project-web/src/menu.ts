@@ -1,5 +1,6 @@
 /**
- * PROJECT-028 — the Project web host menu bar.
+ * PROJECT-028 — the Project web host menu bar (PROJECT-031: the presentation
+ * lockstep — the bar renders the SHARED menu presentation table).
  *
  * The DOM analog of the desktop's native application menu: transport
  * chrome ONLY. Every item carries a `MenuCommandId` from the shared
@@ -8,66 +9,24 @@
  * surface the native menu's IPC channel feeds on desktop). No item
  * interprets Project state; labels are static.
  *
+ * PROJECT-031 — presentation parity: the bar's structure, labels, and
+ * accelerator display strings come from the ONE shared presentation table
+ * (`MENU_PRESENTATION` in `@genoffice/project-host`), the same table the
+ * desktop native menu mirrors and the shared ribbon's tooltips display.
+ * This module owns NO label or accelerator literal — the cross-host
+ * presentation lockstep is structural, not conventional.
+ *
  * Accelerators are DISPLAYED but execute nothing here — the web entry's
  * keyboard listener + the shared translation table are the single
  * execution path for accelerator keys (the exact desktop discipline), so
  * an active cell editor keeps its own keys.
  */
+import { MENU_PRESENTATION } from '@genoffice/project-host'
 import type { MenuCommandId } from '@genoffice/project-host'
 
-interface MenuCommandSpec {
-  readonly id: MenuCommandId
-  readonly label: string
-  readonly accelerator?: string
-}
-
-/**
- * The web presentation of the shared menu vocabulary — labels and
- * accelerators mirror the desktop native menu (File/Edit/Task/View);
- * presentation-parity lockstep across hosts is PROJECT-031 scope.
- */
-const MENUS: ReadonlyArray<{ readonly label: string; readonly items: readonly MenuCommandSpec[] }> =
-  [
-    {
-      label: 'File',
-      items: [
-        { id: 'file.new', label: 'New Project', accelerator: 'Ctrl+N' },
-        { id: 'file.open', label: 'Open Project…', accelerator: 'Ctrl+O' },
-        { id: 'file.save', label: 'Save', accelerator: 'Ctrl+S' },
-        { id: 'file.saveAs', label: 'Save As…', accelerator: 'Ctrl+Shift+S' },
-      ],
-    },
-    {
-      label: 'Edit',
-      items: [
-        { id: 'edit.undo', label: 'Undo', accelerator: 'Ctrl+Z' },
-        { id: 'edit.redo', label: 'Redo', accelerator: 'Ctrl+Y' },
-        { id: 'edit.deleteTask', label: 'Delete Task', accelerator: 'Delete' },
-      ],
-    },
-    {
-      label: 'Task',
-      items: [
-        { id: 'task.create', label: 'New Task', accelerator: 'Insert' },
-        // Opens the shared Task Information dialog (PROJECT-030). No
-        // displayed accelerator — the shared keyboard table binds no key
-        // to it; menu/ribbon activation are the firing surfaces.
-        { id: 'task.information', label: 'Task Information…' },
-        { id: 'task.indent', label: 'Indent Task', accelerator: 'Alt+Shift+Right' },
-        { id: 'task.outdent', label: 'Outdent Task', accelerator: 'Alt+Shift+Left' },
-      ],
-    },
-    {
-      label: 'View',
-      items: [
-        { id: 'view.zoomIn', label: 'Zoom In', accelerator: 'Ctrl+=' },
-        { id: 'view.zoomOut', label: 'Zoom Out', accelerator: 'Ctrl+-' },
-        { id: 'view.fit', label: 'Fit to Project', accelerator: 'Ctrl+Shift+F' },
-        { id: 'view.collapse', label: 'Collapse Selected', accelerator: 'Alt+Shift+Minus' },
-        { id: 'view.expand', label: 'Expand Selected', accelerator: 'Alt+Shift+Plus' },
-      ],
-    },
-  ]
+/** The shared menu presentation — the ONE table (PROJECT-031); this module
+ * renders it and owns no presentation literal of its own. */
+const MENUS = MENU_PRESENTATION
 
 /** The menu command ids in bar order (used by the discipline suite). */
 export const WEB_MENU_COMMAND_IDS: readonly MenuCommandId[] = MENUS.flatMap((menu) =>

@@ -22,6 +22,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { MENU_COMMAND_IDS } from '../../src/bridge.js'
+import { MENU_PRESENTATION_COMMAND_IDS } from '../../src/menu-presentation.js'
 import packageManifestRaw from '../../package.json?raw'
 import appSource from '../../src/app.ts?raw'
 import bindings from '../../src/bindings.ts?raw'
@@ -29,6 +30,7 @@ import bridge from '../../src/bridge.ts?raw'
 import dialogsSource from '../../src/dialogs.ts?raw'
 import documentSource from '../../src/document.ts?raw'
 import indexSource from '../../src/index.ts?raw'
+import menuPresentationSource from '../../src/menu-presentation.ts?raw'
 import ribbonSource from '../../src/ribbon.ts?raw'
 import translateSource from '../../src/translate.ts?raw'
 import uiSource from '../../src/ui.ts?raw'
@@ -40,6 +42,7 @@ const packageSources: Record<string, string> = {
   'dialogs.ts': dialogsSource,
   'document.ts': documentSource,
   'index.ts': indexSource,
+  'menu-presentation.ts': menuPresentationSource,
   'ribbon.ts': ribbonSource,
   'translate.ts': translateSource,
   'ui.ts': uiSource,
@@ -195,6 +198,10 @@ describe('the package is browser-safe (the binding both shells load)', () => {
       'createTaskInformationDialog',
       'TaskInformationInput',
       'TaskInformationResult',
+      'MENU_PRESENTATION',
+      'MENU_PRESENTATION_COMMAND_IDS',
+      'menuAcceleratorFor',
+      'menuLabelFor',
     ]) {
       expect(indexSource.includes(name), `the public surface must export "${name}"`).toBe(true)
     }
@@ -254,9 +261,9 @@ describe('the shared dialog layer (PROJECT-030)', () => {
 })
 
 describe('the shared ribbon (PROJECT-029)', () => {
-  it('ribbon.ts imports ONLY the shared command vocabulary (no document, schedule, or projection type)', () => {
+  it('ribbon.ts imports ONLY the shared command vocabulary + the shared menu presentation (no document, schedule, or projection type)', () => {
     const imports = [...ribbonSource.matchAll(/from '([^']+)'/g)].map((match) => match[1]!)
-    expect(imports).toEqual(['./bridge.js'])
+    expect(imports.sort()).toEqual(['./bridge.js', './menu-presentation.js'])
   })
 
   it('the controller routes ribbon activation through the SAME menu-command path (one translation)', () => {
@@ -282,5 +289,52 @@ describe('the shared ribbon (PROJECT-029)', () => {
         `ribbon.ts must not read "${marker}" (echoes only)`,
       ).toBe(false)
     }
+  })
+})
+
+describe('the shared menu presentation table (PROJECT-031)', () => {
+  it('menu-presentation.ts imports ONLY the shared command vocabulary (pure presentation data)', () => {
+    const imports = [...menuPresentationSource.matchAll(/from '([^']+)'/g)].map(
+      (match) => match[1]!,
+    )
+    expect(imports).toEqual(['./bridge.js'])
+  })
+
+  it('the presentation vocabulary is EXACTLY the shared command vocabulary (complete, unique, in menu order)', () => {
+    expect(MENU_PRESENTATION_COMMAND_IDS.length).toBe(16)
+    expect(new Set(MENU_PRESENTATION_COMMAND_IDS).size).toBe(16)
+    expect([...MENU_PRESENTATION_COMMAND_IDS].sort()).toEqual([...MENU_COMMAND_IDS].sort())
+  })
+
+  it('the presentation table carries a label for every command and no duplicate accelerator (the one-source display discipline)', () => {
+    const labels = [...menuPresentationSource.matchAll(/label: '([^']+)'/g)].map((m) => m[1]!)
+    // 4 section labels + 16 item labels, all distinct within their kind.
+    expect(labels.length).toBe(20)
+    expect(new Set(labels).size).toBe(20)
+  })
+})
+
+describe('the focused-cell navigation wiring (PROJECT-031)', () => {
+  it('the shared keyboard table maps the cell-navigation keys to the canonical intent', () => {
+    // ArrowLeft/ArrowRight → moveCellFocus previous/next.
+    expect(translateSource).toContain("{ type: 'moveCellFocus', direction: 'previous' }")
+    expect(translateSource).toContain("{ type: 'moveCellFocus', direction: 'next' }")
+    // Enter/F2 begin the edit of the FOCUSED CELL (the mouse-parity rule).
+    expect(translateSource).toContain("'beginEditFocusedCell'")
+    expect(translateSource.includes("'beginEditName'")).toBe(false)
+  })
+
+  it('the controller edits the focused CELL through the canonical beginTaskEdit intent (never a private edit surface)', () => {
+    expect(appSource).toContain("'beginEditFocusedCell'")
+    expect(appSource).toContain("state.viewState.tasks.focusField ?? 'taskName'")
+    expect(appSource).toContain("dispatchIntent({ type: 'beginTaskEdit', taskId: target, field })")
+    // The controller owns no cell-edit semantics of its own: the 023
+    // editability no-op is surfaced as a status, never a forced edit.
+    expect(appSource).toContain('is not editable on this row')
+  })
+
+  it('the shared DOM layer renders the focused cell as presentation (data attribute only)', () => {
+    expect(uiSource).toContain('cellEl.dataset.cellFocused')
+    expect(uiSource).toContain('gp-cell-focused')
   })
 })

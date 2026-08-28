@@ -61,8 +61,8 @@ PROJECT-049 ← 046, 047, 048
 The objectively accepted state and the next authorized product increment (the authorization gate below applies):
 
 ```text
-Accepted: PROJECT-001..PROJECT-029 (PROJECT-019 completed as the 019A rescope decision record)
-Next authorized: PROJECT-030
+Accepted: PROJECT-001..PROJECT-030 (PROJECT-019 completed as the 019A rescope decision record)
+Next authorized: PROJECT-031
 ```
 
 A work item cannot be authorized until all direct dependencies are objectively accepted. A dependency change requires synchronized updates to `work-items.md`, this file, and `architecture-lock.md` when the change affects a frozen invariant.
@@ -302,3 +302,19 @@ PROJECT-030 (shared dialogs) adds NO new package and changes NO existing edge �
 ```
 
 The dialog module (`packages/project-host/src/dialogs.ts`) imports NOTHING at all — the strictest shape in the package (pinned by the host discipline suite): no contract, renderer-core, scheduling, file, or even bridge import; its input is plain presentation data the controller computes, its output plain draft strings. The shared command vocabulary grows 15 → 16 with `task.information` (the sanctioned path the 029 scope discipline named: a future command lands in the shared contract first, and the menu/ribbon locksteps follow — the native menu, the web menu bar, and the ribbon all carry the sixteenth id, and the shared translation table maps it to the new `dialog` action). The Task Information dialog OPERATES ON COMMANDS: OK runs each changed field through the SAME one-call canonical commit flow the cell editor runs (`commitTaskEditThroughSession` — begin → draft → semantic command → journal + reconcile + derived-timing refresh), so the dialog adds no command shape, no journal shape, and no semantics of its own; the discipline suite scans the controller's commit wiring and the dialog module's purity. The unsaved-changes dialog consolidation removes the two bespoke pre-030 implementations (the desktop's native `dialog.showMessageBox` IPC handler and the web bridge's private DOM dialog): `confirmUnsaved` and the close-guard handshake now consult the ONE shared dialog the controller renders, and the desktop close handshake itself (the prevented close → renderer → approval IPC) is unchanged. The work-item edge `021 + 023 → 030` completes on acceptance; `022 + 023 + 029 → 031` (presentation-parity lockstep) remains gated on 030's acceptance.
+
+## Package dependency edges (PROJECT-031)
+
+PROJECT-031 (keyboard/navigation/menu parity) adds NO new package and changes NO existing edge — the increment lands ENTIRELY inside the accepted shared stack, exactly like the ribbon and the dialogs before it: the focused-cell state is renderer-core VIEW STATE (the `ProjectViewState` interaction model PROJECT-021 owns), the cell-navigation keys are shared TRANSLATION table rows, the controller's focused-cell edit flows through the canonical `beginTaskEdit` intent + `commitTaskEditThroughSession` pipeline, the menu-presentation table is a new module inside the shared host binding, and the context-sensitive tab promotion is an echo-driven transition inside the shared ribbon.
+
+```text
+@genoffice/project-host → @genoffice/project-renderer-core (unchanged)
+@genoffice/project-host → @genoffice/project-contracts (unchanged)
+@genoffice/project-host → @genoffice/project-scheduling (unchanged — bindings.ts remains the single import site)
+@genoffice/project-host → @genoffice/project-file (unchanged)
+
+@genoffice/project-desktop → @genoffice/project-host (unchanged — the desktop shell only mirrors the shared menu presentation in its native transport table, pinned equal by the desktop discipline suite)
+@genoffice/project-web → @genoffice/project-host (unchanged — the web menu bar now RENDERS the shared presentation table directly)
+```
+
+The presentation module (`packages/project-host/src/menu-presentation.ts`) imports ONLY `./bridge.js` (the `MenuCommandId` vocabulary — the same exact-import discipline as the ribbon): the ONE table of menu sections, labels, and accelerator DISPLAY strings both hosts' menus present from. The web menu bar renders it directly (its local label/accelerator table is DELETED — the web discipline suite pins that no presentation literal survives in the shell); the desktop native menu MIRRORS it in `src/main/menu.ts` (the main process may not import `@genoffice/*` — the frozen native-transport boundary), and the desktop discipline suite pins the mirror EQUAL: labels exactly, and each native accelerator equal to the shared display string under the one documented display→native rule (`Ctrl+` ⇔ `CmdOrCtrl+`). The pre-031 cross-host display defect (desktop Redo `CmdOrCtrl+Shift+Z` vs web/ribbon `Ctrl+Y`) converges on the shared `Ctrl+Y` form — display only; the shared keyboard table still binds BOTH redo keys. The ribbon's tooltip accelerators read the same table through `menuAcceleratorFor` (the 029 rule "the menu bar's displayed forms", now one source). The focused-cell model: `TaskSelection.focusField` (an `EditableTaskField`; absent = the implicit `taskName`, so every pre-031 state and consumer is unchanged) + the `moveCellFocus` intent (the `EDITABLE_TASK_FIELDS` walk, clamped at both ends — the moveTaskFocus discipline) + the `beginEditFocusedCell` edit action (Enter/F2 edit the focused cell — the exact surface the mouse's cell activation reaches; a non-editable focused cell refuses through the 023 reducer no-op, surfaced as the honest status). The context-sensitive tab promotion (the 029 scope note deferred to 031) is the hasSelection echo's false→true transition promoting the Task tab — presentation only, no demotion, no fight with a manual tab choice. The work-item edge `021 + 023 → 030` completed on 030's acceptance (recorded above); `022 + 023 → 032` remains gated on 031's acceptance.

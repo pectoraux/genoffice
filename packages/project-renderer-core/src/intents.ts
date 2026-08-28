@@ -46,6 +46,12 @@ export type SelectMode =
 /** The keyboard focus movement directions (arrow keys / Home / End). */
 export type MoveFocusDirection = 'up' | 'down' | 'first' | 'last'
 
+/** The focused-cell column movement directions (PROJECT-031): `next` walks
+ * the editable fields in canonical grid order (taskName → duration → start →
+ * finish), `previous` walks it backwards. The walk is CLAMPED at the ends
+ * (deterministic no-ops), exactly like `moveTaskFocus`'s row clamping. */
+export type MoveCellFocusDirection = 'next' | 'previous'
+
 export type ProjectViewIntent =
   // ---- task selection ----
   | { type: 'selectTask'; taskId: TaskId; mode?: SelectMode }
@@ -59,6 +65,17 @@ export type ProjectViewIntent =
    * the selection. A deterministic no-op when the document has no visible
    * rows or the move would run past the first/last visible row. */
   | { type: 'moveTaskFocus'; direction: MoveFocusDirection; extend?: boolean }
+  // ---- focused-cell column navigation (PROJECT-031) ----
+  /** Move the focused CELL's column through the editable fields in canonical
+   * grid order (`next` → taskName → duration → start → finish; `previous`
+   * the reverse). The walk is clamped at both ends (a deterministic no-op at
+   * the first/last field). When no row is focused the move bootstraps the
+   * focus exactly like `moveTaskFocus` (the first visible row) and lands on
+   * `taskName`; when a row is focused the ROW focus is unchanged (the same
+   * orthogonal-axis rule arrow-up/down applies to columns). The focused cell
+   * is the pair `(focusId, focusField)` — the cell `beginTaskEdit` addresses
+   * when the host translates Enter/F2. */
+  | { type: 'moveCellFocus'; direction: MoveCellFocusDirection }
   // ---- cell editing (PROJECT-023) ----
   /** Activate the cell editor for (task, field) with the canonical initial
    * draft (`initialTaskEditDraft`) and select the edited row. A

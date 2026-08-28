@@ -126,6 +126,14 @@ body {
   justify-content: flex-end;
 }
 
+/* The focused CELL (PROJECT-031) — the keyboard's cell cursor: the cell at
+ * (focused row, focused field) Enter/F2 edits. A presentation-only echo of
+ * the view state's focused cell, never a semantic verdict. */
+.gp-grid-cell[data-cell-focused='true'] {
+  box-shadow: inset 0 0 0 2px #14808a;
+  background: #e9f7f8;
+}
+
 .gp-cell-name .gp-name-marker {
   display: inline-block;
   width: 14px;

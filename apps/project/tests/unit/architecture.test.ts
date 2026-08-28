@@ -31,8 +31,14 @@ import preloadIndex from '../../src/preload/index.ts?raw'
 import sharedIpc from '../../src/shared/ipc.ts?raw'
 import mainEntry from '../../src/renderer/main.ts?raw'
 import { MENU_COMMAND_IDS } from '../../src/main/menu.js'
+import { PROJECT_MENU_SECTIONS } from '../../src/main/menu.js'
 import { PROJECT_IPC } from '../../src/shared/ipc.js'
-import { MENU_COMMAND_IDS as SHARED_MENU_COMMAND_IDS } from '@genoffice/project-host'
+import {
+  MENU_COMMAND_IDS as SHARED_MENU_COMMAND_IDS,
+  MENU_PRESENTATION,
+  menuAcceleratorFor,
+  menuLabelFor,
+} from '@genoffice/project-host'
 import type { ProjectHostBridge } from '@genoffice/project-host'
 import type { ProjectDesktopBridge } from '../../src/shared/ipc.js'
 
@@ -79,6 +85,47 @@ describe('the native menu discipline', () => {
 
   it('the desktop menu vocabulary is in lockstep with the shared host contract', () => {
     expect([...MENU_COMMAND_IDS].sort()).toEqual([...SHARED_MENU_COMMAND_IDS].sort())
+  })
+
+  it('the native menu presentation is in lockstep with the SHARED table (PROJECT-031)', () => {
+    // The main process may not import @genoffice/* (the frozen transport
+    // boundary), so the native menu MIRRORS the shared presentation table
+    // — and this pin keeps the mirror equal: the same sections, in the
+    // same order, with exactly the shared labels.
+    expect(PROJECT_MENU_SECTIONS.map((section) => section.label)).toEqual(
+      MENU_PRESENTATION.map((section) => section.label),
+    )
+    for (const [index, section] of PROJECT_MENU_SECTIONS.entries()) {
+      const shared = MENU_PRESENTATION[index]!
+      expect(section.items.map((item) => item.id)).toEqual(shared.items.map((item) => item.id))
+      for (const item of section.items) {
+        expect(item.label).toBe(menuLabelFor(item.id))
+      }
+    }
+  })
+
+  it('every native accelerator equals the shared display string under the ONE display→native rule (Ctrl+ ⇔ CmdOrCtrl+)', () => {
+    for (const section of PROJECT_MENU_SECTIONS) {
+      for (const item of section.items) {
+        const display = menuAcceleratorFor(item.id)
+        if (display === undefined) {
+          expect(
+            item.accelerator,
+            `${item.id} carries no accelerator (the shared table displays none)`,
+          ).toBeUndefined()
+          continue
+        }
+        // The one documented rule: the native form is the shared display
+        // form with the leading Ctrl replaced by CmdOrCtrl (every other
+        // form is identical in both conventions).
+        const expected = display.startsWith('Ctrl+') ? `CmdOrCtrl+${display.slice(5)}` : display
+        expect(item.accelerator, `${item.id} displays the shared accelerator`).toBe(expected)
+      }
+    }
+    // The pre-031 cross-host defect is gone: Redo displays the shared
+    // Ctrl+Y form (natively CmdOrCtrl+Y), never CmdOrCtrl+Shift+Z.
+    expect(mainMenu.includes('CmdOrCtrl+Shift+Z')).toBe(false)
+    expect(mainMenu.includes("'CmdOrCtrl+Y'")).toBe(true)
   })
 })
 

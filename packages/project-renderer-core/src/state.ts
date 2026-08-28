@@ -39,6 +39,7 @@ import type {
   DerivedSchedule,
 } from '@genoffice/project-contracts'
 import type { TaskEditing } from './editing.js'
+import type { EditableTaskField } from './editing.js'
 import type { DependencyEditing } from './dependency-editing.js'
 
 /**
@@ -51,11 +52,20 @@ import type { DependencyEditing } from './dependency-editing.js'
  * and `reconcileViewState` enforces against the SURVIVING selection (a task
  * that still exists in the document but is not selected can never be the
  * anchor or the focus).
+ *
+ * `focusField` (PROJECT-031) is the focused CELL's column — the focused cell
+ * is the pair `(focusId, focusField)`. It is one of the four editable task
+ * fields (the keyboard's cell navigation walks the editable cells, the exact
+ * surface the mouse's cell activation reaches); absent means `taskName`, the
+ * pre-031 behavior every existing consumer already implements. The reducer
+ * moves it with `moveCellFocus` intents and `reconcileViewState` drops any
+ * restored value outside the accepted four-field set.
  */
 export interface TaskSelection {
   readonly taskIds: readonly TaskId[]
   readonly anchorId?: TaskId
   readonly focusId?: TaskId
+  readonly focusField?: EditableTaskField
 }
 
 /**
@@ -226,12 +236,24 @@ export function reconcileViewState(
     state.tasks.focusId !== undefined && selectedTaskIds.has(state.tasks.focusId)
       ? state.tasks.focusId
       : undefined
+  // The focused CELL is the pair (focusId, focusField): the field survives
+  // only while its row does, and only when it is one of the four accepted
+  // editable fields (a restored/malformed value outside the set is dropped —
+  // the same honest-pruning rule every other restored reference follows).
+  const EDITABLE_FIELDS: ReadonlySet<string> = new Set(['taskName', 'duration', 'start', 'finish'])
+  const focusField =
+    focusId !== undefined &&
+    state.tasks.focusField !== undefined &&
+    EDITABLE_FIELDS.has(state.tasks.focusField)
+      ? state.tasks.focusField
+      : undefined
 
   return {
     tasks: {
       taskIds: taskSelection.taskIds,
       ...(anchorId !== undefined ? { anchorId } : {}),
       ...(focusId !== undefined ? { focusId } : {}),
+      ...(focusField !== undefined ? { focusField } : {}),
     },
     dependencies: state.dependencies.filter((id) => dependencyIds.has(id)),
     resources: state.resources.filter((id) => resourceIds.has(id)),

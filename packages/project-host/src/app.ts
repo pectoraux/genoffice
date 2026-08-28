@@ -79,6 +79,16 @@ export interface StatusMessage {
   readonly text: string
 }
 
+/** Status-line labels for the editable fields (presentation only — the
+ * focused-cell edit refusal surfaces WHICH field, the "Cannot indent"
+ * precedent). */
+const EDIT_FIELD_LABELS: Record<string, string> = {
+  taskName: 'Task Name',
+  duration: 'Duration',
+  start: 'Start',
+  finish: 'Finish',
+}
+
 export interface HostAppState {
   readonly session: ProjectRendererSession
   readonly viewState: ProjectViewState
@@ -323,15 +333,31 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
     return { ok: true }
   }
 
-  function executeEditAction(action: 'beginEditName' | 'commit' | 'cancel'): void {
-    if (action === 'beginEditName') {
-      const target = state.viewState.tasks.focusId
+  function executeEditAction(action: 'beginEditFocusedCell' | 'commit' | 'cancel'): void {
+    if (action === 'beginEditFocusedCell') {
+      const selected = state.viewState.tasks.taskIds
+      const target = state.viewState.tasks.focusId ?? selected[selected.length - 1]
       if (target === undefined) {
         state = { ...state, status: { kind: 'info', text: 'No task selected' } }
         render()
         return
       }
-      dispatchIntent({ type: 'beginTaskEdit', taskId: target, field: 'taskName' })
+      // The focused CELL (PROJECT-031): (focusId, focusField); an absent
+      // field is the implicit taskName — the pre-031 Enter/F2 behavior.
+      const field = state.viewState.tasks.focusField ?? 'taskName'
+      const before = state.viewState
+      dispatchIntent({ type: 'beginTaskEdit', taskId: target, field })
+      // The 023 editability rule lives in the reducer (a summary row's
+      // scheduling fields are derived roll-ups and never begin an edit):
+      // its reference-equal no-op is surfaced honestly — the "Cannot
+      // indent" precedent, never a silent nothing.
+      if (state.viewState === before) {
+        state = {
+          ...state,
+          status: { kind: 'info', text: `${EDIT_FIELD_LABELS[field]} is not editable on this row` },
+        }
+        render()
+      }
       return
     }
     if (action === 'cancel') {

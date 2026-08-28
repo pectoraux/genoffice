@@ -605,6 +605,103 @@ describe('keyboard navigation + selection', () => {
   })
 })
 
+describe('the focused-cell navigation (PROJECT-031 — keyboard/mouse editing parity)', () => {
+  const focusedCell = (): HTMLElement | null =>
+    document.querySelector('[data-testid="task-row"] [data-cell-focused="true"]')
+
+  it('arrows and Tab walk the editable columns of the focused row', () => {
+    const { bridge } = fakeBridge()
+    const app = createProjectApp({ bridge, root: mount() })
+    app.start()
+    key(app, 'Insert')
+    // Absent focusField = the implicit taskName cell.
+    expect(app.state.viewState.tasks.focusField).toBeUndefined()
+    expect(focusedCell()?.dataset.column).toBe('taskName')
+    key(app, 'ArrowRight')
+    expect(app.state.viewState.tasks.focusField).toBe('duration')
+    expect(focusedCell()?.dataset.column).toBe('duration')
+    key(app, 'Tab')
+    expect(app.state.viewState.tasks.focusField).toBe('start')
+    key(app, 'Tab')
+    expect(app.state.viewState.tasks.focusField).toBe('finish')
+    key(app, 'Tab', { shift: true })
+    expect(app.state.viewState.tasks.focusField).toBe('start')
+    key(app, 'ArrowLeft')
+    expect(app.state.viewState.tasks.focusField).toBe('duration')
+    key(app, 'ArrowLeft')
+    expect(app.state.viewState.tasks.focusField).toBe('taskName')
+    // The column move keeps the ROW focus (the orthogonal-axis rule).
+    expect(app.state.viewState.tasks.focusId).toBe(asTaskId('t1'))
+  })
+
+  it('Enter edits the FOCUSED CELL through the canonical flow — the same surface the mouse reaches', () => {
+    const { bridge } = fakeBridge()
+    const app = createProjectApp({ bridge, root: mount() })
+    app.start()
+    key(app, 'Insert')
+    const finishBefore = rowText(rows()[0]!)
+    key(app, 'ArrowRight') // → duration cell
+    key(app, 'Enter')
+    const editor = document.querySelector('[data-testid="cell-editor"]') as HTMLInputElement
+    expect(editor).not.toBeNull()
+    expect(editor.dataset.taskId).toBe('t1')
+    expect(editor.dataset.field).toBe('duration')
+    editor.value = '1920'
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+    key(app, 'Enter')
+    expect(document.querySelector('[data-testid="cell-editor"]')).toBeNull()
+    // The real scheduler moved the derived finish (the mouse path's proof).
+    expect(rowText(rows()[0]!)).not.toBe(finishBefore)
+    expect(
+      plainMinutes(
+        app.state.session.schedule?.taskSchedules[asTaskId('t1')]?.duration ??
+          app.state.session.document.tasks[0]!.duration,
+      ),
+    ).toBe(1920)
+  })
+
+  it('a non-editable focused cell refuses honestly: the status surfaces it and NO editor opens', () => {
+    const { bridge } = fakeBridge()
+    const app = createProjectApp({ bridge, root: mount() })
+    app.start()
+    key(app, 'Insert')
+    key(app, 'Insert')
+    // Indent t2 under t1 (the outline gesture): t1 becomes a summary.
+    key(app, 'ArrowDown')
+    key(app, 'ArrowRight', { alt: true, shift: true })
+    expect(app.state.session.document.tasks[0]!.summary).toBe(true)
+    // Focus t1's duration cell and press Enter: the 023 editability rule
+    // (a summary's scheduling values are derived roll-ups) refuses.
+    key(app, 'ArrowUp')
+    key(app, 'ArrowRight') // → duration cell of the summary row
+    key(app, 'Enter')
+    expect(document.querySelector('[data-testid="cell-editor"]')).toBeNull()
+    expect(statusText()).toBe('Duration is not editable on this row')
+  })
+
+  it('the keyboard path and the mouse path produce the SAME editing state (the parity proof)', () => {
+    const { bridge } = fakeBridge()
+    const app = createProjectApp({ bridge, root: mount() })
+    app.start()
+    key(app, 'Insert')
+    // The mouse path: activating the duration cell through the UI callback
+    // (the dblclick wiring).
+    app.execute({
+      kind: 'intent',
+      intent: { type: 'beginTaskEdit', taskId: asTaskId('t1'), field: 'duration' },
+    })
+    const viaMouse = app.state.viewState.editing
+    key(app, 'Escape')
+    // The keyboard path: focus the duration cell, Enter.
+    key(app, 'ArrowRight')
+    key(app, 'Enter')
+    const viaKeyboard = app.state.viewState.editing
+    expect(viaKeyboard?.taskId).toBe(viaMouse?.taskId)
+    expect(viaKeyboard?.field).toBe(viaMouse?.field)
+    expect(viaKeyboard?.draft).toBe(viaMouse?.draft)
+  })
+})
+
 describe('the Task Information dialog (PROJECT-030 — operates on commands)', () => {
   const taskDialog = (): HTMLElement | null =>
     document.querySelector('[data-testid="task-info-dialog"]')

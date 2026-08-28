@@ -168,6 +168,38 @@ describe('the menu transport lockstep', () => {
     // activation path).
     expect(menuSource.includes('data-menu-id') || menuSource.includes('menuId')).toBe(true)
   })
+
+  it('the web menu presentation is the SHARED table (PROJECT-031 — no web-owned label or accelerator literal)', () => {
+    // The bar renders the one shared presentation table; the web shell
+    // owns no label/accelerator string of its own (every literal below
+    // would be a private presentation copy drifting from the desktop).
+    expect(menuSource.includes('MENU_PRESENTATION')).toBe(true)
+    for (const literal of [
+      "'New Project'",
+      "'Open Project…'",
+      "'Save As…'",
+      "'Task Information…'",
+      "'Indent Task'",
+      "'Outdent Task'",
+      "'Collapse Selected'",
+      "'Expand Selected'",
+      "'Fit to Project'",
+      "'Ctrl+N'",
+      "'Ctrl+O'",
+      "'Ctrl+Z'",
+      "'Ctrl+Y'",
+      "'Ctrl+Shift+S'",
+      "'Alt+Shift+Right'",
+      "'Alt+Shift+Left'",
+      "'Alt+Shift+Minus'",
+      "'Alt+Shift+Plus'",
+    ]) {
+      expect(
+        menuSource.includes(literal),
+        `menu.ts must not own the presentation literal ${literal} (the shared table owns it)`,
+      ).toBe(false)
+    }
+  })
 })
 
 describe('the shared ribbon (PROJECT-029)', () => {

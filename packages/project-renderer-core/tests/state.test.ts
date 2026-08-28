@@ -156,6 +156,50 @@ describe('PROJECT-021 view state reconciliation', () => {
     expectSelectionInvariant(reconciled.tasks)
   })
 
+  // ---- PROJECT-031 — the focused CELL (focusId, focusField) ---------------
+  it('keeps a valid focused-cell field and drops one outside the accepted four', () => {
+    const document = outlineDocument()
+    // A valid field on a focused+selected row survives reconciliation.
+    const valid = {
+      ...createViewState(document),
+      tasks: {
+        taskIds: [asTaskId('a')],
+        anchorId: asTaskId('a'),
+        focusId: asTaskId('a'),
+        focusField: 'duration' as const,
+      },
+    }
+    const kept = reconcileViewState(valid, document)
+    expect(kept.tasks.focusField).toBe('duration')
+    // A restored field outside the four editable fields is dropped (the
+    // honest-pruning rule every restored reference follows).
+    const malformed = {
+      ...createViewState(document),
+      tasks: {
+        taskIds: [asTaskId('a')],
+        anchorId: asTaskId('a'),
+        focusId: asTaskId('a'),
+        focusField: 'wbs' as never,
+      },
+    }
+    const pruned = reconcileViewState(malformed, document)
+    expect('focusField' in pruned.tasks).toBe(false)
+  })
+
+  it('drops the focused-cell field when its focused row is dropped (the cell is a PAIR)', () => {
+    const document = outlineDocument()
+    // `b` is live but NOT selected → the focus row is dropped, and with it
+    // the field (a field focus without its row is not a cell).
+    const state = {
+      ...createViewState(document),
+      tasks: { taskIds: [asTaskId('a')], focusId: asTaskId('b'), focusField: 'start' as const },
+    }
+    const reconciled = reconcileViewState(state, document)
+    expect('focusId' in reconciled.tasks).toBe(false)
+    expect('focusField' in reconciled.tasks).toBe(false)
+    expectSelectionInvariant(reconciled.tasks)
+  })
+
   it('reconciles anchor/focus when a SELECTED task is deleted (independently, keeping surviving members)', () => {
     const document = outlineDocument()
     const state = {

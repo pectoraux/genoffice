@@ -5,6 +5,20 @@
  * activation to the focused window's renderer. No item interprets Project
  * state (labels are static; enable/disable is not document-derived here).
  *
+ * PROJECT-031 — presentation parity: this table MIRRORS the ONE shared
+ * menu presentation table (`MENU_PRESENTATION` in
+ * `@genoffice/project-host`, which the main process may not import — the
+ * frozen native-transport boundary): the labels are exactly the shared
+ * table's, and each native accelerator equals the shared table's display
+ * string under the one documented display→native rule (`Ctrl+` ⇔
+ * `CmdOrCtrl+`; every other form is identical in both conventions). The
+ * desktop discipline suite pins the mirror equality; the shared table is
+ * the single source (the web menu bar renders it directly and the shared
+ * ribbon's tooltips display its accelerator strings). `edit.redo` displays
+ * `CmdOrCtrl+Y` — the canonical shared display form `Ctrl+Y` (the shared
+ * keyboard table binds BOTH Ctrl+Y and Ctrl+Shift+Z; only the display
+ * converges across hosts).
+ *
  * Every accelerator is DISPLAYED but deliberately NOT registered
  * (`registerAccelerator: false`): the renderer's keyboard translation
  * (the shared `@genoffice/project-host` translation table) is the single
@@ -32,7 +46,7 @@ const fileCommands: readonly MenuCommandSpec[] = [
 
 const editCommands: readonly MenuCommandSpec[] = [
   { id: 'edit.undo', label: 'Undo', accelerator: 'CmdOrCtrl+Z' },
-  { id: 'edit.redo', label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z' },
+  { id: 'edit.redo', label: 'Redo', accelerator: 'CmdOrCtrl+Y' },
   { id: 'edit.deleteTask', label: 'Delete Task', accelerator: 'Delete' },
 ]
 
@@ -54,6 +68,23 @@ const viewCommands: readonly MenuCommandSpec[] = [
   { id: 'view.expand', label: 'Expand Selected', accelerator: 'Alt+Shift+Plus' },
 ]
 
+/**
+ * The native menu's section structure — the desktop MIRROR of the shared
+ * menu presentation table (PROJECT-031). Exported for the discipline
+ * suite's parity pin (labels exactly the shared table's; native
+ * accelerators = the shared display strings under the `Ctrl+` ⇔
+ * `CmdOrCtrl+` rule).
+ */
+export const PROJECT_MENU_SECTIONS: ReadonlyArray<{
+  readonly label: string
+  readonly items: readonly MenuCommandSpec[]
+}> = [
+  { label: 'File', items: fileCommands },
+  { label: 'Edit', items: editCommands },
+  { label: 'Task', items: taskCommands },
+  { label: 'View', items: viewCommands },
+]
+
 const itemFor = (spec: MenuCommandSpec, send: (command: MenuCommandId) => void) => ({
   id: spec.id,
   label: spec.label,
@@ -71,21 +102,18 @@ export function sendMenuCommand(webContents: WebContents, command: MenuCommandId
 /**
  * Builds the application menu template. `send` is the activation sink — in
  * production it forwards to the focused window; the template stays pure so
- * the menu construction is trivially auditable.
+ * the menu construction is trivially auditable. The sections come from the
+ * exported `PROJECT_MENU_SECTIONS` mirror (the shared presentation table's
+ * structure — one source of truth for the section order).
  */
 export function projectMenuTemplate(send: (command: MenuCommandId) => void) {
-  return [
-    { label: 'File', submenu: fileCommands.map((spec) => itemFor(spec, send)) },
-    { label: 'Edit', submenu: editCommands.map((spec) => itemFor(spec, send)) },
-    { label: 'Task', submenu: taskCommands.map((spec) => itemFor(spec, send)) },
-    { label: 'View', submenu: viewCommands.map((spec) => itemFor(spec, send)) },
-  ]
+  return PROJECT_MENU_SECTIONS.map((section) => ({
+    label: section.label,
+    submenu: section.items.map((spec) => itemFor(spec, send)),
+  }))
 }
 
 /** The menu command ids in template order (used by the discipline suite). */
-export const MENU_COMMAND_IDS: readonly MenuCommandId[] = [
-  ...fileCommands,
-  ...editCommands,
-  ...taskCommands,
-  ...viewCommands,
-].map((spec) => spec.id)
+export const MENU_COMMAND_IDS: readonly MenuCommandId[] = PROJECT_MENU_SECTIONS.flatMap((section) =>
+  section.items.map((spec) => spec.id),
+)

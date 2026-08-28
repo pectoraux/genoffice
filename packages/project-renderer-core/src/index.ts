@@ -40,7 +40,12 @@ export {
   formatInstant,
   reconcileViewState,
 } from './state.js'
-export { type ProjectViewIntent, type SelectMode, type MoveFocusDirection } from './intents.js'
+export {
+  type ProjectViewIntent,
+  type SelectMode,
+  type MoveFocusDirection,
+  type MoveCellFocusDirection,
+} from './intents.js'
 export { type ViewReducerContext, reduceViewState } from './reduce.js'
 export {
   type TimeAxisBand,

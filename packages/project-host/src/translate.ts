@@ -1,7 +1,8 @@
 /**
  * The host keyboard/menu translation layer — shared by both shells
  * (established at PROJECT-027; moved to the shared `@genoffice/project-host`
- * layer at PROJECT-028).
+ * layer at PROJECT-028; the focused-cell navigation keys added at
+ * PROJECT-031).
  *
  * THE one mapping from host input (DOM KeyboardEvent essentials, host menu
  * command ids) to the canonical renderer-core vocabulary: view
@@ -11,11 +12,18 @@
  * (`app.ts`) executes the returned actions; NOTHING here touches the DOM,
  * the session, or a document.
  *
- * This is the entire "host keyboard/menu translation" the PROJECT-027 work
- * item named: two tables (`translateKeyDown`, `translateMenuCommand`) and
- * the zoom constants. The host invents no Project semantics — every
- * semantic action is expressed in the accepted renderer-core/intent
- * vocabulary.
+ * This is the entire "host keyboard/menu translation": two tables
+ * (`translateKeyDown`, `translateMenuCommand`) and the zoom constants. The
+ * host invents no Project semantics — every semantic action is expressed
+ * in the accepted renderer-core/intent vocabulary.
+ *
+ * PROJECT-031 — the keyboard/navigation parity additions: the focused-cell
+ * column keys (plain ArrowLeft/ArrowRight and Tab/Shift+Tab map to the
+ * `moveCellFocus` intent; Enter/F2 begin the edit of the FOCUSED CELL, the
+ * exact surface the mouse's cell activation reaches). The editing gate is
+ * unchanged (Enter/Escape belong to the editor; every other key passes
+ * through to the input — the pinned PROJECT-023 rule), and no binding is
+ * invented for keys the accepted vocabulary does not name.
  */
 import type { ProjectViewIntent } from '@genoffice/project-renderer-core'
 import type { MenuCommandId } from './bridge.js'
@@ -35,7 +43,10 @@ export type HostAction =
       readonly kind: 'document'
       readonly action: 'createTask' | 'deleteSelection' | 'indentSelection' | 'outdentSelection'
     }
-  | { readonly kind: 'edit'; readonly action: 'beginEditName' | 'commit' | 'cancel' }
+  | {
+      readonly kind: 'edit'
+      readonly action: 'beginEditFocusedCell' | 'commit' | 'cancel'
+    }
   | { readonly kind: 'history'; readonly action: 'undo' | 'redo' }
   | { readonly kind: 'file'; readonly action: 'new' | 'open' | 'save' | 'saveAs' }
   | { readonly kind: 'view'; readonly action: 'collapseSelection' | 'expandSelection' }
@@ -71,8 +82,9 @@ const focusMove = (direction: 'up' | 'down' | 'first' | 'last', extend: boolean)
 /**
  * Translates one keyboard input. Order of precedence:
  * editing mode → editor keys only; then modifier shortcuts; then plain
- * navigation/activation keys; anything else is `none` (the host never
- * invents bindings for keys the accepted vocabulary does not name).
+ * navigation/activation keys (the PROJECT-031 focused-cell column keys
+ * included); anything else is `none` (the host never invents bindings for
+ * keys the accepted vocabulary does not name).
  */
 export function translateKeyDown(input: KeyInput, mode: TranslationMode): HostAction {
   if (mode.editing) {
@@ -128,13 +140,32 @@ export function translateKeyDown(input: KeyInput, mode: TranslationMode): HostAc
       return focusMove('up', input.shift)
     case 'ArrowDown':
       return focusMove('down', input.shift)
+    case 'ArrowLeft':
+      // The focused-cell column walk (PROJECT-031) — the orthogonal axis
+      // to the row walk above. Columns have no extend semantic (the
+      // selection model is row-scoped), so shift is not consumed here.
+      return { kind: 'intent', intent: { type: 'moveCellFocus', direction: 'previous' } }
+    case 'ArrowRight':
+      return { kind: 'intent', intent: { type: 'moveCellFocus', direction: 'next' } }
+    case 'Tab':
+      // The grid's Tab convention (MS Project): next/previous cell. Bound
+      // PLAIN only — alt/ctrl variants belong to the host/OS, never the
+      // grid (no invented bindings).
+      if (input.alt) return NONE
+      return {
+        kind: 'intent',
+        intent: { type: 'moveCellFocus', direction: input.shift ? 'previous' : 'next' },
+      }
     case 'Home':
       return focusMove('first', input.shift)
     case 'End':
       return focusMove('last', input.shift)
     case 'Enter':
     case 'F2':
-      return { kind: 'edit', action: 'beginEditName' }
+      // The edit of the FOCUSED CELL (focusId, focusField) — the exact
+      // surface the mouse's cell activation reaches; an absent focusField
+      // is the implicit taskName (the pre-031 Enter/F2 behavior).
+      return { kind: 'edit', action: 'beginEditFocusedCell' }
     case 'Delete':
       return { kind: 'document', action: 'deleteSelection' }
     case 'Insert':
