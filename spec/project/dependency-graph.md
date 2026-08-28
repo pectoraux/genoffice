@@ -61,8 +61,8 @@ PROJECT-049 ← 046, 047, 048
 The objectively accepted state and the next authorized product increment (the authorization gate below applies):
 
 ```text
-Accepted: PROJECT-001..PROJECT-028 (PROJECT-019 completed as the 019A rescope decision record)
-Next authorized: PROJECT-029
+Accepted: PROJECT-001..PROJECT-029 (PROJECT-019 completed as the 019A rescope decision record)
+Next authorized: PROJECT-030
 ```
 
 A work item cannot be authorized until all direct dependencies are objectively accepted. A dependency change requires synchronized updates to `work-items.md`, this file, and `architecture-lock.md` when the change affects a frozen invariant.
@@ -286,3 +286,19 @@ PROJECT-029 (shared Project ribbon) adds NO new package and changes NO existing 
 The ribbon module (`packages/project-host/src/ribbon.ts`) imports ONLY `./bridge.js` (the `MenuCommandId` vocabulary — pinned by the host discipline suite's exact-import scan): no contract, renderer-core, scheduling, or file import; no document, schedule, or projection type. `RIBBON_TABS`/`RIBBON_COMMAND_IDS` arrange the COMPLETE shared `MENU_COMMAND_IDS` vocabulary (all 15 commands) as tabs → groups → controls; control activation forwards through the injected callback, which the controller wires to its existing `menuCommand` path — the SAME `translateMenuCommand` table the native menu, the DOM menu bar, and the keyboard path flow through (one translation, four input surfaces; the wiring is pinned by the host architecture suite's source scan). The shared DOM layer (`ui.ts`) mounts the ribbon above the workspace inside the app skeleton — both shells therefore render the IDENTICAL command surface with NO shell code (each shell's discipline suite adds the no-private-ribbon guard: no `gp-ribbon` DOM, no `createRibbon` call, no `RIBBON_` vocabulary in any shell source). The ribbon reflects exactly FOUR presentation echoes (`canUndo`/`canRedo`/`dirty`/`hasSelection` — plain booleans the controller's update pipeline already computes) and reads no canonical state; the four-dependency manifest, the browser-safety rules, and every 028 discipline are untouched (the ribbon module is covered by the same generic scans: no scheduling import, no semantic primitive, no date computation, no `ProjectCommand` literal, no Electron/Node import).
 
 CI is unchanged: the existing Project foundation gate already typechecks/tests `project-host` and both shells (the ribbon's 29 new unit tests live in `project-host`; the shell suites grow only the no-private-ribbon guards), and the `desktop-e2e`/`web-e2e` jobs already boot both real applications — the E15/W16 ribbon batteries ride them. The work-item edge `021 + 023 → 029` completes on acceptance; `022 + 023 + 029 → 031` (presentation-parity lockstep) remains gated on 029's and 030's acceptance.
+
+## Package dependency edges (PROJECT-030)
+
+PROJECT-030 (shared dialogs) adds NO new package and changes NO existing edge — the dialog layer lives ENTIRELY INSIDE the accepted shared host binding, exactly like the ribbon before it: one implementation, two host surfaces, zero shell-side dialog code (each shell's discipline suite pins the no-private-dialog rule; the unsaved-changes dialog's pre-030 bridge TRANSPORT surface was REMOVED in the same lockstep — `confirmDiscard` left `ProjectHostBridge`, the desktop `PROJECT_IPC` channel, and the web bridge).
+
+```text
+@genoffice/project-host → @genoffice/project-renderer-core (unchanged)
+@genoffice/project-host → @genoffice/project-contracts (unchanged)
+@genoffice/project-host → @genoffice/project-scheduling (unchanged — bindings.ts remains the single import site)
+@genoffice/project-host → @genoffice/project-file (unchanged)
+
+@genoffice/project-desktop → @genoffice/project-host (unchanged — the shell LOSES its native dialog code and gains the shared dialogs by consuming the binding)
+@genoffice/project-web → @genoffice/project-host (unchanged — the shell LOSES its private DOM dialog the same way)
+```
+
+The dialog module (`packages/project-host/src/dialogs.ts`) imports NOTHING at all — the strictest shape in the package (pinned by the host discipline suite): no contract, renderer-core, scheduling, file, or even bridge import; its input is plain presentation data the controller computes, its output plain draft strings. The shared command vocabulary grows 15 → 16 with `task.information` (the sanctioned path the 029 scope discipline named: a future command lands in the shared contract first, and the menu/ribbon locksteps follow — the native menu, the web menu bar, and the ribbon all carry the sixteenth id, and the shared translation table maps it to the new `dialog` action). The Task Information dialog OPERATES ON COMMANDS: OK runs each changed field through the SAME one-call canonical commit flow the cell editor runs (`commitTaskEditThroughSession` — begin → draft → semantic command → journal + reconcile + derived-timing refresh), so the dialog adds no command shape, no journal shape, and no semantics of its own; the discipline suite scans the controller's commit wiring and the dialog module's purity. The unsaved-changes dialog consolidation removes the two bespoke pre-030 implementations (the desktop's native `dialog.showMessageBox` IPC handler and the web bridge's private DOM dialog): `confirmUnsaved` and the close-guard handshake now consult the ONE shared dialog the controller renders, and the desktop close handshake itself (the prevented close → renderer → approval IPC) is unchanged. The work-item edge `021 + 023 → 030` completes on acceptance; `022 + 023 + 029 → 031` (presentation-parity lockstep) remains gated on 030's acceptance.

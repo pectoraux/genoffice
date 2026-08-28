@@ -51,6 +51,7 @@ const MENU_IDS = [
   'edit.redo',
   'edit.deleteTask',
   'task.create',
+  'task.information',
   'task.indent',
   'task.outdent',
   'view.zoomIn',
@@ -739,11 +740,12 @@ test.describe('W16 — the shared ribbon (PROJECT-029)', () => {
     await expect(page.locator('[data-testid="ribbon-panel"][data-tab="task"]')).toBeHidden()
     await page.click('[data-testid="ribbon-tab"][data-tab="task"]')
     // The complete shared command vocabulary, exactly once per command —
-    // the SAME 15 ids the DOM menu bar carries (one transport vocabulary).
+    // the SAME 16 ids the DOM menu bar carries (one transport vocabulary;
+    // task.information joined at PROJECT-030).
     const commands = await page
       .locator('[data-testid="ribbon-button"]')
       .evaluateAll((buttons) => buttons.map((button) => button.dataset.command))
-    expect(new Set(commands).size).toBe(15)
+    expect(new Set(commands).size).toBe(16)
     expect([...commands].sort()).toEqual([...MENU_IDS].sort())
     // Boot echoes: empty journal, no selection, clean document.
     await expect(
@@ -848,5 +850,114 @@ test.describe('W16 — the shared ribbon (PROJECT-029)', () => {
     await page.click('[data-testid="ribbon-button"][data-command="view.fit"]')
     const fitted = await bands.count()
     expect(fitted).toBeLessThan(zoomedOut)
+  })
+})
+
+test.describe('W17 — the Task Information dialog (PROJECT-030 — operates on commands)', () => {
+  test('opens from the menu bar with the displayed values; commits through the real engine (in the browser)', async ({
+    page,
+  }) => {
+    await boot(page)
+    await dropFixture(page)
+    await expect(rows(page)).toHaveCount(4)
+    await rowOf(page, 't1').click()
+    // The menu bar's Task ▸ Task Information item (the web chrome path —
+    // the same command id the desktop native menu carries).
+    await page.click('[data-menu-top="task"]')
+    await page.click('[data-menu-id="task.information"]')
+    const dialog = page.locator('[data-testid="task-info-dialog"]')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toHaveAttribute('data-task-id', 't1')
+    // The DISPLAYED values — the scheduler's own derived dates for the
+    // fixture (the canonical constants the desktop battery asserts too:
+    // cross-host parity).
+    await expect(page.locator('[data-testid="task-info-name"]')).toHaveValue('Design')
+    await expect(page.locator('[data-testid="task-info-duration"]')).toHaveValue('960')
+    await expect(page.locator('[data-testid="task-info-duration"]')).toBeEnabled()
+    await expect(page.locator('[data-testid="task-info-start"]')).toHaveText(T1_START)
+    await expect(page.locator('[data-testid="task-info-finish"]')).toHaveText(T1_FINISH_960)
+
+    // Name + duration through the REAL command pipeline, in the browser.
+    await page.fill('[data-testid="task-info-name"]', 'Dialog Renamed')
+    await page.fill('[data-testid="task-info-duration"]', '1920')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-testid="task-info-dialog"]')).toHaveCount(0)
+    await expect(cellOf(page, 't1', 'taskName')).toContainText('Dialog Renamed')
+    await expect(cellOf(page, 't1', 'finish')).toHaveText(T1_FINISH_1920)
+    // Undo walks the dialog's two commands back in order.
+    await page.keyboard.press('Control+z')
+    await expect(cellOf(page, 't1', 'finish')).toHaveText(T1_FINISH_960)
+    await expect(cellOf(page, 't1', 'taskName')).toContainText('Dialog Renamed')
+    await page.keyboard.press('Control+z')
+    await expect(cellOf(page, 't1', 'taskName')).toContainText('Design')
+  })
+
+  test('an unparseable duration keeps the dialog open with the reason; the fix commits', async ({
+    page,
+  }) => {
+    await boot(page)
+    await dropFixture(page)
+    await rowOf(page, 't1').click()
+    await page.click('[data-testid="ribbon-button"][data-command="task.information"]')
+    await page.fill('[data-testid="task-info-duration"]', 'two days')
+    await page.click('[data-testid="task-info-ok"]')
+    await expect(page.locator('[data-testid="task-info-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="task-info-error"]')).toContainText('Invalid edit')
+    await expect(cellOf(page, 't1', 'duration')).toHaveText('960')
+    await page.fill('[data-testid="task-info-duration"]', '1920')
+    await page.click('[data-testid="task-info-ok"]')
+    await expect(page.locator('[data-testid="task-info-dialog"]')).toHaveCount(0)
+    await expect(cellOf(page, 't1', 'finish')).toHaveText(T1_FINISH_1920)
+  })
+
+  test('Escape cancels without a command; the summary rule disables duration', async ({ page }) => {
+    await boot(page)
+    await dropFixture(page)
+    // A CLEAN loaded document: Cancel/Escape must keep it exactly clean.
+    await rowOf(page, 't1').click()
+    await page.click('[data-testid="ribbon-button"][data-command="task.information"]')
+    await page.fill('[data-testid="task-info-name"]', 'Discarded')
+    await page.keyboard.press('Escape')
+    await expect(page.locator('[data-testid="task-info-dialog"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="dirty-indicator"]')).toHaveAttribute(
+      'data-dirty',
+      'false',
+    )
+    await expect(cellOf(page, 't1', 'taskName')).toContainText('Design')
+
+    // The summary rule (the fixture's tasks carry dependencies — an indent
+    // under a linked predecessor is an honest engine rejection — so the
+    // scenario runs on a fresh untitled page).
+    await page.goto('/')
+    await expect(page.locator('[data-testid="project-app"]')).toBeVisible()
+    await page.keyboard.press('Insert')
+    await expect(rows(page)).toHaveCount(1)
+    await page.keyboard.press('Insert')
+    await expect(rows(page)).toHaveCount(2)
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Alt+Shift+ArrowRight')
+    await expect(rowOf(page, 't1')).toHaveAttribute('data-summary', 'true')
+    await page.keyboard.press('ArrowUp')
+    await page.click('[data-testid="ribbon-button"][data-command="task.information"]')
+    await expect(page.locator('[data-testid="task-info-dialog"]')).toHaveAttribute(
+      'data-task-id',
+      't1',
+    )
+    await expect(page.locator('[data-testid="task-info-duration"]')).toBeDisabled()
+    await page.click('[data-testid="task-info-cancel"]')
+  })
+
+  test('the modal gate: the keyboard is suspended while the dialog is open', async ({ page }) => {
+    await boot(page)
+    await page.keyboard.press('Insert')
+    await expect(rows(page)).toHaveCount(1)
+    await page.click('[data-testid="ribbon-button"][data-command="task.information"]')
+    await expect(page.locator('[data-testid="task-info-dialog"]')).toBeVisible()
+    await page.keyboard.press('Insert')
+    await page.waitForTimeout(300)
+    await expect(rows(page)).toHaveCount(1)
+    await page.click('[data-testid="task-info-cancel"]')
+    await page.keyboard.press('Insert')
+    await expect(rows(page)).toHaveCount(2)
   })
 })

@@ -339,18 +339,15 @@ test.describe('E07 — open through the native menu + dialog transport', () => {
     try {
       await page.keyboard.press('Insert')
       await expect(rows(page)).toHaveCount(1)
-      // The dirty document: the open flow consults the unsaved-changes
-      // guard first — "Don't Save" (response 1).
-      await app.evaluate(({ dialog }) => {
-        dialog.showMessageBox = (async () => ({
-          response: 1,
-          checkboxChecked: false,
-        })) as typeof dialog.showMessageBox
-      })
       const corruptPath = join('/tmp', 'corrupt-e2e.gproj')
       await writeFile(corruptPath, new TextEncoder().encode('definitely not a project'))
       await stubOpenDialog(app, corruptPath)
       await clickMenuItem(app, 'file.open')
+      // The dirty document: the open flow consults the SHARED unsaved-
+      // changes dialog first (PROJECT-030 — the native stub is gone);
+      // "Don't Save" discards and continues to the (corrupt) open.
+      await expect(page.locator('[data-testid="discard-dialog"]')).toBeVisible()
+      await page.click('[data-testid="discard-dont-save"]')
       // The corrupt open failed: the current document survives untouched
       // (the controller never replaces the session on a failed import).
       await expect(statusText(page)).toContainText('Open failed')
@@ -411,42 +408,47 @@ test.describe('E09 — viewport zoom + fit', () => {
   })
 })
 
-test.describe('E10 — the unsaved-changes close guard', () => {
+test.describe('E10 — the unsaved-changes close guard (the SHARED dialog)', () => {
+  // Since PROJECT-030 the unsaved-changes dialog is the shared host
+  // binding's own DOM dialog (the native message box is gone): the close
+  // handshake is unchanged (main prevents the close once and forwards to
+  // the renderer, which consults the SHARED dialog and approves), so the
+  // tests drive the REAL dialog — no stubbed native surface anymore.
+
   test('a clean window closes immediately (no dialog consultation)', async () => {
     const { app } = await launchProjectApp()
-    // If the guard consulted the dialog, this stub (Cancel) would refuse
-    // the close and the app would never exit.
-    await app.evaluate(({ dialog }) => {
-      dialog.showMessageBox = (async () => ({
-        response: 2,
-        checkboxChecked: false,
-      })) as typeof dialog.showMessageBox
-    })
-    await app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]?.close()
-    })
-    await Promise.race([
-      app.close(),
-      new Promise((_resolve, reject) =>
-        setTimeout(() => reject(new Error('the clean close was blocked (guard consulted?)')), 8000),
-      ),
-    ])
+    try {
+      await app.evaluate(({ BrowserWindow }) => {
+        BrowserWindow.getAllWindows()[0]?.close()
+      })
+      await Promise.race([
+        app.close(),
+        new Promise((_resolve, reject) =>
+          setTimeout(
+            () => reject(new Error('the clean close was blocked (guard consulted?)')),
+            8000,
+          ),
+        ),
+      ])
+    } finally {
+      await closeApp(app).catch(() => undefined)
+    }
   })
 
-  test('a dirty window consults; “Don’t Save” approves the close', async () => {
+  test('a dirty window consults the shared dialog; “Don’t Save” approves the close', async () => {
     const { app, page } = await launchProjectApp()
     try {
-      await app.evaluate(({ dialog }) => {
-        dialog.showMessageBox = (async () => ({
-          response: 1,
-          checkboxChecked: false,
-        })) as typeof dialog.showMessageBox
-      })
       await page.keyboard.press('Insert')
       await expect(rows(page)).toHaveCount(1)
       await app.evaluate(({ BrowserWindow }) => {
         BrowserWindow.getAllWindows()[0]?.close()
       })
+      // The SHARED dialog renders in the renderer (the close was
+      // prevented; the page is alive and interactive).
+      const dialog = page.locator('[data-testid="discard-dialog"]')
+      await expect(dialog).toBeVisible()
+      await expect(dialog).toContainText('Save changes to')
+      await page.click('[data-testid="discard-dont-save"]')
       await Promise.race([
         app.close(),
         new Promise((_resolve, reject) =>
@@ -463,15 +465,11 @@ test.describe('E10 — the unsaved-changes close guard', () => {
     try {
       await page.keyboard.press('Insert')
       await expect(rows(page)).toHaveCount(1)
-      await app.evaluate(({ dialog }) => {
-        dialog.showMessageBox = (async () => ({
-          response: 2,
-          checkboxChecked: false,
-        })) as typeof dialog.showMessageBox
-      })
       await app.evaluate(({ BrowserWindow }) => {
         BrowserWindow.getAllWindows()[0]?.close()
       })
+      await expect(page.locator('[data-testid="discard-dialog"]')).toBeVisible()
+      await page.click('[data-testid="discard-cancel"]')
       // The close was refused: the window (and the dirty document) survive.
       await page.waitForTimeout(500)
       await expect(rows(page)).toHaveCount(1)
@@ -479,8 +477,45 @@ test.describe('E10 — the unsaved-changes close guard', () => {
         'data-dirty',
         'true',
       )
+      await expect(page.locator('[data-testid="discard-dialog"]')).toHaveCount(0)
     } finally {
       await closeApp(app)
+    }
+  })
+
+  test('Save persists the dirty document, then approves the close', async () => {
+    const fixture = await writeE2EFixture()
+    const { app, page } = await launchProjectApp({ openFile: fixture })
+    try {
+      // A real edit, then a close: Save must write the adapter's bytes to
+      // the OPENED path (no picker — the file has a path) before the
+      // approval releases the close.
+      await page.dblclick(`[data-testid="task-row"][data-task-id="t1"] [data-column="taskName"]`)
+      const editor = page.locator('[data-testid="cell-editor"]')
+      await editor.fill('Close-Save Renamed')
+      await page.keyboard.press('Enter')
+      await expect(page.locator('[data-testid="dirty-indicator"]')).toHaveAttribute(
+        'data-dirty',
+        'true',
+      )
+      await app.evaluate(({ BrowserWindow }) => {
+        BrowserWindow.getAllWindows()[0]?.close()
+      })
+      await expect(page.locator('[data-testid="discard-dialog"]')).toBeVisible()
+      await page.click('[data-testid="discard-save"]')
+      await Promise.race([
+        app.close(),
+        new Promise((_resolve, reject) =>
+          setTimeout(() => reject(new Error('the saving close never completed')), 8000),
+        ),
+      ])
+      // The bytes on disk are the adapter's own output (the save ran
+      // before the approval).
+      const roundTrip = gprojFileAdapter.import(readFileSync(fixture))
+      expect(roundTrip.diagnostics.every((d) => d.severity !== 'error')).toBe(true)
+      expect(roundTrip.document.tasks[0]!.name).toBe('Close-Save Renamed')
+    } finally {
+      await closeApp(app).catch(() => undefined)
     }
   })
 })
@@ -747,7 +782,7 @@ test.describe('E15 — the shared ribbon (PROJECT-029)', () => {
       const commands = await page
         .locator('[data-testid="ribbon-button"]')
         .evaluateAll((buttons) => buttons.map((button) => button.dataset.command))
-      expect(new Set(commands).size).toBe(15)
+      expect(new Set(commands).size).toBe(16)
       expect([...commands].sort()).toEqual(
         [
           'file.new',
@@ -758,6 +793,7 @@ test.describe('E15 — the shared ribbon (PROJECT-029)', () => {
           'edit.redo',
           'edit.deleteTask',
           'task.create',
+          'task.information',
           'task.indent',
           'task.outdent',
           'view.zoomIn',
@@ -871,6 +907,156 @@ test.describe('E15 — the shared ribbon (PROJECT-029)', () => {
       await page.click('[data-testid="ribbon-button"][data-command="view.fit"]')
       const fitted = await bands.count()
       expect(fitted).toBeLessThan(zoomedOut)
+    } finally {
+      await closeApp(app)
+    }
+  })
+})
+
+test.describe('E16 — the Task Information dialog (PROJECT-030 — operates on commands)', () => {
+  test('opens from the ribbon with the displayed values; commits through the real engine', async () => {
+    const fixture = await writeE2EFixture()
+    const { app, page } = await launchProjectApp({ openFile: fixture })
+    try {
+      await expect(rows(page)).toHaveCount(4)
+      await rowOf(page, 't1').click()
+      // The ribbon's Task Information control (Task tab is the default).
+      await page.click('[data-testid="ribbon-button"][data-command="task.information"]')
+      const dialog = page.locator('[data-testid="task-info-dialog"]')
+      await expect(dialog).toBeVisible()
+      await expect(dialog).toHaveAttribute('data-task-id', 't1')
+      // The DISPLAYED values — the scheduler's own derived dates for the
+      // fixture (the canonical constants the battery pins everywhere).
+      await expect(page.locator('[data-testid="task-info-name"]')).toHaveValue('Design')
+      await expect(page.locator('[data-testid="task-info-duration"]')).toHaveValue('960')
+      await expect(page.locator('[data-testid="task-info-duration"]')).toBeEnabled()
+      // The displayed schedule (sliced ISO — the shared convention).
+      await expect(page.locator('[data-testid="task-info-start"]')).toHaveText(T1_START)
+      await expect(page.locator('[data-testid="task-info-finish"]')).toHaveText(T1_FINISH_960)
+
+      // Name + duration through the REAL command pipeline.
+      await page.fill('[data-testid="task-info-name"]', 'Dialog Renamed')
+      await page.fill('[data-testid="task-info-duration"]', '1920')
+      await page.click('[data-testid="task-info-ok"]')
+      await expect(page.locator('[data-testid="task-info-dialog"]')).toHaveCount(0)
+      // The grid reflects both fields; the scheduler derived the wider span.
+      await expect(cellOf(page, 't1', 'taskName')).toContainText('Dialog Renamed')
+      await expect(cellOf(page, 't1', 'finish')).toHaveText(T1_FINISH_1920)
+      await expect(page.locator('[data-testid="dirty-indicator"]')).toHaveAttribute(
+        'data-dirty',
+        'true',
+      )
+      // The dialog's two commands walk back in order under Ctrl+Z
+      // (duration first, then the rename).
+      await page.keyboard.press('Control+z')
+      await expect(cellOf(page, 't1', 'finish')).toHaveText(T1_FINISH_960)
+      await expect(cellOf(page, 't1', 'taskName')).toContainText('Dialog Renamed')
+      await page.keyboard.press('Control+z')
+      await expect(cellOf(page, 't1', 'taskName')).toContainText('Design')
+    } finally {
+      await closeApp(app)
+    }
+  })
+
+  test('an unparseable duration keeps the dialog open with the reason; the fix commits', async () => {
+    const fixture = await writeE2EFixture()
+    const { app, page } = await launchProjectApp({ openFile: fixture })
+    try {
+      await expect(rows(page)).toHaveCount(4)
+      await rowOf(page, 't1').click()
+      await page.click('[data-testid="ribbon-button"][data-command="task.information"]')
+      await page.fill('[data-testid="task-info-duration"]', 'two days')
+      await page.click('[data-testid="task-info-ok"]')
+      // The dialog refused the duration: the reason surfaced, dialog open.
+      await expect(page.locator('[data-testid="task-info-dialog"]')).toBeVisible()
+      await expect(page.locator('[data-testid="task-info-error"]')).toContainText('Invalid edit')
+      await expect(cellOf(page, 't1', 'duration')).toHaveText('960')
+      // The fix commits through the same pipeline.
+      await page.fill('[data-testid="task-info-duration"]', '1920')
+      await page.click('[data-testid="task-info-ok"]')
+      await expect(page.locator('[data-testid="task-info-dialog"]')).toHaveCount(0)
+      await expect(cellOf(page, 't1', 'finish')).toHaveText(T1_FINISH_1920)
+    } finally {
+      await closeApp(app)
+    }
+  })
+
+  test('Cancel and Escape mutate nothing; the summary rule disables duration', async () => {
+    const fixture = await writeE2EFixture()
+    const { app, page } = await launchProjectApp({ openFile: fixture })
+    try {
+      await expect(rows(page)).toHaveCount(4)
+      // A CLEAN loaded document: Cancel must keep it exactly clean.
+      await rowOf(page, 't1').click()
+      await page.click('[data-testid="ribbon-button"][data-command="task.information"]')
+      await page.fill('[data-testid="task-info-name"]', 'Discarded')
+      await page.click('[data-testid="task-info-cancel"]')
+      await expect(page.locator('[data-testid="task-info-dialog"]')).toHaveCount(0)
+      await expect(page.locator('[data-testid="dirty-indicator"]')).toHaveAttribute(
+        'data-dirty',
+        'false',
+      )
+      await expect(cellOf(page, 't1', 'taskName')).toContainText('Design')
+      // Escape: the same honest nothing.
+      await page.click('[data-testid="ribbon-button"][data-command="task.information"]')
+      await page.fill('[data-testid="task-info-name"]', 'Also Discarded')
+      await page.keyboard.press('Escape')
+      await expect(page.locator('[data-testid="task-info-dialog"]')).toHaveCount(0)
+      await expect(page.locator('[data-testid="dirty-indicator"]')).toHaveAttribute(
+        'data-dirty',
+        'false',
+      )
+      await expect(cellOf(page, 't1', 'taskName')).toContainText('Design')
+
+      // (The fixture's tasks carry dependencies — an indent under a linked
+      // predecessor is an honest engine rejection, so the summary scenario
+      // runs on a fresh document.)
+    } finally {
+      await closeApp(app)
+    }
+    const fresh = await launchProjectApp()
+    try {
+      const page2 = fresh.page
+      await page2.keyboard.press('Insert')
+      await expect(rows(page2)).toHaveCount(1)
+      await page2.keyboard.press('Insert')
+      await expect(rows(page2)).toHaveCount(2)
+      // Indent t2 under t1 → t1 becomes a summary (a derived roll-up).
+      await page2.keyboard.press('ArrowDown')
+      await page2.keyboard.press('Alt+Shift+ArrowRight')
+      await expect(page2.locator('[data-testid="task-row"][data-task-id="t1"]')).toHaveAttribute(
+        'data-summary',
+        'true',
+      )
+      await page2.keyboard.press('ArrowUp')
+      await page2.click('[data-testid="ribbon-button"][data-command="task.information"]')
+      await expect(page2.locator('[data-testid="task-info-dialog"]')).toHaveAttribute(
+        'data-task-id',
+        't1',
+      )
+      await expect(page2.locator('[data-testid="task-info-duration"]')).toBeDisabled()
+      await page2.click('[data-testid="task-info-cancel"]')
+    } finally {
+      await closeApp(fresh.app)
+    }
+  })
+
+  test('the modal gate: the keyboard is suspended while the dialog is open', async () => {
+    const { app, page } = await launchProjectApp()
+    try {
+      await page.keyboard.press('Insert')
+      await expect(rows(page)).toHaveCount(1)
+      await page.click('[data-testid="ribbon-button"][data-command="task.information"]')
+      await expect(page.locator('[data-testid="task-info-dialog"]')).toBeVisible()
+      // Keys reach the dialog's input only — the app's translation path
+      // is suspended (Insert would create a second task).
+      await page.keyboard.press('Insert')
+      await page.waitForTimeout(300)
+      await expect(rows(page)).toHaveCount(1)
+      // Cancel resumes the app.
+      await page.click('[data-testid="task-info-cancel"]')
+      await page.keyboard.press('Insert')
+      await expect(rows(page)).toHaveCount(2)
     } finally {
       await closeApp(app)
     }

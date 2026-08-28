@@ -58,6 +58,24 @@ describe('the web menu bar', () => {
     expect(file.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('the Task dropdown carries the shared dialog command (PROJECT-030)', () => {
+    const task = document.querySelector<HTMLButtonElement>('[data-menu-top="task"]')!
+    click(task)
+    const items = [...document.querySelectorAll('[data-menu-id]')]
+    expect(items.map((item) => item.getAttribute('data-menu-id'))).toEqual([
+      'task.create',
+      'task.information',
+      'task.indent',
+      'task.outdent',
+    ])
+    // The dialog item displays NO accelerator (the keyboard table binds no
+    // key to it — menu/ribbon activation are the firing surfaces).
+    const information = items[1]!
+    expect(information.textContent).toContain('Task Information')
+    expect(information.querySelector('.gp-web-menu-accelerator')).toBeNull()
+    click(task)
+  })
+
   it('every menu id is present in its dropdown (the complete vocabulary)', () => {
     const seen: string[] = []
     for (const label of ['file', 'edit', 'task', 'view']) {

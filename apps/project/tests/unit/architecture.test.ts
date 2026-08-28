@@ -103,7 +103,10 @@ describe('the bridge and the IPC contract stay in lockstep', () => {
 
   it('the preload exposes exactly the contextBridge surface', () => {
     expect(preloadIndex.includes('contextBridge.exposeInMainWorld')).toBe(true)
-    expect((preloadIndex.match(/ipcRenderer\.invoke/g) ?? []).length).toBe(6)
+    // Five invoke channels (the unsaved-changes dialog channel left the
+    // transport at PROJECT-030 — the dialog is shared presentation in
+    // the renderer).
+    expect((preloadIndex.match(/ipcRenderer\.invoke/g) ?? []).length).toBe(5)
   })
 
   it('the desktop bridge contract is structurally identical to the shared ProjectHostBridge', () => {
@@ -217,5 +220,44 @@ describe('the shared ribbon (PROJECT-029)', () => {
         `${name} must not define a private ribbon vocabulary (the shared contract owns it)`,
       ).toBe(false)
     }
+  })
+})
+
+describe('the shared dialogs (PROJECT-030)', () => {
+  it('the desktop shell implements NO dialog — the shared binding owns them', () => {
+    // The unsaved-changes dialog left the transport at PROJECT-030: no
+    // IPC channel, no preload surface, no native message box, and no
+    // renderer dialog DOM — the shared host binding's dialog layer
+    // renders both dialogs in the renderer of BOTH shells.
+    for (const [name, source] of [
+      ['renderer/main.ts', mainEntry],
+      ['main/menu.ts', mainMenu],
+      ['main/index.ts', mainIndex],
+      ['preload/index.ts', preloadIndex],
+      ['shared/ipc.ts', sharedIpc],
+    ] as const) {
+      expect(source.includes('confirmDiscard'), `${name} must not carry the dialog channel`).toBe(
+        false,
+      )
+      expect(source.includes('DiscardChoice'), `${name} must not carry the dialog vocabulary`).toBe(
+        false,
+      )
+      expect(source.includes('showMessageBox'), `${name} must not show a native dialog`).toBe(false)
+      expect(source.includes('gp-dialog'), `${name} must not build dialog DOM`).toBe(false)
+      expect(
+        source.includes('createTaskInformationDialog'),
+        `${name} must not construct a dialog`,
+      ).toBe(false)
+      for (const testid of ['discard-save', 'task-info-ok']) {
+        expect(
+          source.includes(testid),
+          `${name} must not own dialog testids ("${testid}" — the shared layer's)`,
+        ).toBe(false)
+      }
+    }
+    // The native file PICKERS stay transport (they are OS surfaces, not
+    // decision dialogs): open/save pickers unchanged.
+    expect(mainIndex.includes('showOpenDialog')).toBe(true)
+    expect(mainIndex.includes('showSaveDialog')).toBe(true)
   })
 })

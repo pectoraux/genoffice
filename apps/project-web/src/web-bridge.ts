@@ -14,9 +14,11 @@
  * - `readFile`      → the bounded read of a STAGED external file
  *                     (drag-and-drop — the web analog of argv/second
  *                     instance opens on desktop);
- * - `confirmDiscard`→ a three-button DOM dialog (Save / Don't Save /
- *                     Cancel — `window.confirm` is two-button and cannot
- *                     express the contract);
+ * - `confirmDiscard`→ REMOVED at PROJECT-030: the unsaved-changes dialog
+ *                     is shared presentation rendered by the host
+ *                     binding's dialog layer in BOTH hosts (the desktop's
+ *                     native message box went with it — one dialog, two
+ *                     hosts, zero shell dialog code);
  * - `onCloseRequested`/`approveClose` → the close-handshake registration
  *                     surfaces. The beforeunload guard is PURELY
  *                     SYNCHRONOUS: it consults the registered dirty probe
@@ -29,9 +31,9 @@
  *                     handler fires ONLY through the in-app close
  *                     request (`requestClose` — the native window-close
  *                     button's web analog), where the handshake CAN
- *                     complete; and every in-app destructive action
- *                     (New/Open over unsaved changes) consults the same
- *                     confirmDiscard dialog the desktop uses;
+ *                     complete; every in-app destructive action
+ *                     (New/Open over unsaved changes) consults the SHARED
+ *                     dialog the host binding renders;
  * - `onMenuCommand` → the DOM menu bar's activation path (the web analog
  *                     of the native menu's forwarding).
  *
@@ -49,7 +51,6 @@
  * the whole web host source; the built bundle is scanned in CI).
  */
 import type {
-  DiscardChoice,
   HostAppInfo,
   MenuCommandId,
   NativeReadResult,
@@ -206,10 +207,6 @@ export function createWebBridge(): WebBridge {
       }
     },
 
-    confirmDiscard(projectName: string): Promise<DiscardChoice> {
-      return confirmDiscardDialog(projectName)
-    },
-
     async appInfo(): Promise<HostAppInfo> {
       return { platform: navigator.platform || 'web', version: WEB_APP_VERSION }
     },
@@ -275,66 +272,5 @@ function chooseFile(input: HTMLInputElement): Promise<File | null> {
     input.addEventListener('change', () => done(input.files?.[0] ?? null))
     input.addEventListener('cancel', () => done(null))
     input.click()
-  })
-}
-
-/**
- * The three-button unsaved-changes dialog (Save / Don't Save / Cancel) —
- * the DOM analog of the native desktop dialog. Escape cancels (the native
- * dialog's keyboard behavior); focus starts on Save.
- */
-function confirmDiscardDialog(projectName: string): Promise<DiscardChoice> {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div')
-    overlay.dataset.testid = 'discard-dialog'
-    overlay.className = 'gp-web-dialog-overlay'
-
-    const dialog = document.createElement('div')
-    dialog.className = 'gp-web-dialog'
-    dialog.setAttribute('role', 'alertdialog')
-    dialog.setAttribute('aria-modal', 'true')
-    dialog.setAttribute('aria-label', 'Unsaved changes')
-
-    const title = document.createElement('div')
-    title.className = 'gp-web-dialog-title'
-    title.textContent = `Save changes to '${projectName}'?`
-
-    const buttons = document.createElement('div')
-    buttons.className = 'gp-web-dialog-buttons'
-
-    let settled = false
-    const answer = (choice: DiscardChoice): void => {
-      if (settled) return
-      settled = true
-      overlay.remove()
-      document.removeEventListener('keydown', onKey)
-      resolve(choice)
-    }
-
-    const addButton = (label: string, choice: DiscardChoice, testid: string): void => {
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.dataset.testid = testid
-      button.textContent = label
-      button.addEventListener('click', () => answer(choice))
-      buttons.appendChild(button)
-    }
-    addButton('Save', 'save', 'discard-save')
-    addButton("Don't Save", 'discard', 'discard-dont-save')
-    addButton('Cancel', 'cancel', 'discard-cancel')
-
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        answer('cancel')
-      }
-    }
-    document.addEventListener('keydown', onKey, { capture: true })
-
-    dialog.appendChild(title)
-    dialog.appendChild(buttons)
-    overlay.appendChild(dialog)
-    document.body.appendChild(overlay)
-    overlay.querySelector<HTMLButtonElement>('[data-testid="discard-save"]')?.focus()
   })
 }

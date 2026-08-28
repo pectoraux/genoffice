@@ -54,7 +54,7 @@ export interface RibbonTabSpec {
 }
 
 /**
- * The shared ribbon structure — the canonical menu vocabulary (all 15
+ * The shared ribbon structure — the canonical menu vocabulary (all 16
  * commands) arranged in the ribbon's tab→group→control shape. Tab order
  * follows the Project convention (the semantic Task tab first); the
  * vocabulary lockstep (ribbon ids = `MENU_COMMAND_IDS` exactly) is pinned
@@ -69,6 +69,7 @@ export const RIBBON_TABS: readonly RibbonTabSpec[] = [
         label: 'Tasks',
         controls: [
           { id: 'task.create', label: 'New Task', accelerator: 'Insert' },
+          { id: 'task.information', label: 'Task Information' },
           { id: 'edit.deleteTask', label: 'Delete Task', accelerator: 'Delete' },
         ],
       },

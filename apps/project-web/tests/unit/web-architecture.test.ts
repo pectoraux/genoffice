@@ -25,6 +25,7 @@ import { describe, expect, it } from 'vitest'
 import mainEntry from '../../src/main.ts?raw'
 import menuSource from '../../src/menu.ts?raw'
 import webBridgeSource from '../../src/web-bridge.ts?raw'
+import webCssSource from '../../src/web.css?raw'
 import { createWebBridge } from '../../src/web-bridge.js'
 import type { WebBridge } from '../../src/web-bridge.js'
 import type { ProjectHostBridge } from '@genoffice/project-host'
@@ -187,5 +188,44 @@ describe('the shared ribbon (PROJECT-029)', () => {
     // The entry still mounts ONLY the shared binding (which carries the
     // ribbon) — no additional host package is pulled in.
     expect(webSources['main.ts']).toContain("from '@genoffice/project-host'")
+  })
+})
+
+describe('the shared dialogs (PROJECT-030)', () => {
+  it('the web shell adds NO dialog of its own — the shared binding owns them', () => {
+    // The shared host binding's dialog layer renders the unsaved-changes
+    // dialog and the Task Information dialog in BOTH shells; the web
+    // sources carry no dialog DOM, no dialog constructor, and no dialog
+    // testids of their own.
+    for (const [name, source] of Object.entries(webSources)) {
+      expect(source.includes('gp-dialog'), `${name} must not build dialog DOM`).toBe(false)
+      expect(
+        source.includes('gp-web-dialog'),
+        `${name} must not carry the pre-030 private web dialog`,
+      ).toBe(false)
+      expect(
+        source.includes('confirmDiscardDialog'),
+        `${name} must not implement a dialog (the shared binding renders them)`,
+      ).toBe(false)
+      expect(
+        source.includes('confirmUnsavedChanges'),
+        `${name} must not construct the shared dialog directly (the controller owns it)`,
+      ).toBe(false)
+      expect(
+        source.includes('createTaskInformationDialog'),
+        `${name} must not construct the shared task dialog (the controller owns it)`,
+      ).toBe(false)
+      for (const testid of ['discard-save', 'task-info-ok']) {
+        expect(
+          source.includes(testid),
+          `${name} must not own dialog testids ("${testid}" — the shared layer's)`,
+        ).toBe(false)
+      }
+    }
+  })
+
+  it('the web stylesheet carries no dialog chrome (the shared stylesheet owns it)', () => {
+    expect(webCssSource.includes('gp-web-dialog')).toBe(false)
+    expect(webCssSource.includes('gp-dialog')).toBe(false)
   })
 })

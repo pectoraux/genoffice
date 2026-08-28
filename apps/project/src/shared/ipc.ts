@@ -6,9 +6,12 @@
  * host binding from `@genoffice/project-host`, consumed since PROJECT-028).
  * This module owns CHANNEL IDENTIFIERS, MENU COMMAND IDS, and the DESKTOP
  * BRIDGE INTERFACE — transport vocabulary only. It contains no Project
- * semantics: every semantic value that crosses the bridge is either raw
- * file bytes (the canonical file adapters run in the shared host
- * controller) or an opaque path string.
+ * semantics and (since PROJECT-030, the shared dialogs increment) no dialog
+ * surfaces: the modal dialogs are shared presentation rendered by
+ * `@genoffice/project-host`'s dialog layer in the renderer — every semantic
+ * value that crosses the bridge is either raw file bytes (the canonical
+ * file adapters run in the shared host controller) or an opaque path
+ * string.
  *
  * The main process never imports a `@genoffice/*` package (the desktop
  * architecture discipline suite asserts this): dialogs, file reads/writes,
@@ -32,8 +35,6 @@ export const PROJECT_IPC = {
   readFile: 'project:read-file',
   /** Renderer → main (invoke): write raw bytes to a path. */
   writeFile: 'project:write-file',
-  /** Renderer → main (invoke): unsaved-changes dialog (Save/Discard/Cancel). */
-  confirmDiscard: 'project:confirm-discard',
   /** Renderer → main (invoke): host platform/version echo. */
   appInfo: 'project:app-info',
   /** Main → renderer (send): a native menu command was activated. */
@@ -62,6 +63,7 @@ export type MenuCommandId =
   | 'edit.redo'
   | 'edit.deleteTask'
   | 'task.create'
+  | 'task.information'
   | 'task.indent'
   | 'task.outdent'
   | 'view.zoomIn'
@@ -87,9 +89,6 @@ export interface OpenFileSelection {
   readonly read: NativeReadResult
 }
 
-/** The unsaved-changes dialog answer. */
-export type DiscardChoice = 'save' | 'discard' | 'cancel'
-
 /** Host platform/version echo (presentation only, never semantics). */
 export interface DesktopAppInfo {
   readonly platform: NodeJS.Platform
@@ -114,8 +113,6 @@ export interface ProjectDesktopBridge {
   /** Writes raw bytes atomically-enough for the desktop flow; errors are
    * returned, never thrown, so the renderer's status surface can show them. */
   writeFile(path: string, bytes: Uint8Array): Promise<{ ok: boolean; error?: string }>
-  /** The unsaved-changes dialog: Save / Don't Save / Cancel. */
-  confirmDiscard(projectName: string): Promise<DiscardChoice>
   /** Host platform/version echo. */
   appInfo(): Promise<DesktopAppInfo>
   /** Native menu command activation (main → renderer). */

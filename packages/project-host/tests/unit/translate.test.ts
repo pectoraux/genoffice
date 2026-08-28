@@ -181,6 +181,7 @@ describe('menu translation converges with the keyboard table', () => {
         'edit.redo',
         'edit.deleteTask',
         'task.create',
+        'task.information',
         'task.indent',
         'task.outdent',
         'view.zoomIn',
@@ -195,6 +196,25 @@ describe('menu translation converges with the keyboard table', () => {
   it('every menu command maps to a non-none action', () => {
     for (const id of MENU_COMMAND_IDS) {
       expect(translateMenuCommand(id).kind).not.toBe('none')
+    }
+  })
+
+  it('task.information opens the shared dialog (the PROJECT-030 command)', () => {
+    // The dialog action — deliberately WITHOUT a keyboard binding (the
+    // shared keyboard table invents no binding for it; menu/ribbon
+    // activation are the firing surfaces).
+    expect(translateMenuCommand('task.information')).toEqual({
+      kind: 'dialog',
+      action: 'taskInformation',
+    })
+    for (const input of [
+      key({ key: 'i', ctrlOrMeta: true }),
+      key({ key: 'F4' }),
+      key({ key: 'Enter' }),
+    ]) {
+      expect(translateKeyDown(input, { editing: false })).not.toEqual(
+        translateMenuCommand('task.information'),
+      )
     }
   })
 

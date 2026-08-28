@@ -3,19 +3,19 @@
  * contract types): the ONE bounded web read (size-first rejection — the
  * browser analog of the desktop's stat-first bounded read), the
  * external-file (drag-and-drop) staging + readFile surface, the
- * three-button discard dialog, the BEFOREUNLOAD CLOSE GUARD (the
- * corrected lifecycle boundary: the unload event is purely synchronous
- * and NEVER initiates the controller's asynchronous close handshake —
- * asserted with a registered close-handler spy AND against the REAL
- * shared controller mounted on the REAL web bridge), the in-app close
+ * BEFOREUNLOAD CLOSE GUARD (the corrected lifecycle boundary: the unload
+ * event is purely synchronous and NEVER initiates the controller's
+ * asynchronous close handshake — asserted with a registered close-handler
+ * spy AND against the REAL shared controller mounted on the REAL web
+ * bridge, whose unsaved-changes consultation now consults the SHARED
+ * dialog rendered by the controller — PROJECT-030), the in-app close
  * request (the one firing path for the registered handshake), the
  * menu-command dispatch path, and the download save flow (with the
  * `URL.createObjectURL` seam jsdom lacks stubbed; the real download is
  * E2E-proven in chromium).
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createWebBridge, MAX_WEB_FILE_BYTES, readCapped } from '../../src/web-bridge.js'
-import type { WebBridge } from '../../src/web-bridge.js'
 import type { MenuCommandId, NativeReadResult } from '@genoffice/project-host'
 import { createProjectApp } from '@genoffice/project-host'
 
@@ -105,51 +105,13 @@ describe('the external-file (drag-and-drop) open surface', () => {
   })
 })
 
-describe('the unsaved-changes dialog', () => {
-  let bridge: WebBridge
-  beforeEach(() => {
-    bridge = createWebBridge()
-  })
-  afterEach(() => {
-    document.querySelector('[data-testid="discard-dialog"]')?.remove()
-  })
-
-  it('Save / Don’t Save / Cancel resolve the contract choices', async () => {
-    for (const [testid, choice] of [
-      ['discard-save', 'save'],
-      ['discard-dont-save', 'discard'],
-      ['discard-cancel', 'cancel'],
-    ] as const) {
-      const pending = bridge.confirmDiscard('E2E Build')
-      await flush()
-      const button = document.querySelector<HTMLButtonElement>(`[data-testid="${testid}"]`)
-      expect(button, `the ${testid} button must render`).not.toBeNull()
-      button!.click()
-      await expect(pending).resolves.toBe(choice)
-      expect(document.querySelector('[data-testid="discard-dialog"]')).toBeNull()
-    }
-  })
-
-  it('the dialog names the project', async () => {
-    const pending = bridge.confirmDiscard('Tower Construction')
-    await flush()
-    expect(document.querySelector('[data-testid="discard-dialog"]')?.textContent).toContain(
-      'Tower Construction',
-    )
-    document.querySelector<HTMLButtonElement>('[data-testid="discard-cancel"]')!.click()
-    await expect(pending).resolves.toBe('cancel')
-  })
-
-  it('Escape cancels (the native dialog keyboard behavior)', async () => {
-    const pending = bridge.confirmDiscard('E2E Build')
-    await flush()
-    document.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
-    )
-    await expect(pending).resolves.toBe('cancel')
-    expect(document.querySelector('[data-testid="discard-dialog"]')).toBeNull()
-  })
-})
+// (The unsaved-changes dialog describe lived here before PROJECT-030: the
+// dialog is now the SHARED layer's — `@genoffice/project-host`'s
+// `confirmUnsavedChanges`, rendered by the controller itself — and its
+// battery lives in the host package (tests/unit/dialogs.test.ts + the
+// app.test.ts close-guard integration). The web bridge implements NO
+// dialog surface anymore; the REAL-controller integration tests below
+// still drive the shared dialog through its real DOM buttons.)
 
 describe('the beforeunload close guard (purely synchronous)', () => {
   // ONE bridge per window — exactly the production shape (the entry
