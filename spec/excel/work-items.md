@@ -287,7 +287,7 @@ Implementation evidence (2026-08-28, branch excel-024-cf):
 Objective: Import workbook and sheet-scoped defined names, provide Name Manager UI, support create/edit/delete of supported names, and persist `definedNamesState`.
 Dependencies: EXCEL-015.
 Required verification: workbook scope, sheet scope, print names if supported, formulas consuming names, reopen.
-Status: IMPLEMENTING → PR_OPEN / VERIFYING (branch excel-025-named-ranges from main @ 71188d9). All local gates green: typecheck ×3, unit 693/693 + 475+4sk + 235/235, architecture 6 new guards, format:check vs origin/main, ESLint, production build, full browser E2E 133/133 (11 new name scenarios). NOT VERIFIED — the architect owns that transition.
+Status: PR_OPEN — PR #31, branch excel-025-named-ranges head 46a0118 (from main @ 71188d9). Local gates: typecheck ×3, unit 693/693 + 475+4sk + 235/235, architecture 6 new guards, format:check vs origin/main, ESLint, production build, full browser E2E 133/133 (11 new name scenarios), frozen surfaces zero changes. CI on 46a0118: web gate GREEN (the canonical Excel gate); test/e2e/foundation failures fully attributed pre-existing (Lint annotations identical to the merged-PR set with zero in EXCEL-025 files; frozen Electron shell; the structural cross-domain isolation guard — identical on merged+verified PRs #23/#25/#29). NOT VERIFIED — the architect owns ARCHITECT_REVIEW → APPROVED → MERGED → VERIFIED.
 
 Implementation evidence (2026-08-28, branch excel-025-named-ranges):
 

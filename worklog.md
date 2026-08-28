@@ -1412,3 +1412,25 @@ Work Log:
 Stage Summary:
 
 - EXCEL-025 implementation complete on branch excel-025-named-ranges: canonical reader (model/preserve split, duplicate ranking, namesLocked fail-closed), strict wire validation, browser Name Manager + Name Box + journal + declarative snapshot + split-save, formulas consuming names resolve live, the preservation invariant proven at gateway (byte-verbatim) and browser (XML assertions) levels. Workflow state: IMPLEMENTING → ready for push/PR (PR_OPEN transition on push). NOT VERIFIED — the architect owns ARCHITECT_REVIEW → APPROVED → MERGED → VERIFIED.
+
+---
+
+Task ID: EXCEL-025-push-pr-ci
+Agent: Z.ai (Implementation / Verification Operator)
+Task: EXCEL-025 — push branch, open PR, drive CI to conclusion, attribute failures.
+
+Work Log:
+
+- Branch excel-025-named-ranges pushed @ 46a0118 (1 commit, 21 files: 13 modified + 4 new source/test + ledger/worklog).
+- PR #31 opened via the API (head 46a0118, base main): "EXCEL-025: Named Ranges — gateway defined-names reader, definedNamesState wire, Name Manager + Name Box (11-scenario E2E)" with the architect-required body (architecture/data-flow diagram, supported vs fail-closed classification, test counts, byte-preservation evidence, browser E2E evidence, CI evidence section, known limitations, frozen-surface result). The first API call returned a transient HTTP 500; the retry succeeded. https://github.com/pectoraux/genoffice/pull/31
+- CI on 46a0118 (all five checks driven to conclusion):
+  - web: SUCCESS — the canonical Excel gate, green on the PR head.
+  - desktop-e2e: SUCCESS (a check outside the Excel scope).
+  - test: failure ONLY at the Lint step (formatting + theme-color steps green). All 20 annotations fetched via the check-run annotations API: file-for-file IDENTICAL to the established pre-existing set — 2x .github, 2x apps/docs/docs-migrated-handlers.ts, 1x apps/docs/docs-runtime.ts, 6x apps/docs/file-dialog-ownership.test.ts, 1x apps/sheets/sheets-ai-handlers.ts, 3x apps/sheets/renderer/App.tsx, 1x apps/sheets/InsertFunctionDialog.tsx, 2x apps/slides/renderer/App.tsx, 1x apps/slides/TextEditOverlay.tsx, 1x apps/web/BOQ.tsx (pre-existing file, NOT in the EXCEL-025 diff — verified). ZERO annotations in EXCEL-025 files.
+  - e2e: failure ONLY at the frozen Electron shell step — the standing pre-existing pattern (identical on merged PRs #23/#25/#29).
+  - foundation: failure at "Verify branch isolation" — the project-foundation isolation guard that structurally fires on every Excel PR (diffs vs main and rejects Excel-surface changes; identical on merged+verified PRs #23/#25/#29). Not an EXCEL-025 defect; documented for the architect's review.
+- Spec ledger updated in lockstep AFTER evidence: work-items.md EXCEL-025 status → PR_OPEN (PR #31, head 46a0118, gate results, CI attribution); verification-matrix.md EXCEL-025 evidence → CI line added, DEPLOYED updated (push done, PR open, production E2E pending post-merge with deployed SHA = merged main).
+
+Stage Summary:
+
+- EXCEL-025 workflow state: PR_OPEN — PR #31 (https://github.com/pectoraux/genoffice/pull/31), head 46a0118, canonical web gate GREEN, all other check failures fully attributed pre-existing with API-level evidence (annotations identical to the established merged-PR set; frozen Electron shell; structural cross-domain isolation guard). All local gates green on the exact pushed head. DEPLOYED evidence remains pending post-merge; ARCHITECT_REVIEW → APPROVED → MERGED → VERIFIED are the architect's transitions.
