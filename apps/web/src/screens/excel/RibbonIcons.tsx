@@ -87,6 +87,16 @@ export function FillColorIcon(): ReactElement {
   )
 }
 
+/** Framed cell — the EXCEL-027 border-color affordance. */
+export function BorderColorIcon(): ReactElement {
+  return (
+    <Icon>
+      <path d="M5.75 5.75h12.5v12.5H5.75z" />
+      <path d="M4 21.5h16" strokeWidth={2.5} />
+    </Icon>
+  )
+}
+
 export function AlignLeftIcon(): ReactElement {
   return (
     <Icon>

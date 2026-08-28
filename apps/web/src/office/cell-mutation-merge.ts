@@ -38,7 +38,7 @@
  * the wire save plan (the route's `expectCellEdit` validates the unchanged
  * `CellEdit` shape: sheetName/row/column/writeValue/cell/style/rich/styleReset).
  */
-import type { CellEdit, CellState } from '@genoffice/xlsx-gateway'
+import type { CellEdit, CellState, WorkbookStyleEdit } from '@genoffice/xlsx-gateway'
 
 /**
  * A parsed Univer cell mutation: the canonical `CellEdit` it produces plus
@@ -176,6 +176,20 @@ export function mergeCellEdit(existing: CellEdit | undefined, incoming: ParsedMu
  * properties alone.
  *
  * Colors convert to the `#RRGGBB` convention of `WorkbookStyleEdit`.
+ *
+ * EXCEL-027 extends the mapping to the advanced formatting families — all
+ * of them arrive on the SAME set-range-values mutation (verified from the
+ * installed Univer 0.25.1 source: FRange.setBorder → SetBorderBasicCommand
+ * → SetRangeValuesMutation; 'sheet.command.set-text-rotation' →
+ * SetStyleCommand → SetRangeValuesMutation):
+ *   - `tr`  → textRotation (Univer `a` is counterclockwise-positive -90..90;
+ *     OOXML stores 0..90 up / 91..180 down as 90+degrees / 255 stacked;
+ *     `null` clears → 0, the writer's clear sentinel)
+ *   - `pd`  → indent (Univer models indent as left padding in px; one OOXML
+ *     step = INDENT_STEP_PX. `null` clears → 0)
+ *   - `bd`  → borderTop/Bottom/Left/Right (each edge `{ s: BorderStyleTypes,
+ *     cl: { rgb } }`; a `null` edge CLEARS that side — exactly what the
+ *     engine's clearBorder emits)
  */
 export function styleDeltaFromUniver(s: unknown): CellEdit['style'] | undefined {
   if (typeof s !== 'object' || s === null) return undefined
@@ -193,6 +207,12 @@ export function styleDeltaFromUniver(s: unknown): CellEdit['style'] | undefined 
     horizontalAlignment?: 'left' | 'center' | 'right'
     verticalAlignment?: 'top' | 'center' | 'bottom'
     wrapText?: boolean
+    textRotation?: number
+    indent?: number
+    borderTop?: WorkbookStyleEdit['borderTop']
+    borderBottom?: WorkbookStyleEdit['borderBottom']
+    borderLeft?: WorkbookStyleEdit['borderLeft']
+    borderRight?: WorkbookStyleEdit['borderRight']
   } = {}
   if ('bl' in d) out.bold = d.bl === 1
   if ('it' in d) out.italic = d.it === 1
@@ -235,7 +255,114 @@ export function styleDeltaFromUniver(s: unknown): CellEdit['style'] | undefined 
     // wrap-OFF produced wrapText:true.
     out.wrapText = d.tb === 3
   }
+  if ('tr' in d) {
+    // EXCEL-027 text rotation. Univer angles are counterclockwise-positive
+    // (-90..90); OOXML stores 0..90 up, 91..180 down as 90+degrees, 255
+    // stacked. `tr: null` clears → the writer's 0 sentinel.
+    const tr = d.tr as { a?: unknown; v?: unknown } | null
+    if (tr === null) out.textRotation = 0
+    else if (typeof tr === 'object' && tr.v === 1) out.textRotation = 255
+    else if (typeof tr === 'object' && typeof tr.a === 'number' && Number.isFinite(tr.a)) {
+      const angle = Math.max(-90, Math.min(90, Math.round(tr.a)))
+      out.textRotation = angle >= 0 ? angle : 90 - angle
+    }
+  }
+  if ('pd' in d) {
+    // EXCEL-027 indent. Univer models indent as left padding (px); one OOXML
+    // step = INDENT_STEP_PX. `pd: null` clears → the writer's 0 sentinel.
+    // The result clamps to the route's 0..250 wire bound (the OOXML
+    // CT_CellAlignment domain).
+    if (d.pd === null) out.indent = 0
+    else if (typeof d.pd === 'object' && d.pd !== null) {
+      const left = (d.pd as Record<string, unknown>).l
+      if (typeof left === 'number' && Number.isFinite(left)) {
+        out.indent = Math.min(250, Math.max(0, Math.round(left / INDENT_STEP_PX)))
+      }
+    }
+  }
+  if ('bd' in d && typeof d.bd === 'object' && d.bd !== null) {
+    // EXCEL-027 borders. Each present edge maps to its canonical side key;
+    // a `null` edge CLEARS that side (the engine's clearBorder emits
+    // `bd: { t: null, b: null, l: null, r: null }`). Diagonal keys
+    // (tl_br/bl_tr) are ignored — no canonical write path.
+    const bd = d.bd as Record<string, unknown>
+    for (const [univerKey, wireKey] of BORDER_EDGE_KEYS) {
+      if (!(univerKey in bd)) continue
+      const edge = bd[univerKey]
+      if (edge === null) {
+        out[wireKey] = null
+        continue
+      }
+      if (typeof edge !== 'object' || edge === null) continue
+      const { s, cl } = edge as { s?: unknown; cl?: unknown }
+      if (typeof s !== 'number') continue
+      const style = UNIVER_BORDER_TO_XLSX[s]
+      if (style === undefined) continue
+      const color = univerColorToHex(
+        typeof cl === 'object' && cl !== null ? (cl as { rgb?: unknown }).rgb : undefined,
+      )
+      out[wireKey] = {
+        style,
+        ...(color === undefined ? {} : { color }),
+      } as WorkbookStyleEdit[typeof wireKey]
+    }
+  }
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+// ── EXCEL-027 shared Univer↔OOXML conversion tables ─────────────────────────
+//
+// The desktop reference keeps these in edit-journal.ts (journal side) and
+// univer-sync.ts (import side); the web keeps them here, next to the journal
+// conversion, and reuses them for the import seeding in ExcelEditor.
+
+/** One OOXML indent step rendered as left cell padding, in px (desktop parity). */
+export const INDENT_STEP_PX = 8
+
+/** Univer BorderStyleTypes numeric values ↔ OOXML ST_BorderStyle names. */
+const UNIVER_BORDER_TO_XLSX: Record<number, string> = {
+  1: 'thin',
+  2: 'hair',
+  3: 'dotted',
+  4: 'dashed',
+  5: 'dashDot',
+  6: 'dashDotDot',
+  7: 'double',
+  8: 'medium',
+  9: 'mediumDashed',
+  10: 'mediumDashDot',
+  11: 'mediumDashDotDot',
+  12: 'slantDashDot',
+  13: 'thick',
+}
+
+/** OOXML ST_BorderStyle name → Univer BorderStyleTypes number (the inverse). */
+export const XLSX_BORDER_TO_UNIVER: Record<string, number> = Object.fromEntries(
+  Object.entries(UNIVER_BORDER_TO_XLSX).map(([value, name]) => [name, Number(value)]),
+)
+
+/** Univer style `bd` edge key → canonical WorkbookStyleEdit side key. */
+const BORDER_EDGE_KEYS: readonly (readonly [
+  't' | 'b' | 'l' | 'r',
+  'borderTop' | 'borderBottom' | 'borderLeft' | 'borderRight',
+])[] = [
+  ['t', 'borderTop'],
+  ['b', 'borderBottom'],
+  ['l', 'borderLeft'],
+  ['r', 'borderRight'],
+]
+
+/**
+ * OOXML text rotation → the Univer `tr` value (desktop
+ * ooxmlTextRotationToUniver parity): 255 = stacked, 91..180 = clockwise
+ * (90 - value), 1..90 = counterclockwise. Returns null for 0/absent —
+ * "no rotation" (the attribute drops).
+ */
+export function ooxmlTextRotationToUniver(value: number): { a: number; v?: number } | null {
+  if (value === 255) return { a: 0, v: 1 }
+  if (value > 180) return null
+  if (value > 90) return { a: 90 - value }
+  return value > 0 ? { a: value } : null
 }
 
 /** Univer color ('#RRGGBB') → WorkbookStyleEdit '#RRGGBB'; non-hex → undefined. */

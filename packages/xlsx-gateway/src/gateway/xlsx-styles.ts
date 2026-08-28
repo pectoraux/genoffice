@@ -1,5 +1,9 @@
 import type { WorkbookStyleEdit } from '../types.js'
-import type { CellFormatState } from '../domain/workbook.types.js'
+import type {
+  CellBorderStyleName,
+  CellBorderState,
+  CellFormatState,
+} from '../domain/workbook.types.js'
 
 /**
  * Built-in (ECMA-376 §18.8.30) numFmtId → formatCode map. numFmtIds 0..163
@@ -504,9 +508,9 @@ function argbToRgb(argb: string): string | undefined {
 /**
  * Read-only resolver for the browser-facing presentation snapshot: maps a
  * cell's cellXfs index to the editable subset of its resolved format
- * (CellFormatState). Unmodeled properties (borders, number formats,
- * textRotation, indent, theme colors) stay in the file's own XML — the
- * byte-preserving save path keeps them for cells that are not re-emitted.
+ * (CellFormatState). Unmodeled properties (diagonal borders, theme colors,
+ * exotic border styles) stay in the file's own XML — the byte-preserving
+ * save path keeps them for cells that are not re-emitted.
  *
  * Mirrors the delta vocabulary of StylesheetEditor: only properties the
  * editor can round-trip are resolved, so a rendered style can always be
@@ -516,6 +520,8 @@ export class StylesheetReader {
   private readonly fonts: readonly string[]
   private readonly fills: readonly string[]
   private readonly cellXfs: readonly string[]
+  /** Raw `<border>` entries from the styles.xml borders section, in file order. */
+  private readonly borderEntries: readonly string[]
   /**
    * numFmtId → formatCode map, parsed from the styles.xml <numFmts> section.
    * Built once at construction time. Used by resolve() to attach a
@@ -537,6 +543,8 @@ export class StylesheetReader {
     this.fonts = fontsInner === null ? [] : extractElements(fontsInner, 'font')
     this.fills = fillsInner === null ? [] : extractElements(fillsInner, 'fill')
     this.cellXfs = cellXfsInner === null ? [] : extractElements(cellXfsInner, 'xf')
+    const bordersInner = sectionInner(stylesXml, 'borders')
+    this.borderEntries = bordersInner === null ? [] : extractElements(bordersInner, 'border')
     const dxfsInner = sectionInner(stylesXml, 'dxfs')
     this.dxfEntries = dxfsInner === null ? [] : extractElements(dxfsInner, 'dxf')
     const numFmtsInner = sectionInner(stylesXml, 'numFmts')
@@ -588,6 +596,9 @@ export class StylesheetReader {
       verticalAlign?: 'top' | 'center' | 'bottom'
       wrapText?: boolean
       numberFormat?: string
+      textRotation?: number | 'vertical'
+      indent?: number
+      border?: CellBorderState
     } = {}
     // Number format — read the cellXfs numFmtId and resolve to a pattern.
     // Custom numFmtIds (≥164) live in <numFmts>; built-in ids (0..163) are
@@ -637,9 +648,96 @@ export class StylesheetReader {
         format.verticalAlign = vertical
       }
       if (readAttribute(alignment, 'wrapText') === '1') format.wrapText = true
+      // Text rotation (EXCEL-027): OOXML stores 0..180 (91..180 = clockwise
+      // down as 90 + degrees) plus the special 255 = vertically stacked.
+      // 0 is the schema default and never modeled; values outside the OOXML
+      // domain (181..254, negatives, non-integers) are ignored for modeling —
+      // the raw attribute stays byte-preserved on no-op saves because such a
+      // cell never carries a journaled rotation delta.
+      const rotationRaw = readAttribute(alignment, 'textRotation')
+      if (rotationRaw !== undefined) {
+        const rotation = Number(rotationRaw)
+        if (Number.isInteger(rotation)) {
+          if (rotation === 255) format.textRotation = 'vertical'
+          else if (rotation >= 1 && rotation <= 180) format.textRotation = rotation
+        }
+      }
+      // Indent (EXCEL-027): OOXML unsignedInt steps; 0 is the default and
+      // never modeled, malformed values are ignored for modeling.
+      const indentRaw = readAttribute(alignment, 'indent')
+      if (indentRaw !== undefined) {
+        const indent = Number(indentRaw)
+        if (Number.isInteger(indent) && indent >= 1) format.indent = indent
+      }
+    }
+    // Borders (EXCEL-027): the xf's borderId resolves through the borders
+    // section; each of the four modeled sides appears only when the file
+    // carries a border there with one of the 13 canonical ST_BorderStyle
+    // names. Diagonal edges and unmodelable styles are skipped — the writer
+    // preserves them verbatim for cells that are not re-emitted.
+    const borderId = Number(readAttribute(xf, 'borderId') ?? 0)
+    const borderXml = this.borderEntries[borderId]
+    if (borderXml !== undefined) {
+      const border = readBorderState(borderXml)
+      if (border !== undefined) format.border = border
     }
     return Object.keys(format).length > 0 ? format : undefined
   }
+}
+
+/** The 13 ST_BorderStyle names the canonical model round-trips. */
+const MODELABLE_BORDER_STYLES: ReadonlySet<string> = new Set([
+  'thin',
+  'medium',
+  'thick',
+  'dashed',
+  'dotted',
+  'double',
+  'hair',
+  'dashDot',
+  'dashDotDot',
+  'mediumDashed',
+  'mediumDashDot',
+  'mediumDashDotDot',
+  'slantDashDot',
+])
+
+/**
+ * Parses the four modeled sides off one `<border>` element. A side appears
+ * only when its element carries a modelable style; the color attaches only
+ * for a readable rgb value (theme/indexed/auto colors leave color unset).
+ * Returns undefined when no side carries a modelable border.
+ */
+function readBorderState(borderXml: string): CellBorderState | undefined {
+  const sideOf = (
+    tag: string,
+  ): { readonly style: CellBorderStyleName; readonly color?: string | undefined } | undefined => {
+    const edge =
+      new RegExp(`<${tag}\\b[^>]*/>|<${tag}\\b[^>]*>[\\s\\S]*?</${tag}>`).exec(borderXml)?.[0] ?? ''
+    if (edge === '') return undefined
+    const style = readAttribute(edge, 'style')
+    if (style === undefined || !MODELABLE_BORDER_STYLES.has(style)) return undefined
+    const color = argbToRgb(readAttribute(/<color\b[^>]*\/?>/.exec(edge)?.[0] ?? '', 'rgb') ?? '')
+    return {
+      style: style as CellBorderStyleName,
+      ...(color === undefined ? {} : { color }),
+    }
+  }
+  const state: {
+    top?: { readonly style: CellBorderStyleName; readonly color?: string | undefined }
+    bottom?: { readonly style: CellBorderStyleName; readonly color?: string | undefined }
+    left?: { readonly style: CellBorderStyleName; readonly color?: string | undefined }
+    right?: { readonly style: CellBorderStyleName; readonly color?: string | undefined }
+  } = {}
+  const left = sideOf('left')
+  if (left !== undefined) state.left = left
+  const right = sideOf('right')
+  if (right !== undefined) state.right = right
+  const topEdge = sideOf('top')
+  if (topEdge !== undefined) state.top = topEdge
+  const bottom = sideOf('bottom')
+  if (bottom !== undefined) state.bottom = bottom
+  return Object.keys(state).length > 0 ? state : undefined
 }
 
 /** XML entity decoding shared with the gateway's text decoding. */

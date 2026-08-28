@@ -227,6 +227,15 @@ Required:
 - XML style assertions;
 - browser + production E2E.
 
+Evidence (LOCAL, branch `excel-027-advanced-formatting`):
+
+- Implemented: per-edge borders (all 13 OOXML ST_BorderStyle line styles, hex colors, null clears, side isolation, diagonal + diagonalUp/Down verbatim preservation), text rotation (1..90 ccw / 91..180 cw / 255 stacked / 0 clear), indentation (read + journal + wire 0..250; UI deferred to EXCEL-032 with the desktop's Format Cells dialog), and number-format import render seeding — all through the ONE canonical `WorkbookStyleEdit` family on the existing cell-edit save pipeline (no second persistence model; the browser never learns border/rotation XML). Named cell styles / paste special / format painter = documented fail-closed/deferred (no canonical engine path). Route defect fixed: border null-clears previously dropped by validation (silently keeping the file's border); indent bound aligned 15→250 with integer enforcement.
+- UNIT: gateway `xlsx-advanced-formatting.test.ts` 23/23; gateway suite 754/754. Route `office-style-routes.test.ts` 11/11; contractor-core 510 passed + 4 skipped. Web 257/257 (unit +9 journal-mapping, architecture +7 EXCEL-027 guards). Typecheck ×3 clean; `FORMAT_BASE_REF=origin/main format:check` clean; ESLint clean on all 16 changed files; production build green (18.6s).
+- BROWSER E2E: `ribbon-advanced-formatting.spec.ts` 7/7 covering all 14 mandated scenarios (live model → save request → saved XLSX/XML → reopened model at every step; pixel-level render proofs). FULL regression 154/154 in 9 batches (147 prior + 7 new). Independent byte evidence captured (read → side-isolated border write + rotation write → reopen with exact XML + untouched sibling sheet byte-identical).
+- Frozen surfaces: ZERO changes (`apps/sheets`, `apps/docs`, `apps/slides`, `apps/shell`, `packages/platform-electron`, `packages/renderer-bridge`).
+- CI (PR #37, head e92b8e9): the canonical `web` gate GREEN — Typecheck (web/web-host/core) clean; unit web 257/257, web-host 78/78, contractor-core 510 passed + 4 skipped; production build green (16.61s); Playwright browser E2E **154 passed (19.5m)**, exactly matching local. `test` fails ONLY at Lint — 20 annotations file-for-file the established pre-existing set (all frozen/non-Excel files; verified via the check-run annotations API, ZERO in the EXCEL-027 diff); Check formatting SUCCESS. `e2e` fails ONLY at the frozen Electron shell step (job-steps API). `foundation` fails ONLY at Verify branch isolation (the structural cross-domain guard, identical on merged+verified PRs #23/#25/#29/#31); its desktop-e2e and web-e2e jobs both SUCCESS. CI evidence comment: issuecomment 5454449857.
+- DEPLOYED: NOT YET — awaiting ARCHITECT_REVIEW → merge; production E2E against genoffice.vercel.app runs after merge with the deployed SHA exactly matching merged main (the architect owns the merge + VERIFIED transitions).
+
 ### EXCEL-028 Autosave / Recovery
 
 Required:
