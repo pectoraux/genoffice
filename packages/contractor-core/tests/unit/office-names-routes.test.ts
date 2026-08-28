@@ -166,12 +166,43 @@ describe('workbooks/save definedNamesState validation', () => {
     expect(JSON.stringify(res.body)).toContain('defined twice')
   })
 
+  it('rejects a case-insensitive duplicate within one scope', async () => {
+    // Excel resolves names case-insensitively: 'Revenue' and 'REVENUE' at
+    // one scope are the same name — the uniqueness key is
+    // (case-insensitive name, scope).
+    const res = await save({
+      definedNamesState: {
+        names: [
+          { name: 'Revenue', formula: 'Data!$A$1' },
+          { name: 'REVENUE', formula: 'Data!$A$2' },
+        ],
+        preserveNames: [],
+      },
+    })
+    expect(res.status).toBe(400)
+    expect(JSON.stringify(res.body)).toContain('defined twice')
+  })
+
   it('accepts the same name across different scopes', async () => {
     const res = await save({
       definedNamesState: {
         names: [
           { name: 'Revenue', formula: 'Data!$A$1' },
           { name: 'Revenue', formula: 'Other!$A$1', sheetIndex: 1 },
+        ],
+        preserveNames: [],
+      },
+    })
+    expect(res.status).toBe(400)
+    expect(JSON.stringify(res.body)).toContain(ENGINE_STAGE_REACHED)
+  })
+
+  it('accepts case-variant names across different scopes', async () => {
+    const res = await save({
+      definedNamesState: {
+        names: [
+          { name: 'Revenue', formula: 'Data!$A$1' },
+          { name: 'revenue', formula: 'Other!$A$1', sheetIndex: 1 },
         ],
         preserveNames: [],
       },

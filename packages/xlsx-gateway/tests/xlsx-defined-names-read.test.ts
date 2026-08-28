@@ -92,13 +92,51 @@ describe('parseDefinedNamesState', () => {
     expect(state.preserveNames).toEqual(['Dangling', 'EmptyBody'])
   })
 
-  it('ranks duplicate names the way the desktop installs them and preserves the losers', () => {
+  it('models the same name at workbook and sheet scope as distinct definitions', () => {
+    // Excel writes both freely — they resolve differently by context. The
+    // canonical writer keys uniqueness on (name, scope), so the reader must
+    // model BOTH (the frozen desktop collapses them only because its
+    // engine table is name-keyed).
+    const state = parseDefinedNamesState(
+      wb(
+        '<definedNames>' +
+          '<definedName name="Total">Data!$A$1:$A$5</definedName>' +
+          '<definedName name="Total" localSheetId="0">Data!$C$1:$C$5</definedName>' +
+          '<definedName name="Unrelated">Other!$A$1</definedName>' +
+          '</definedNames>',
+      ),
+      2,
+    )
+    expect(state.names).toEqual([
+      { name: 'Total', formula: 'Data!$A$1:$A$5' },
+      { name: 'Total', formula: 'Data!$C$1:$C$5', sheetIndex: 0 },
+      { name: 'Unrelated', formula: 'Other!$A$1' },
+    ])
+    expect(state.preserveNames).toEqual([])
+  })
+
+  it('models case-variant names across scopes as distinct definitions', () => {
+    const state = parseDefinedNamesState(
+      wb(
+        '<definedNames>' +
+          '<definedName name="Foo">Data!$A$1</definedName>' +
+          '<definedName name="foo" localSheetId="1">Other!$A$2</definedName>' +
+          '</definedNames>',
+      ),
+      2,
+    )
+    expect(state.names).toEqual([
+      { name: 'Foo', formula: 'Data!$A$1' },
+      { name: 'foo', formula: 'Other!$A$2', sheetIndex: 1 },
+    ])
+    expect(state.preserveNames).toEqual([])
+  })
+
+  it('models every scope of a multi-scope name — only same-scope duplicates collapse', () => {
     // Excel_Version exists as a #REF! sheet-scoped residue, a live
-    // sheet-scoped definition, and a live workbook-level definition — the
-    // desktop's applyDefinedNames ordering test exactly. The workbook-level
-    // definition wins; the losers are preserved (one deduped preserve
-    // entry covers every element with that name — the writer checks
-    // membership by name).
+    // sheet-scoped definition, and a live workbook-level definition. Each
+    // (name, scope) is its own group — all three are modeled, nothing is
+    // preserved, nothing is lost.
     const state = parseDefinedNamesState(
       wb(
         '<definedNames>' +
@@ -111,10 +149,55 @@ describe('parseDefinedNamesState', () => {
       2,
     )
     expect(state.names).toEqual([
+      { name: 'Excel_Version', formula: '#REF!', sheetIndex: 0 },
+      { name: 'Excel_Version', formula: 'Other!$H$9', sheetIndex: 1 },
       { name: 'Excel_Version', formula: 'Data!$H$9' },
       { name: 'Unrelated', formula: 'Data!$A$1' },
     ])
+    expect(state.preserveNames).toEqual([])
+  })
+
+  it('a genuine same-scope duplicate models the winner and preserves the loser', () => {
+    // Excel never writes two entries with the same (name, scope); a
+    // hand-crafted file can. The live definition outranks the #REF!
+    // residue; the loser is preserved verbatim (fail-closed — the name
+    // becomes uneditable rather than lost, and a names-dirty save fails
+    // closed at the writer's collision guard by design).
+    const state = parseDefinedNamesState(
+      wb(
+        '<definedNames>' +
+          '<definedName name="Excel_Version">#REF!</definedName>' +
+          '<definedName name="Excel_Version">Data!$D$1</definedName>' +
+          '<definedName name="Unrelated">Data!$A$1</definedName>' +
+          '</definedNames>',
+      ),
+      2,
+    )
+    expect(state.names).toEqual([
+      { name: 'Excel_Version', formula: 'Data!$D$1' },
+      { name: 'Unrelated', formula: 'Data!$A$1' },
+    ])
     expect(state.preserveNames).toEqual(['Excel_Version'])
+  })
+
+  it('a name on the preserve list never carries a modeled entry', () => {
+    // preserveNames is name-granular (the writer keeps every element with
+    // that name verbatim and rejects ANY modeled entry with it). An
+    // unmodelable element (empty body) poisons the whole name across
+    // scopes — the live sheet-scoped sibling stays file-only so a
+    // names-dirty save never fails on a guaranteed collision.
+    const state = parseDefinedNamesState(
+      wb(
+        '<definedNames>' +
+          '<definedName name="Foo">   </definedName>' +
+          '<definedName name="Foo" localSheetId="0">Data!$C$1:$C$5</definedName>' +
+          '<definedName name="Good">Data!$A$1</definedName>' +
+          '</definedNames>',
+      ),
+      2,
+    )
+    expect(state.names).toEqual([{ name: 'Good', formula: 'Data!$A$1' }])
+    expect(state.preserveNames).toEqual(['Foo'])
   })
 
   it('groups case-variant duplicates case-insensitively (engine resolution parity)', () => {
@@ -414,6 +497,90 @@ describe('definedNamesState save — preservation invariant', () => {
     )
     const { snapshot } = await readBasicWorkbook(mutation.buffer)
     expect(snapshot.definedNames).toEqual(state)
+  })
+
+  it('write → reopen round-trip: the same name at workbook and sheet scope survives both', async () => {
+    // The architect's blocker scenario: a same-name pair must round-trip
+    // as TWO definitions, never collapse (the writer keys uniqueness on
+    // (name, scope); the reader groups on the same key).
+    const buffer = await buildNamesFixture('')
+    const state = {
+      names: [
+        { name: 'Total', formula: 'Data!$A$1:$A$5' },
+        { name: 'Total', formula: 'Data!$C$1:$C$5', sheetIndex: 0 },
+      ],
+      preserveNames: [],
+    }
+    const mutation = await applyCellEditsToXlsx(
+      buffer,
+      [],
+      [],
+      [],
+      undefined,
+      [],
+      [],
+      [],
+      [],
+      [],
+      state,
+    )
+    const { snapshot } = await readBasicWorkbook(mutation.buffer)
+    expect(snapshot.definedNames).toEqual(state)
+  })
+
+  it('editing one same-name definition preserves its cross-scope twin', async () => {
+    // THE EXCEL-025 blocker invariant: editing the workbook-scoped Total
+    // must never delete or rewrite the sheet-scoped Total — the twin
+    // element survives byte-verbatim, alongside the built-ins.
+    const buffer = await buildNamesFixture(
+      '<definedNames>' +
+        '<definedName name="_xlnm.Print_Titles" localSheetId="0">Data!$1:$1</definedName>' +
+        '<definedName name="Total">Data!$A$1:$A$5</definedName>' +
+        '<definedName name="Total" localSheetId="0">Data!$C$1:$C$5</definedName>' +
+        '<definedName name="Hidden" hidden="1">Data!$A$2</definedName>' +
+        '</definedNames>',
+    )
+    const mutation = await applyCellEditsToXlsx(buffer, [], [], [], undefined, [], [], [], [], [], {
+      names: [
+        { name: 'Total', formula: 'Data!$A$1:$A$3' },
+        { name: 'Total', formula: 'Data!$C$1:$C$5', sheetIndex: 0 },
+      ],
+      preserveNames: [],
+    })
+    const xml = await unzipWorkbookXml(mutation.buffer)
+    expect(xml).toContain('<definedName name="Total">Data!$A$1:$A$3</definedName>')
+    // The untouched cross-scope twin survives byte-verbatim.
+    expect(xml).toContain('<definedName name="Total" localSheetId="0">Data!$C$1:$C$5</definedName>')
+    expect(xml).toContain(
+      '<definedName name="_xlnm.Print_Titles" localSheetId="0">Data!$1:$1</definedName>',
+    )
+    expect(xml).toContain('<definedName name="Hidden" hidden="1">Data!$A$2</definedName>')
+  })
+
+  it('deleting one same-name definition preserves the other', async () => {
+    const buffer = await buildNamesFixture(
+      '<definedNames>' +
+        '<definedName name="Total">Data!$A$1:$A$5</definedName>' +
+        '<definedName name="Total" localSheetId="0">Data!$C$1:$C$5</definedName>' +
+        '</definedNames>',
+    )
+    const mutation = await applyCellEditsToXlsx(buffer, [], [], [], undefined, [], [], [], [], [], {
+      names: [{ name: 'Total', formula: 'Data!$A$1:$A$5' }],
+      preserveNames: [],
+    })
+    const xml = await unzipWorkbookXml(mutation.buffer)
+    expect(xml).toContain('<definedName name="Total">Data!$A$1:$A$5</definedName>')
+    expect(xml).not.toContain('localSheetId="0"')
+    // And the mirror image: deleting the workbook one keeps the scoped one.
+    const mirror = await applyCellEditsToXlsx(buffer, [], [], [], undefined, [], [], [], [], [], {
+      names: [{ name: 'Total', formula: 'Data!$C$1:$C$5', sheetIndex: 0 }],
+      preserveNames: [],
+    })
+    const mirrorXml = await unzipWorkbookXml(mirror.buffer)
+    expect(mirrorXml).not.toContain('<definedName name="Total">')
+    expect(mirrorXml).toContain(
+      '<definedName name="Total" localSheetId="0">Data!$C$1:$C$5</definedName>',
+    )
   })
 
   it('rejects names + structural ops in the SAME save (the split-save contract)', async () => {

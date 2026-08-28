@@ -3105,7 +3105,11 @@ function expectDefinedNamesState(value: unknown, field: string): DefinedNamesSta
   })
   const seen = new Set<string>()
   for (const entry of names) {
-    const key = `${entry.name}\u0000${entry.sheetIndex ?? -1}`
+    // The canonical writer's uniqueness key: (case-insensitive name, scope).
+    // Excel resolves names case-insensitively — 'Revenue' and 'REVENUE' at
+    // one scope are the same name (duplicate), while the same name at
+    // workbook scope and at sheet scope is two legitimate definitions.
+    const key = `${entry.name.toLowerCase()}\u0000${entry.sheetIndex ?? -1}`
     if (seen.has(key)) {
       throw new OfficeValidationError(
         'validation',

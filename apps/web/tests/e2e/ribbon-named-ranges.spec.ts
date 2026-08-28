@@ -4,11 +4,12 @@
  * Proves the defined-names persistence chain end-to-end through the REAL
  * HTTP boundary:
  *
- *   open → read <definedNames> (model/preserve split, ranked duplicates,
+ *   open → read <definedNames> (model/preserve split per (name, scope),
  *   _xlnm + hidden skipped) → WorkbookSnapshot.definedNames → browser
  *   installs the names in the real Univer defined-name model (public
- *   builder facade under journal suppression) → Name Manager lists them;
- *   Name Box resolves them; formulas consume them
+ *   builder facade + the same-name sibling path, under journal
+ *   suppression) → Name Manager lists them; Name Box resolves them with
+ *   Excel scope precedence; formulas consume them
  *   → user creates/edits/deletes through the REAL facade → the engine's
  *   set/remove-defined-name mutations mark the workbook names-dirty
  *   → save snapshots the LIVE model as the canonical DefinedNamesState
@@ -18,9 +19,13 @@
  *
  * Also proves the preservation invariant (editing one name never drops
  * its siblings, the print titles, the hidden names, or the
- * reader-preserved unmodelable names), the split-save (names never ride
- * the same save as structural ops), the no-op byte preservation, the
- * structural-op reference shift, and the namesLocked fail-closed surface.
+ * reader-preserved unmodelable names), the SAME-NAME CROSS-SCOPE pair
+ * (workbook + worksheet definitions of one name coexist, resolve, and
+ * edit independently — the architect's blocker correction), the
+ * fail-closed GENUINE same-scope duplicate, the split-save (names never
+ * ride the same save as structural ops), the no-op byte preservation,
+ * the structural-op reference shift, and the namesLocked fail-closed
+ * surface.
  *
  * No browser-side OOXML. The browser only ever exchanges typed
  * DefinedNamesState snapshots taken from Univer's live model.
@@ -37,6 +42,7 @@ import {
   buildExcelNamesFixture,
   buildExcelNamesLockedFixture,
   buildExcelNamesCollisionFixture,
+  buildExcelNamesSameNameFixture,
   readZipEntry,
 } from './fixtures'
 
@@ -107,6 +113,21 @@ function readCellValue(
   )
 }
 
+/** The active sheet name (scope resolution assertions). */
+function readActiveSheetName(page: import('@playwright/test').Page): Promise<string> {
+  return page.evaluate(() => {
+    const runtime = (
+      window as {
+        __genofficeExcelRuntime?: {
+          univerAPI: {
+            getActiveWorkbook: () => { getActiveSheet: () => { getSheetName: () => string } }
+          }
+        }
+      }
+    ).__genofficeExcelRuntime
+    return runtime?.univerAPI?.getActiveWorkbook?.()?.getActiveSheet?.()?.getSheetName?.() ?? ''
+  })
+}
 /** The active cell A1 label (the Name Box echo source). */
 function readActiveCell(page: import('@playwright/test').Page): Promise<string> {
   return page.evaluate(() => {
@@ -661,9 +682,7 @@ test.describe('Formulas tab — Named Ranges persist through the canonical pipel
     expect(pageErrors).toEqual([])
   })
 
-  test('11: a duplicate-name collision fails the save closed (desktop parity)', async ({
-    page,
-  }) => {
+  test('11: a GENUINE same-scope duplicate fails the save closed', async ({ page }) => {
     const pageErrors: string[] = []
     page.on('pageerror', (err) => pageErrors.push(String(err)))
 
@@ -674,17 +693,19 @@ test.describe('Formulas tab — Named Ranges persist through the canonical pipel
     const fixture = await buildExcelNamesCollisionFixture()
     await openFixture(page, fixture, 'e2e-ribbon-names-collision.xlsx')
 
-    // The reader modeled the workbook-level Excel_Version and preserved
-    // the #REF! sheet-scoped twin.
+    // The fixture carries Excel_Version TWICE at workbook scope (live +
+    // #REF! residue — which Excel itself never writes). The reader models
+    // the live winner and preserves the #REF! loser.
     const live = await readLiveNames(page)
     expect(live.filter((n) => n.name === 'Excel_Version')).toHaveLength(1)
     expect(live.filter((n) => n.name === 'Excel_Version')[0]?.ref).toBe('Data!$D$1')
 
     // Editing the OTHER name still fails the save: the declarative
     // snapshot carries the modeled Excel_Version while the preserve list
-    // carries its twin — the canonical writer's collision guard rejects
-    // the combination (exact desktop parity; the desktop's save fails the
-    // same way).
+    // carries its same-scope twin — the canonical writer's collision
+    // guard rejects the combination (fail-closed for TRUE same-scope
+    // duplicates; a cross-scope pair, by contrast, saves cleanly — see
+    // the same-name scenarios below).
     await openNameManager(page)
     await page.getByTestId('name-manager-row').filter({ hasText: 'GlobalTotal' }).click()
     await page.getByTestId('name-manager-ref').fill('=Data!$A$1:$A$3')
@@ -699,6 +720,331 @@ test.describe('Formulas tab — Named Ranges persist through the canonical pipel
     await expect(page.getByText('Save failed: The name "Excel_Version" also exists')).toBeVisible({
       timeout: 15_000,
     })
+
+    expect(pageErrors).toEqual([])
+  })
+
+  test('12: a same-name workbook + sheet-scoped pair opens, installs, and lists both', async ({
+    page,
+  }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    const openResponsePromise = page.waitForResponse(
+      (r) => r.url().includes('/api/office/workbooks/open') && r.request().method() === 'POST',
+    )
+    const fixture = await buildExcelNamesSameNameFixture()
+    await openFixture(page, fixture, 'e2e-ribbon-names-pair-open.xlsx')
+    expect((await openResponsePromise).status()).toBe(200)
+
+    // READ: the snapshot models BOTH definitions — the architect's
+    // blocker correction (the same name at workbook and sheet scope is
+    // two legitimate entries; nothing is preserved, nothing is lost).
+    const snapshot = (await (await openResponsePromise).json()).snapshot as {
+      definedNames?: {
+        names: Array<{ name: string; formula: string; sheetIndex?: number }>
+        preserveNames: string[]
+      }
+    }
+    expect(snapshot.definedNames?.names).toEqual([
+      { name: 'GlobalTotal', formula: 'Data!$A$1:$A$5' },
+      { name: 'Total', formula: 'Data!$B$2:$B$4' },
+      { name: 'Total', formula: 'Data!$C$7:$C$9', sheetIndex: 0 },
+    ])
+    expect(snapshot.definedNames?.preserveNames).toEqual([])
+
+    // IMPORT: the live engine model holds BOTH Totals — the engine's
+    // defined-name service is id-keyed; the sheet-scoped twin rides the
+    // public sibling param path.
+    const live = await readLiveNames(page)
+    const totals = live.filter((n) => n.name === 'Total')
+    expect(totals).toHaveLength(2)
+    expect(totals.find((n) => n.localSheetId === 'AllDefaultWorkbook')?.ref).toBe('Data!$B$2:$B$4')
+    const scoped = totals.find((n) => n.localSheetId !== 'AllDefaultWorkbook')
+    expect(scoped?.localSheetId).toBeTruthy()
+    expect(scoped?.ref).toBe('Data!$C$7:$C$9')
+    expect(live.filter((n) => n.name === 'GlobalTotal')).toHaveLength(1)
+    expect(live).toHaveLength(3)
+
+    // LIST: the Name Manager shows both definitions with their true
+    // scopes (Workbook vs the Data sheet).
+    await openNameManager(page)
+    const rows = page.getByTestId('name-manager-row')
+    await expect(rows).toHaveCount(3)
+    await expect(rows.filter({ hasText: 'Data!$B$2:$B$4' })).toHaveText(/Workbook/)
+    await expect(rows.filter({ hasText: 'Data!$C$7:$C$9' })).toHaveText(/Data/)
+    await expect(rows.filter({ hasText: 'GlobalTotal' })).toHaveCount(1)
+
+    expect(pageErrors).toEqual([])
+  })
+
+  test('13: the Name Box resolves the pair with Excel scope precedence', async ({ page }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    const fixture = await buildExcelNamesSameNameFixture()
+    await openFixture(page, fixture, 'e2e-ribbon-names-pair-resolve.xlsx')
+
+    const nameBox = page.getByTestId('excel-name-box')
+
+    // ON DATA (the scoped sheet): the sheet-scoped definition shadows the
+    // workbook one — 'Total' jumps to C7.
+    await nameBox.click()
+    await nameBox.fill('Total')
+    await nameBox.press('Enter')
+    await page.waitForTimeout(800)
+    expect(await readActiveCell(page)).toBe('C7')
+    expect(await readActiveSheetName(page)).toBe('Data')
+    // Case-insensitive resolution picks the same scoped winner.
+    await nameBox.click()
+    await nameBox.fill('total')
+    await nameBox.press('Enter')
+    await page.waitForTimeout(800)
+    expect(await readActiveCell(page)).toBe('C7')
+
+    // Switch to the Other sheet (via a plain address jump), then 'Total'
+    // resolves through the WORKBOOK definition — B2 on Data.
+    await nameBox.click()
+    await nameBox.fill('Other!B2')
+    await nameBox.press('Enter')
+    await page.waitForTimeout(800)
+    expect(await readActiveSheetName(page)).toBe('Other')
+    await nameBox.click()
+    await nameBox.fill('Total')
+    await nameBox.press('Enter')
+    await page.waitForTimeout(1000)
+    expect(await readActiveSheetName(page)).toBe('Data')
+    expect(await readActiveCell(page)).toBe('B2')
+
+    expect(pageErrors).toEqual([])
+  })
+
+  test('14: editing one same-name definition preserves the other (both directions)', async ({
+    page,
+  }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    const fixture = await buildExcelNamesSameNameFixture()
+    await openFixture(page, fixture, 'e2e-ribbon-names-pair-edit.xlsx')
+
+    // Direction 1: edit the WORKBOOK-scoped Total.
+    await openNameManager(page)
+    await page.getByTestId('name-manager-row').filter({ hasText: 'Data!$B$2:$B$4' }).click()
+    await page.getByTestId('name-manager-ref').fill('=Data!$B$2:$B$6')
+    await page.getByTestId('name-manager-apply').click()
+    await expect(page.getByText('Defined names updated')).toBeVisible({ timeout: 5_000 })
+    await page
+      .getByTestId('name-manager-dialog')
+      .getByRole('button', { name: 'Close', exact: true })
+      .click()
+
+    const saved1 = await clickSaveAndCaptureDownload(page, 'Save')
+    const xml1 = await readZipEntry(saved1, 'xl/workbook.xml')
+    expect(xml1).toContain('<definedName name="Total">Data!$B$2:$B$6</definedName>')
+    // THE BLOCKER INVARIANT: the sheet-scoped twin survives byte-verbatim.
+    expect(xml1).toContain(
+      '<definedName name="Total" localSheetId="0">Data!$C$7:$C$9</definedName>',
+    )
+    expect(xml1).toContain('<definedName name="GlobalTotal">Data!$A$1:$A$5</definedName>')
+    expect(xml1).toContain('name="_xlnm.Print_Titles"')
+
+    // REOPEN: both definitions are the file truth.
+    await openFixture(page, saved1, 'e2e-ribbon-names-pair-reopen-edit.xlsx')
+    const live = await readLiveNames(page)
+    expect(live.filter((n) => n.name === 'Total')).toHaveLength(2)
+    expect(
+      live.find((n) => n.name === 'Total' && n.localSheetId === 'AllDefaultWorkbook')?.ref,
+    ).toBe('Data!$B$2:$B$6')
+    expect(
+      live.find((n) => n.name === 'Total' && n.localSheetId !== 'AllDefaultWorkbook')?.ref,
+    ).toBe('Data!$C$7:$C$9')
+
+    // Direction 2: edit the SHEET-SCOPED Total on the reopened file.
+    await openNameManager(page)
+    await page.getByTestId('name-manager-row').filter({ hasText: 'Data!$C$7:$C$9' }).click()
+    await page.getByTestId('name-manager-ref').fill('=Data!$C$7:$C$10')
+    await page.getByTestId('name-manager-apply').click()
+    await expect(page.getByText('Defined names updated')).toBeVisible({ timeout: 5_000 })
+    await page
+      .getByTestId('name-manager-dialog')
+      .getByRole('button', { name: 'Close', exact: true })
+      .click()
+
+    const saved2 = await clickSaveAndCaptureDownload(page, 'Save')
+    const xml2 = await readZipEntry(saved2, 'xl/workbook.xml')
+    expect(xml2).toContain(
+      '<definedName name="Total" localSheetId="0">Data!$C$7:$C$10</definedName>',
+    )
+    // The workbook twin is untouched by the scoped edit.
+    expect(xml2).toContain('<definedName name="Total">Data!$B$2:$B$6</definedName>')
+
+    expect(pageErrors).toEqual([])
+  })
+
+  test('15: deleting one same-name definition preserves the other', async ({ page }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    const fixture = await buildExcelNamesSameNameFixture()
+    await openFixture(page, fixture, 'e2e-ribbon-names-pair-delete.xlsx')
+
+    // Delete the SHEET-SCOPED twin through the real dialog.
+    await openNameManager(page)
+    await page
+      .getByTestId('name-manager-row')
+      .filter({ hasText: 'Data!$C$7:$C$9' })
+      .getByRole('button', { name: /Delete Total/ })
+      .click()
+    await expect(page.getByText('Defined names updated')).toBeVisible({ timeout: 5_000 })
+    await page
+      .getByTestId('name-manager-dialog')
+      .getByRole('button', { name: 'Close', exact: true })
+      .click()
+
+    const saved = await clickSaveAndCaptureDownload(page, 'Save')
+    const xml = await readZipEntry(saved, 'xl/workbook.xml')
+    // The scoped twin is gone; the workbook twin survives byte-verbatim.
+    expect(xml).not.toContain('<definedName name="Total" localSheetId="0">')
+    expect(xml).toContain('<definedName name="Total">Data!$B$2:$B$4</definedName>')
+    expect(xml).toContain('<definedName name="GlobalTotal">Data!$A$1:$A$5</definedName>')
+    expect(xml).toContain('name="_xlnm.Print_Titles"')
+
+    // REOPEN: exactly one Total remains, the workbook one.
+    await openFixture(page, saved, 'e2e-ribbon-names-pair-reopen-delete.xlsx')
+    const live = await readLiveNames(page)
+    expect(live.filter((n) => n.name === 'Total')).toHaveLength(1)
+    expect(live.filter((n) => n.name === 'Total')[0]?.localSheetId).toBe('AllDefaultWorkbook')
+
+    expect(pageErrors).toEqual([])
+  })
+
+  test('16: a structural edit shifts BOTH same-name definitions (split-save)', async ({ page }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    const fixture = await buildExcelNamesSameNameFixture()
+    await openFixture(page, fixture, 'e2e-ribbon-names-pair-structural.xlsx')
+
+    // Insert 2 rows at the top of Data through the REAL Univer facade.
+    // UpdateDefinedNameController rewrites EVERY id-keyed entry — both
+    // Totals shift (B2:B4 → B4:B6, C7:C9 → C9:C11).
+    await page.evaluate(() => {
+      const runtime = (
+        window as {
+          __genofficeExcelRuntime?: {
+            univerAPI: {
+              getActiveWorkbook: () => {
+                getSheetByName: (sheet: string) => {
+                  insertRows: (row: number, count?: number) => unknown
+                }
+              }
+            }
+          }
+        }
+      ).__genofficeExcelRuntime
+      runtime?.univerAPI?.getActiveWorkbook?.()?.getSheetByName?.('Data')?.insertRows?.(0, 2)
+    })
+    await page.waitForTimeout(1000)
+    const live = await readLiveNames(page)
+    expect(
+      live.find((n) => n.name === 'Total' && n.localSheetId === 'AllDefaultWorkbook')?.ref,
+    ).toBe('Data!$B$4:$B$6')
+    expect(
+      live.find((n) => n.name === 'Total' && n.localSheetId !== 'AllDefaultWorkbook')?.ref,
+    ).toBe('Data!$C$9:$C$11')
+
+    // Save — the split-save writes BOTH shifted definitions.
+    const saved = await clickSaveAndCaptureDownload(page, 'Save')
+    const xml = await readZipEntry(saved, 'xl/workbook.xml')
+    expect(xml).toContain('<definedName name="Total">Data!$B$4:$B$6</definedName>')
+    expect(xml).toContain(
+      '<definedName name="Total" localSheetId="0">Data!$C$9:$C$11</definedName>',
+    )
+    expect(xml).toContain('<definedName name="GlobalTotal">Data!$A$3:$A$7</definedName>')
+
+    // REOPEN: both shifted references are the file truth.
+    await openFixture(page, saved, 'e2e-ribbon-names-pair-reopen-structural.xlsx')
+    const reopened = await readLiveNames(page)
+    expect(
+      reopened.find((n) => n.name === 'Total' && n.localSheetId === 'AllDefaultWorkbook')?.ref,
+    ).toBe('Data!$B$4:$B$6')
+    expect(
+      reopened.find((n) => n.name === 'Total' && n.localSheetId !== 'AllDefaultWorkbook')?.ref,
+    ).toBe('Data!$C$9:$C$11')
+
+    expect(pageErrors).toEqual([])
+  })
+
+  test('17: creating a same-name pair at a NEW scope works; the same scope is refused', async ({
+    page,
+  }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+    await loginAsDemoOwner(page)
+    await gotoHashRoute(page, '/office/excel')
+    await waitForGridCanvas(page)
+
+    const fixture = await buildExcelNamesSameNameFixture()
+    await openFixture(page, fixture, 'e2e-ribbon-names-pair-create.xlsx')
+
+    await openNameManager(page)
+    // 'Total' already exists at workbook + Data scope. Creating it at the
+    // OTHER sheet's scope is a legal Excel pair — the scope-aware create
+    // path installs it (the engine's scope-blind builder would reject it).
+    await page.getByTestId('name-manager-name').fill('Total')
+    await page.getByTestId('name-manager-ref').fill('=Other!$B$2')
+    await page.getByTestId('name-manager-scope').selectOption({ label: 'Other' })
+    await page.getByTestId('name-manager-apply').click()
+    await expect(page.getByText('Defined names updated')).toBeVisible({ timeout: 5_000 })
+    const rows = page.getByTestId('name-manager-row')
+    await expect(rows.filter({ hasText: 'Other!$B$2' })).toHaveCount(1)
+
+    // Creating 'Total' at WORKBOOK scope (already taken) is refused with
+    // the scope-aware message — no collision, no silent overwrite.
+    await page.getByTestId('name-manager-name').fill('Total')
+    await page.getByTestId('name-manager-ref').fill('=Data!$D$1')
+    await page.getByTestId('name-manager-scope').selectOption({ label: 'Workbook' })
+    await page.getByTestId('name-manager-apply').click()
+    await expect(page.getByText('already defined at this scope')).toBeVisible({ timeout: 5_000 })
+
+    await page
+      .getByTestId('name-manager-dialog')
+      .getByRole('button', { name: 'Close', exact: true })
+      .click()
+
+    // Save: THREE Total definitions ride the declarative snapshot.
+    const saved = await clickSaveAndCaptureDownload(page, 'Save')
+    const xml = await readZipEntry(saved, 'xl/workbook.xml')
+    expect(xml).toContain('<definedName name="Total">Data!$B$2:$B$4</definedName>')
+    expect(xml).toContain('<definedName name="Total" localSheetId="0">Data!$C$7:$C$9</definedName>')
+    expect(xml).toContain('<definedName name="Total" localSheetId="1">Other!$B$2</definedName>')
+
+    // REOPEN: all three are the file truth.
+    await openFixture(page, saved, 'e2e-ribbon-names-pair-reopen-create.xlsx')
+    const live = await readLiveNames(page)
+    expect(live.filter((n) => n.name === 'Total')).toHaveLength(3)
 
     expect(pageErrors).toEqual([])
   })

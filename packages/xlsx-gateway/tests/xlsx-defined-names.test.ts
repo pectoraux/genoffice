@@ -112,4 +112,29 @@ describe('applyDefinedNamesState', () => {
     expect(xml).toContain('<definedName name="Total">Data!$A$1</definedName>')
     expect(xml).toContain('<definedName name="Total" localSheetId="0">Data!$B$1</definedName>')
   })
+
+  it('rejects a case-insensitive duplicate within one scope (Excel resolves names case-insensitively)', () => {
+    // 'Total' and 'TOTAL' at workbook scope are the SAME name to Excel —
+    // the uniqueness key is (case-insensitive name, scope), so the pair
+    // is a duplicate and the save fails closed.
+    expect(() =>
+      applyDefinedNamesState(WORKBOOK, {
+        names: [
+          { name: 'Total', formula: 'Data!$A$1' },
+          { name: 'TOTAL', formula: 'Data!$A$2' },
+        ],
+        preserveNames: [],
+      }),
+    ).toThrow(/defined twice/)
+    // …while the case variant at a DIFFERENT scope is a legal pair.
+    expect(() =>
+      applyDefinedNamesState(WORKBOOK, {
+        names: [
+          { name: 'Total', formula: 'Data!$A$1' },
+          { name: 'TOTAL', formula: 'Data!$A$2', sheetIndex: 0 },
+        ],
+        preserveNames: [],
+      }),
+    ).not.toThrow()
+  })
 })

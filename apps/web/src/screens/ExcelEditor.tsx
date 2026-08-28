@@ -522,6 +522,11 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   // back to localSheetId indices through this list — the web performs no
   // sheet management, so the order is stable for the whole session.
   const namesSheetOrderRef = useRef<string[]>([])
+  // Monotonic id sequence for same-name siblings installed through the
+  // public param path (see insertDefinedNameSiblingParam) — the engine's
+  // defined-name service keys entries by id, so each sibling needs a
+  // unique one for the whole session.
+  const namesEngineIdSeqRef = useRef(0)
   // ── Protection journal (Review → Protect Sheet / Protect Workbook,
   //    EXCEL-020). Desktop parity (App.tsx sheetProtections +
   //    edit-journal.ts recordSheetProtection): protection is a FILE-level
@@ -1758,21 +1763,28 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           }
         }
         // ── EXCEL-025: install the file's defined names into the REAL
-        //    Univer defined-name model (desktop applyDefinedNames parity).
-        //    The reader already ranked duplicate groups (workbook-scope →
-        //    sheet-scope → #REF! residue — one modeled winner per name),
-        //    so the install list carries exactly the entries the live
-        //    model should hold. The PUBLIC builder facade
-        //    (newDefinedNameBuilder().load().build() +
-        //    insertDefinedNameBuilder) is the desktop's exact install
-        //    pair; build() runs the engine's own validation (duplicate
-        //    names, reference lookalikes, sheet/table/function-name
-        //    conflicts) and any reject lands in namesUninstalledRef —
-        //    the save preserves it byte-verbatim. Workbook-scope carries
-        //    Univer's 'AllDefaultWorkbook' sentinel; sheet scope carries
-        //    the snapshot sheet id at the entry's localSheetId index.
-        //    All under install suppression: opening a workbook is not an
-        //    edit (a reopen must start NOT names-dirty).
+        //    Univer defined-name model (desktop applyDefinedNames parity,
+        //    scope-corrected). The reader models every (case-insensitive
+        //    name, scope) definition — including the same name at BOTH
+        //    workbook and sheet scope, two legitimate Excel definitions
+        //    that resolve differently by context. The engine's underlying
+        //    service is id-keyed and holds them all, but the PUBLIC
+        //    builder's build() validation is name-keyed and scope-blind
+        //    (it rejects ANY second entry with the same name), so each
+        //    case-insensitive name group installs its FIRST entry through
+        //    the validated builder path (full engine validation: reference
+        //    lookalikes, sheet/table/function-name conflicts) and the
+        //    same-name siblings — each provably unique per (name, scope)
+        //    in the canonical model — ride the same PUBLIC facade through
+        //    insertDefinedNameSiblingParam. A reject of the group's first
+        //    entry poisons the whole name (preserveNames is name-granular,
+        //    the writer rejects any modeled entry whose name it carries):
+        //    the siblings stay uninstalled and the save keeps every
+        //    element verbatim. Workbook-scope carries Univer's
+        //    'AllDefaultWorkbook' sentinel; sheet scope carries the
+        //    snapshot sheet id at the entry's localSheetId index. All
+        //    under install suppression: opening a workbook is not an edit
+        //    (a reopen must start NOT names-dirty).
         if (snapshot.definedNames && snapshot.definedNames.names.length > 0) {
           const wb = rt.univerAPI.getActiveWorkbook()
           if (wb) {
@@ -1781,30 +1793,73 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
                 load(param: Record<string, unknown>): { build(): unknown }
               }
               insertDefinedNameBuilder(param: unknown): void
+              getDefinedNames(): Array<{ getName(): string; delete(): void }>
             }
+            const groups = new Map<
+              string,
+              Array<{ name: string; formula: string; sheetIndex?: number }>
+            >()
             for (const defined of snapshot.definedNames.names) {
+              const key = defined.name.toLowerCase()
+              const list = groups.get(key) ?? []
+              list.push(defined)
+              groups.set(key, list)
+            }
+            const localSheetIdOf = (defined: {
+              name: string
+              formula: string
+              sheetIndex?: number
+            }): string => {
+              const id =
+                defined.sheetIndex === undefined
+                  ? 'AllDefaultWorkbook'
+                  : (namesSheetOrderRef.current[defined.sheetIndex] ?? '')
+              if (defined.sheetIndex !== undefined && id === '') {
+                throw new Error('Scope index out of range.')
+              }
+              return id
+            }
+            for (const group of groups.values()) {
+              const first = group[0]!
               try {
-                const localSheetId =
-                  defined.sheetIndex === undefined
-                    ? 'AllDefaultWorkbook'
-                    : (namesSheetOrderRef.current[defined.sheetIndex] ?? '')
-                if (defined.sheetIndex !== undefined && localSheetId === '') {
-                  throw new Error('Scope index out of range.')
-                }
                 workbookFacade.insertDefinedNameBuilder(
                   workbookFacade
                     .newDefinedNameBuilder()
                     .load({
-                      name: defined.name,
-                      formulaOrRefString: defined.formula,
-                      localSheetId,
+                      name: first.name,
+                      formulaOrRefString: first.formula,
+                      localSheetId: localSheetIdOf(first),
                     })
                     .build(),
                 )
               } catch {
                 // Names the engine can't model stay file-only; the save
                 // keeps them verbatim (desktop uninstalledDefinedNames).
-                namesUninstalledRef.current.add(defined.name)
+                for (const defined of group) namesUninstalledRef.current.add(defined.name)
+                continue
+              }
+              for (const sibling of group.slice(1)) {
+                try {
+                  insertDefinedNameSiblingParam(
+                    workbookFacade,
+                    {
+                      name: sibling.name,
+                      formula: sibling.formula,
+                      localSheetId: localSheetIdOf(sibling),
+                    },
+                    namesEngineIdSeqRef.current++,
+                  )
+                } catch {
+                  // Roll the group back to file-only: preserveNames is
+                  // name-granular, so a half-installed name would fail
+                  // every names-dirty save at the writer's collision guard.
+                  for (const installed of workbookFacade.getDefinedNames()) {
+                    if (installed.getName().toLowerCase() === first.name.toLowerCase()) {
+                      installed.delete()
+                    }
+                  }
+                  for (const defined of group) namesUninstalledRef.current.add(defined.name)
+                }
               }
             }
           }
@@ -2416,18 +2471,62 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     const wb = rt?.univerAPI.getActiveWorkbook()
     const facade = definedNamesFacade(wb)
     if (!wb || !facade) return 'No workbook open.'
+    // EXCEL-025 scope correction: the engine's builder duplicate check is
+    // name-keyed and scope-blind, so Excel's rule — the same name across
+    // scopes is legal, within one scope it is a duplicate
+    // (case-insensitively) — is enforced here against the live model.
+    const live = facade.getDefinedNames().map((defined) => {
+      const localSheetId = defined.getLocalSheetId()
+      const scoped = localSheetId !== undefined && localSheetId !== 'AllDefaultWorkbook'
+      return { name: defined.getName(), scopeSheetId: scoped ? localSheetId : null }
+    })
+    const nameTakenAtScope = (
+      name: string,
+      scopeSheetId: string | null,
+      exceptNameLower: string | null,
+    ): boolean =>
+      live.some(
+        (entry) =>
+          entry.name.toLowerCase() === name.toLowerCase() &&
+          entry.scopeSheetId === scopeSheetId &&
+          (exceptNameLower === null || entry.name.toLowerCase() !== exceptNameLower),
+      )
+    const nameTakenAnywhere = (name: string): boolean =>
+      live.some((entry) => entry.name.toLowerCase() === name.toLowerCase())
+    // The writer keeps every element carrying a preserved name verbatim and
+    // rejects any modeled entry with it — a name in either preserve set can
+    // never be modeled, so creating or renaming to it is refused up front.
+    const namePreserved = (name: string): boolean =>
+      namesPreserveFileRef.current.has(name) || namesUninstalledRef.current.has(name)
     try {
       if (action.kind === 'add') {
-        facade.insertDefinedNameBuilder(
-          facade
-            .newDefinedNameBuilder()
-            .load({
-              name: action.name,
-              formulaOrRefString: action.ref.replace(/^=/, ''),
-              localSheetId: action.sheetId ?? 'AllDefaultWorkbook',
-            })
-            .build(),
-        )
+        if (nameTakenAtScope(action.name, action.sheetId, null)) {
+          return `The name "${action.name}" is already defined at this scope.`
+        }
+        if (namePreserved(action.name)) {
+          return `The name "${action.name}" exists in a form the editor cannot model — saving would duplicate it.`
+        }
+        const localSheetId = action.sheetId ?? 'AllDefaultWorkbook'
+        if (nameTakenAnywhere(action.name)) {
+          // Same name at a DIFFERENT scope: a legal Excel pair the engine's
+          // scope-blind builder cannot express — public sibling param path.
+          insertDefinedNameSiblingParam(
+            facade,
+            { name: action.name, formula: action.ref.replace(/^=/, ''), localSheetId },
+            namesEngineIdSeqRef.current++,
+          )
+        } else {
+          facade.insertDefinedNameBuilder(
+            facade
+              .newDefinedNameBuilder()
+              .load({
+                name: action.name,
+                formulaOrRefString: action.ref.replace(/^=/, ''),
+                localSheetId,
+              })
+              .build(),
+          )
+        }
       } else {
         const target = facade.getDefinedNames().find((defined) => {
           const localSheetId = defined.getLocalSheetId()
@@ -2440,7 +2539,17 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         if (action.kind === 'remove') {
           target.delete()
         } else {
-          if (action.name !== action.originalName) target.setName(action.name)
+          if (action.name !== action.originalName) {
+            if (
+              nameTakenAtScope(action.name, action.scopeSheetId, action.originalName.toLowerCase())
+            ) {
+              return `The name "${action.name}" is already defined at this scope.`
+            }
+            if (namePreserved(action.name)) {
+              return `The name "${action.name}" exists in a form the editor cannot model — saving would duplicate it.`
+            }
+            target.setName(action.name)
+          }
           target.setRef(action.ref.replace(/^=/, ''))
         }
       }
@@ -2641,13 +2750,19 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             // EXCEL-025: resolve defined names first (desktop
             // resolveGoToRef parity — names win over addresses,
             // case-insensitively; a name whose ref is a formula is not a
-            // jump target). The resolved A1 reference flows into the same
-            // goTo path an address takes (sheet switch + select + scroll).
+            // jump target) with Excel scope precedence: a definition
+            // scoped to the ACTIVE sheet shadows the workbook-level one.
+            // The resolved A1 reference flows into the same goTo path an
+            // address takes (sheet switch + select + scroll).
+            const activeSheetId =
+              runtimeRef.current?.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId() ??
+              null
             const entries = definedNameRows().map((row) => ({
               name: row.name,
               ref: row.ref,
+              scopeSheetId: row.scopeSheetId,
             }))
-            const resolved = resolveGoToNameRef(ref, entries)
+            const resolved = resolveGoToNameRef(ref, entries, activeSheetId)
             if (resolved === null) return 'Invalid reference'
             return api.goTo(resolved.a1)
           }}
@@ -2878,6 +2993,36 @@ function definedNamesFacade(workbook: unknown): DefinedNamesWorkbookFacade | nul
 }
 
 /**
+ * Insert a defined name the engine's validated builder cannot express: a
+ * name that already exists at a DIFFERENT scope (Excel-legal, and the
+ * canonical writer's (name, scope) uniqueness key permits it). Verified
+ * from the installed @univerjs/sheets 0.25.1 source: the underlying
+ * DefinedNamesService map is id-keyed — it holds, lists, edits, deletes,
+ * and structurally shifts same-name siblings per id — but
+ * FDefinedNameBuilder.build() → validateDefinedName → getValueByName is
+ * name-keyed and scope-blind, so the builder rejects ANY second entry with
+ * the same name. This is NOT a second persistence model: the entry rides
+ * the same PUBLIC insertDefinedNameBuilder facade with a hand-filled
+ * public param (ISetDefinedNameMutationParam, the shape the builder itself
+ * produces), and the caller must have already proven the
+ * (case-insensitive name, scope) key is unique — everything else still
+ * goes through the validated builder path.
+ */
+function insertDefinedNameSiblingParam(
+  workbook: { insertDefinedNameBuilder(param: unknown): void },
+  entry: { name: string; formula: string; localSheetId: string },
+  seq: number,
+): void {
+  workbook.insertDefinedNameBuilder({
+    id: `web-defined-name-${seq}`,
+    unitId: WORKBOOK_UNIT_ID,
+    name: entry.name,
+    formulaOrRefString: entry.formula,
+    localSheetId: entry.localSheetId,
+  })
+}
+
+/**
  * Snapshot the LIVE Univer defined-name model when it changed this session
  * (desktop collectDefinedNamesState parity — a declarative full-model
  * snapshot, never a mutation replay). Every modeled name rides along
@@ -2929,19 +3074,30 @@ function collectDefinedNamesState(
  * resolveGoToRef port — goto.ts is a frozen-surface module the web cannot
  * import, so the pure logic is re-implemented verbatim here). Defined
  * names win over addresses (names that look like cell refs are invalid
- * anyway) and match case-insensitively. A name whose ref is a formula
- * (e.g. OFFSET) is not a jump target and resolves to null.
+ * anyway) and match case-insensitively. EXCEL-025 scope precedence: when
+ * the same name exists at several scopes, the definition scoped to the
+ * ACTIVE sheet shadows the workbook-level one (Excel semantics; the
+ * engine's own name resolution is name-keyed and scope-blind, so this
+ * browser-side pick is the scope-correct one); a workbook-level definition
+ * applies everywhere else, and a name scoped to another sheet remains a
+ * jump target (desktop parity). A name whose ref is a formula (e.g.
+ * OFFSET) is not a jump target and resolves to null.
  */
 function resolveGoToNameRef(
   input: string,
-  entries: readonly { name: string; ref: string }[],
+  entries: readonly { name: string; ref: string; scopeSheetId: string | null }[],
+  activeSheetId: string | null,
 ): { a1: string; sheetScoped: boolean } | null {
   const trimmed = input.trim()
   if (trimmed === '') return null
   const lower = trimmed.toLowerCase()
-  const named = entries.find((entry) => entry.name.toLowerCase() === lower)
-  if (named) {
-    const ref = named.ref.replace(/^=/, '').trim()
+  const named = entries.filter((entry) => entry.name.toLowerCase() === lower)
+  if (named.length > 0) {
+    const pick =
+      named.find((entry) => entry.scopeSheetId !== null && entry.scopeSheetId === activeSheetId) ??
+      named.find((entry) => entry.scopeSheetId === null) ??
+      named[0]!
+    const ref = pick.ref.replace(/^=/, '').trim()
     if (!isA1GoToReference(ref)) return null
     return { a1: ref, sheetScoped: ref.includes('!') }
   }

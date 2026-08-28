@@ -42,8 +42,10 @@ export function applyDefinedNamesState(workbookXml: string, state: DefinedNamesS
           'saving would duplicate it.',
       )
     }
-    // Same name may repeat across different scopes, never within one.
-    const key = `${entry.name}\u0000${entry.sheetIndex ?? -1}`
+    // Same name may repeat across different scopes, never within one —
+    // case-insensitively, the way Excel resolves names ('Total' and 'TOTAL'
+    // at one scope are the same name).
+    const key = `${entry.name.toLowerCase()}\u0000${entry.sheetIndex ?? -1}`
     if (seen.has(key)) {
       throw new DefinedNameError(`The name "${entry.name}" is defined twice.`)
     }
@@ -168,11 +170,14 @@ function nameIsSaveable(name: string): boolean {
 ///
 /// - Writer-mirrored name validation (anything `validateName` would reject
 ///   goes to `preserveNames`, so editing another name can never drop it).
-/// - Scope bounds + duplicate ranking (desktop `applyDefinedNames` parity):
-///   per name (case-insensitive — the engine resolves case-insensitively),
-///   the live workbook-scoped definition outranks a sheet-scoped one, which
-///   outranks a `#REF!` residue; only the winner is modeled, the losers are
-///   preserved verbatim.
+/// - Scope bounds + duplicate ranking per (case-insensitive name, scope) —
+///   the canonical writer's exact uniqueness key. A name defined at BOTH
+///   workbook scope and sheet scope is TWO legitimate Excel definitions
+///   that resolve differently by context: both are modeled (the desktop
+///   collapses them because its engine table is name-keyed — the canonical
+///   model must not). Only a GENUINE same-scope duplicate (which Excel
+///   itself never writes) collapses: the live definition outranks a `#REF!`
+///   residue; the winner is modeled, the losers are preserved verbatim.
 ///
 /// Throws `DefinedNamesReadError` when the section's XML cannot be
 /// structurally parsed (unclosed elements, duplicate name attributes on one
@@ -186,6 +191,16 @@ export function parseDefinedNamesState(workbookXml: string, sheetCount: number):
   const inner = section[1] ?? ''
   const names: DefinedNameEntry[] = []
   const preserveNames: string[] = []
+  /// Names preserved because an ELEMENT could not be modeled at all
+  /// (dangling scope, empty body, unsaveable name). preserveNames is
+  /// name-granular — the writer keeps every element carrying a preserved
+  /// name verbatim and rejects ANY modeled entry with it — so these names
+  /// must never carry a modeled entry either (a live sibling at another
+  /// scope stays file-only rather than poisoning every names-dirty save).
+  /// Duplicate-group losers below are deliberately NOT in this set: their
+  /// modeled winner + preserved loser is the architect-endorsed fail-closed
+  /// combination the writer rejects at save time.
+  const poisonedNames = new Set<string>()
   const seenElements = new Set<string>()
   const elementPattern = /<definedName\b([^>]*?)(?:\/>|>([\s\S]*?)<\/definedName>)/g
   let match: RegExpExecArray | null
@@ -214,6 +229,7 @@ export function parseDefinedNamesState(workbookXml: string, sheetCount: number):
         // Scoped to a sheet the workbook does not contain (Excel leaves such
         // names behind when a sheet is deleted). Not modelable — preserve.
         preserveNames.push(name)
+        poisonedNames.add(name)
         continue
       }
       sheetIndex = parsed
@@ -224,10 +240,12 @@ export function parseDefinedNamesState(workbookXml: string, sheetCount: number):
       // verbatim, but an empty element body cannot survive the declarative
       // rewrite as a modeled entry — preserve it verbatim instead.
       preserveNames.push(name)
+      poisonedNames.add(name)
       continue
     }
     if (!nameIsSaveable(name)) {
       preserveNames.push(name)
+      poisonedNames.add(name)
       continue
     }
     names.push({ name, formula, ...(sheetIndex === undefined ? {} : { sheetIndex }) })
@@ -239,23 +257,39 @@ export function parseDefinedNamesState(workbookXml: string, sheetCount: number):
   if (elementCount !== seenElements.size) {
     throw new DefinedNamesReadError('The <definedNames> section could not be fully parsed.')
   }
-  // Duplicate ranking (desktop applyDefinedNames parity): per name —
-  // case-insensitively, the way the engine resolves — keep only the highest
-  // ranked definition (workbook-scope 0 → sheet-scope 1 → #REF! residue 2)
-  // and preserve the losers verbatim.
-  const rank = (entry: DefinedNameEntry): number =>
-    entry.formula.includes('#REF!') ? 2 : entry.sheetIndex === undefined ? 0 : 1
-  const byName = new Map<string, DefinedNameEntry[]>()
+  // Duplicate ranking per (case-insensitive name, scope) — the canonical
+  // writer's exact uniqueness key (case-insensitive because Excel resolves
+  // names case-insensitively). The same name at workbook scope and at sheet
+  // scope is two LEGITIMATE definitions Excel writes and resolves by
+  // context: each forms its own group and both are modeled. Only a GENUINE
+  // same-scope duplicate (Excel never writes one; hand-crafted files can)
+  // collapses — the live definition outranks a #REF! residue, the winner is
+  // modeled, and the losers are preserved verbatim (fail-closed: the name
+  // becomes uneditable rather than lost).
+  const rank = (entry: DefinedNameEntry): number => (entry.formula.includes('#REF!') ? 1 : 0)
+  const byKey = new Map<string, DefinedNameEntry[]>()
   for (const entry of names) {
-    const list = byName.get(entry.name.toLowerCase()) ?? []
+    const key = `${entry.name.toLowerCase()}\u0000${entry.sheetIndex ?? -1}`
+    const list = byKey.get(key) ?? []
     list.push(entry)
-    byName.set(entry.name.toLowerCase(), list)
+    byKey.set(key, list)
   }
   const modeled: DefinedNameEntry[] = []
-  for (const list of byName.values()) {
+  for (const list of byKey.values()) {
+    // Stable sort: equal ranks keep the file's element order.
     const sorted = [...list].sort((a, b) => rank(a) - rank(b))
     modeled.push(sorted[0]!)
     for (const loser of sorted.slice(1)) preserveNames.push(loser.name)
+  }
+  // A name preserved for an UNMODELABLE element never carries a modeled
+  // entry either (see poisonedNames) — modeling one element of such a name
+  // would make every names-dirty save fail the writer's collision guard.
+  // The whole name stays file-only, byte-preserved, and uneditable.
+  for (let i = modeled.length - 1; i >= 0; i -= 1) {
+    if (poisonedNames.has(modeled[i]!.name)) {
+      preserveNames.push(modeled[i]!.name)
+      modeled.splice(i, 1)
+    }
   }
   // Stable order: keep the file's element order among the modeled entries.
   modeled.sort((a, b) => names.indexOf(a) - names.indexOf(b))
