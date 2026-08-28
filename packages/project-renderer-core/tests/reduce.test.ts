@@ -627,6 +627,162 @@ describe('PROJECT-023 reducer — moveTaskFocus', () => {
 })
 
 // ===========================================================================
+// PROJECT-031 — focused-cell column navigation (moveCellFocus)
+// ===========================================================================
+
+describe('PROJECT-031 reducer — moveCellFocus', () => {
+  it('walks the editable fields in canonical grid order, next and previous', () => {
+    const document = outlineDocument() // root, a, a1, b
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'selectTask', taskId: asTaskId('a1') },
+      context(document),
+    )
+    // Absent field = the implicit taskName (the pre-031 behavior); next →
+    // duration → start → finish.
+    state = reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document))
+    expect(state.tasks.focusField).toBe('duration')
+    state = reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document))
+    expect(state.tasks.focusField).toBe('start')
+    state = reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document))
+    expect(state.tasks.focusField).toBe('finish')
+    // …and back: previous walks the same order in reverse.
+    state = reduceViewState(
+      state,
+      { type: 'moveCellFocus', direction: 'previous' },
+      context(document),
+    )
+    expect(state.tasks.focusField).toBe('start')
+    state = reduceViewState(
+      state,
+      { type: 'moveCellFocus', direction: 'previous' },
+      context(document),
+    )
+    expect(state.tasks.focusField).toBe('duration')
+    state = reduceViewState(
+      state,
+      { type: 'moveCellFocus', direction: 'previous' },
+      context(document),
+    )
+    expect(state.tasks.focusField).toBe('taskName')
+  })
+
+  it('clamps at both ends: previous from taskName and next from finish are no-ops', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(state, { type: 'selectTask', taskId: asTaskId('b') }, context(document))
+    // previous from the implicit taskName (absent field): reference-equal no-op.
+    const atFirst = reduceViewState(
+      state,
+      { type: 'moveCellFocus', direction: 'previous' },
+      context(document),
+    )
+    expect(atFirst).toBe(state)
+    // Explicit taskName → previous: also the clamped no-op.
+    state = reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document))
+    state = reduceViewState(
+      state,
+      { type: 'moveCellFocus', direction: 'previous' },
+      context(document),
+    )
+    expect(state.tasks.focusField).toBe('taskName')
+    expect(
+      reduceViewState(state, { type: 'moveCellFocus', direction: 'previous' }, context(document)),
+    ).toBe(state)
+    // next from finish: the clamped no-op.
+    state = reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document))
+    state = reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document))
+    state = reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document))
+    expect(state.tasks.focusField).toBe('finish')
+    expect(
+      reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document)),
+    ).toBe(state)
+  })
+
+  it('moves the COLUMN only: the row focus, anchor, and selection are unchanged', () => {
+    const document = outlineDocument() // root, a, a1, b
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'selectTask', taskId: asTaskId('root') },
+      context(document),
+    )
+    state = reduceViewState(
+      state,
+      { type: 'selectTask', taskId: asTaskId('a'), mode: 'toggle' },
+      context(document),
+    )
+    const selectionBefore = state.tasks.taskIds
+    state = reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document))
+    expect(state.tasks.focusField).toBe('duration')
+    expect(state.tasks.focusId).toBe(asTaskId('a'))
+    expect(state.tasks.anchorId).toBe(asTaskId('a'))
+    expect(state.tasks.taskIds).toEqual(selectionBefore)
+  })
+
+  it('bootstraps from nothing by focusing the first visible row on taskName (either direction)', () => {
+    const document = outlineDocument()
+    for (const direction of ['next', 'previous'] as const) {
+      let state = createViewState(document)
+      state = reduceViewState(state, { type: 'moveCellFocus', direction }, context(document))
+      expect(state.tasks.taskIds).toEqual([asTaskId('root')])
+      expect(state.tasks.focusId).toBe(asTaskId('root'))
+      // The arrival field is taskName regardless of direction — the
+      // moveTaskFocus bootstrap rule (any direction focuses the first
+      // visible row) applied to the cell.
+      expect(state.tasks.focusField).toBe('taskName')
+    }
+  })
+
+  it('bootstraps to the first VISIBLE row when the outline is collapsed', () => {
+    const document = outlineDocument() // root > (a > a1, b)
+    let state = createViewState(document)
+    state = reduceViewState(
+      state,
+      { type: 'toggleCollapse', taskId: asTaskId('root') },
+      context(document),
+    )
+    state = reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document))
+    expect(state.tasks.focusId).toBe(asTaskId('root'))
+  })
+
+  it('an empty document is a deterministic no-op', () => {
+    const document = makeDocument({ tasks: [] })
+    const state = createViewState(document)
+    expect(
+      reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document)),
+    ).toBe(state)
+  })
+
+  it('keeps the focused cell through beginTaskEdit: the edit selects the row and preserves the field', () => {
+    const document = outlineDocument()
+    let state = createViewState(document)
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'down' }, context(document))
+    state = reduceViewState(state, { type: 'moveCellFocus', direction: 'next' }, context(document))
+    expect(state.tasks.focusField).toBe('duration')
+    // `a` is a SUMMARY — beginTaskEdit on its duration is the 023 no-op,
+    // and the focused cell survives it untouched.
+    const noOp = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('a'), field: 'duration' },
+      context(document),
+    )
+    expect(noOp).toBe(state)
+    // `a1` is a leaf: the edit begins and the row is selected; the focused
+    // cell's field is not clobbered by the edit state.
+    state = reduceViewState(state, { type: 'moveTaskFocus', direction: 'down' }, context(document)) // focus a1
+    const editing = reduceViewState(
+      state,
+      { type: 'beginTaskEdit', taskId: asTaskId('a1'), field: 'duration' },
+      context(document),
+    )
+    expect(editing.editing?.field).toBe('duration')
+    expect(editing.tasks.focusId).toBe(asTaskId('a1'))
+  })
+})
+
+// ===========================================================================
 // PROJECT-023 — cell editing intents (begin / update draft / end)
 // ===========================================================================
 

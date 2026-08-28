@@ -247,10 +247,34 @@ describe('the four presentation echoes', () => {
     expect(marker.textContent).toBe('')
   })
 
-  it('echo updates never touch the tab selection (presentation state is separate)', () => {
+  it('echo updates touch the tab selection ONLY through the context promotion transition (PROJECT-031)', () => {
     const ribbon = createRibbon(mount(), { onCommand: () => {} })
     switchTab('view')
+    // The selection context APPEARS (false → true): the Task tab — the
+    // tab whose controls address the selection — is promoted.
     ribbon.update(ALL_ON)
+    expect(ribbonPanel('task').hidden).toBe(false)
+    expect(ribbonTab('task').getAttribute('aria-selected')).toBe('true')
+    // A MANUAL choice while the context holds is respected: re-updating
+    // with the selection still present never re-promotes.
+    switchTab('view')
+    ribbon.update(ALL_ON)
+    expect(ribbonPanel('view').hidden).toBe(false)
+    expect(ribbonTab('view').getAttribute('aria-selected')).toBe('true')
+    // The context DISAPPEARING never demotes (no reverse fight).
+    ribbon.update(ALL_OFF)
+    expect(ribbonPanel('view').hidden).toBe(false)
+    expect(ribbonTab('view').getAttribute('aria-selected')).toBe('true')
+    // The next appearance promotes again (the transition rule repeats).
+    ribbon.update(ALL_ON)
+    expect(ribbonPanel('task').hidden).toBe(false)
+  })
+
+  it('echo updates that do not cross the selection transition never touch the tab selection', () => {
+    const ribbon = createRibbon(mount(), { onCommand: () => {} })
+    switchTab('view')
+    // hasSelection stays false throughout: no promotion, no demotion.
+    ribbon.update({ canUndo: true, canRedo: true, dirty: true, hasSelection: false })
     ribbon.update(ALL_OFF)
     expect(ribbonPanel('view').hidden).toBe(false)
     expect(ribbonTab('view').getAttribute('aria-selected')).toBe('true')
@@ -450,14 +474,20 @@ describe('the ribbon through the real controller (engine/save paths)', () => {
     expect(document.querySelectorAll('[data-testid="task-row"]').length).toBe(rowsBefore)
   })
 
-  it('tab selection survives renders driven by app state changes', () => {
+  it('a manual tab choice survives renders while the selection context holds (the promotion fires only on its appearance)', () => {
     const { bridge } = fakeBridge()
     const app = createProjectApp({ bridge, root: mount() })
     app.start()
-    switchTab('file')
+    // Creating the first task SELECTS it — the selection context appears,
+    // and the Task tab is promoted (the PROJECT-031 rule).
     click('task.create')
     expect(app.state.session.document.tasks).toHaveLength(1)
-    // The ribbon re-rendered (echoes updated) but the File panel stays open.
+    expect(ribbonPanel('task').hidden).toBe(false)
+    // The user switches away; creating ANOTHER task (the selection stays
+    // present — no false → true transition) never fights the choice.
+    switchTab('file')
+    click('task.create')
+    expect(app.state.session.document.tasks).toHaveLength(2)
     expect(ribbonPanel('file').hidden).toBe(false)
     expect(ribbonTab('file').getAttribute('aria-selected')).toBe('true')
   })

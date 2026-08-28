@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { gprojFileAdapter } from '@genoffice/project-file'
+import { MENU_PRESENTATION } from '@genoffice/project-host'
 import { e2eFixtureBytes, writeE2EFixture } from './fixtures'
 
 /** The canonical fixture values (derived by the real scheduler — the same
@@ -959,5 +960,171 @@ test.describe('W17 — the Task Information dialog (PROJECT-030 — operates on 
     await page.click('[data-testid="task-info-cancel"]')
     await page.keyboard.press('Insert')
     await expect(rows(page)).toHaveCount(2)
+  })
+})
+
+test.describe('W18 — keyboard/navigation/menu parity (PROJECT-031)', () => {
+  test('the focused-cell keys walk the editable columns; the focused cell is rendered', async ({
+    page,
+  }) => {
+    await boot(page)
+    await dropFixture(page)
+    await expect(rows(page)).toHaveCount(4)
+    await rowOf(page, 't1').click()
+    // The implicit focused cell after a row click: taskName.
+    await expect(page.locator('[data-cell-focused="true"][data-column="taskName"]')).toBeAttached()
+    await page.keyboard.press('ArrowRight')
+    await expect(
+      page.locator('[data-testid="task-row"][data-task-id="t1"] [data-column="duration"]'),
+    ).toHaveAttribute('data-cell-focused', 'true')
+    await page.keyboard.press('Tab')
+    await expect(
+      page.locator('[data-testid="task-row"][data-task-id="t1"] [data-column="start"]'),
+    ).toHaveAttribute('data-cell-focused', 'true')
+    await page.keyboard.press('Shift+Tab')
+    await expect(
+      page.locator('[data-testid="task-row"][data-task-id="t1"] [data-column="duration"]'),
+    ).toHaveAttribute('data-cell-focused', 'true')
+    await page.keyboard.press('ArrowLeft')
+    await expect(
+      page.locator('[data-testid="task-row"][data-task-id="t1"] [data-column="taskName"]'),
+    ).toHaveAttribute('data-cell-focused', 'true')
+    await expect(rowOf(page, 't1')).toHaveAttribute('data-focused', 'true')
+    // The walk clamps at taskName (the deterministic no-op boundary).
+    await page.keyboard.press('ArrowLeft')
+    await expect(
+      page.locator('[data-testid="task-row"][data-task-id="t1"] [data-column="taskName"]'),
+    ).toHaveAttribute('data-cell-focused', 'true')
+  })
+
+  test('Enter edits the FOCUSED CELL through the real engine in the browser — the parity proof', async ({
+    page,
+  }) => {
+    await boot(page)
+    await dropFixture(page)
+    await expect(rows(page)).toHaveCount(4)
+    await rowOf(page, 't1').click()
+    // Walk to the duration cell and edit it with the keyboard alone —
+    // the SAME constants the desktop battery asserts (cross-host parity).
+    await page.keyboard.press('ArrowRight')
+    await page.keyboard.press('Enter')
+    const editor = page.locator('[data-testid="cell-editor"]')
+    await expect(editor).toBeVisible()
+    await expect(editor).toHaveAttribute('data-field', 'duration')
+    await expect(editor).toHaveValue('960')
+    await editor.fill('1920')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-testid="cell-editor"]')).toHaveCount(0)
+    await expect(cellOf(page, 't1', 'duration')).toHaveText('1920')
+    await expect(cellOf(page, 't1', 'finish')).toHaveText(T1_FINISH_1920)
+    await expect(page.locator('[data-testid="dirty-indicator"]')).toHaveAttribute(
+      'data-dirty',
+      'true',
+    )
+    // The start cell: the same keyboard path over another field.
+    await rowOf(page, 't2').click()
+    await page.keyboard.press('Tab')
+    await page.keyboard.press('Tab')
+    await page.keyboard.press('Enter')
+    await expect(editor).toHaveAttribute('data-field', 'start')
+    await page.keyboard.press('Escape')
+    await expect(page.locator('[data-testid="cell-editor"]')).toHaveCount(0)
+  })
+
+  test('a non-editable focused cell refuses honestly: no editor, the status says which field', async ({
+    page,
+  }) => {
+    await boot(page)
+    await page.keyboard.press('Insert')
+    await expect(rows(page)).toHaveCount(1)
+    await page.keyboard.press('Insert')
+    await expect(rows(page)).toHaveCount(2)
+    // Indent t2 under t1 → t1 becomes a summary (derived roll-ups).
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Alt+Shift+ArrowRight')
+    await expect(rowOf(page, 't1')).toHaveAttribute('data-summary', 'true')
+    await page.keyboard.press('ArrowUp')
+    await page.keyboard.press('ArrowRight')
+    await expect(
+      page.locator('[data-testid="task-row"][data-task-id="t1"] [data-column="duration"]'),
+    ).toHaveAttribute('data-cell-focused', 'true')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-testid="cell-editor"]')).toHaveCount(0)
+    await expect(statusText(page)).toHaveText('Duration is not editable on this row')
+    // The name cell of the SAME summary row still edits (the 023 rule).
+    await page.keyboard.press('ArrowLeft')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-testid="cell-editor"]')).toBeVisible()
+    await expect(page.locator('[data-testid="cell-editor"]')).toHaveAttribute(
+      'data-field',
+      'taskName',
+    )
+    await page.keyboard.press('Escape')
+  })
+
+  test('the context-sensitive Task-tab promotion: fires on the selection appearance, never fights the user', async ({
+    page,
+  }) => {
+    await boot(page)
+    const taskTab = page.locator('[data-testid="ribbon-tab"][data-tab="task"]')
+    // Manual choice first: switch to the View tab.
+    await page.click('[data-testid="ribbon-tab"][data-tab="view"]')
+    await expect(page.locator('[data-testid="ribbon-tab"][data-tab="view"]')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    // Creating a task SELECTS it — the selection context appears and the
+    // Task tab promotes (the same rule the desktop battery asserts).
+    await page.keyboard.press('Insert')
+    await expect(taskTab).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('[data-testid="ribbon-panel"][data-tab="task"]')).toBeVisible()
+    // The user's manual choice holds while the context stays.
+    await page.click('[data-testid="ribbon-tab"][data-tab="file"]')
+    await page.keyboard.press('Insert')
+    await expect(rows(page)).toHaveCount(2)
+    await expect(page.locator('[data-testid="ribbon-tab"][data-tab="file"]')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    // The selection disappearing never demotes.
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+ArrowDown')
+    await page.keyboard.press('Delete')
+    await expect(rows(page)).toHaveCount(0)
+    await expect(page.locator('[data-testid="ribbon-tab"][data-tab="file"]')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+  })
+
+  test('the DOM menu bar presents the SHARED table: sections, labels, and accelerator displays', async ({
+    page,
+  }) => {
+    await boot(page)
+    // The rendered bar is EXACTLY the shared presentation table — the
+    // same labels and accelerator display strings the desktop native
+    // menu mirrors (cross-host presentation parity, by construction).
+    for (const section of MENU_PRESENTATION) {
+      await page.click(`[data-menu-top="${section.label.toLowerCase()}"]`)
+      const items = page.locator('[data-menu-id]')
+      await expect(items).toHaveCount(section.items.length)
+      for (const [index, item] of section.items.entries()) {
+        const rendered = items.nth(index)
+        await expect(rendered).toHaveAttribute('data-menu-id', item.id)
+        await expect(rendered).toContainText(item.label)
+        if (item.accelerator === undefined) {
+          await expect(rendered.locator('.gp-web-menu-accelerator')).toHaveCount(0)
+        } else {
+          await expect(rendered.locator('.gp-web-menu-accelerator')).toHaveText(item.accelerator)
+        }
+      }
+      await page.keyboard.press('Escape')
+    }
+    // The converged Redo display (the pre-031 cross-host defect is gone).
+    await page.click('[data-menu-top="edit"]')
+    await expect(page.locator('[data-menu-id="edit.redo"] .gp-web-menu-accelerator')).toHaveText(
+      'Ctrl+Y',
+    )
+    await page.keyboard.press('Escape')
   })
 })

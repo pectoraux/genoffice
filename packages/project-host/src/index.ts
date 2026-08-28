@@ -19,6 +19,9 @@
  *   Information dialog, one implementation rendered by both hosts.
  * - `translateKeyDown` / `translateMenuCommand` — the input translation
  *   tables (keyboard + menu converge on one action vocabulary).
+ * - `MENU_PRESENTATION` / `menuLabelFor` / `menuAcceleratorFor` — the ONE
+ *   shared menu presentation table (PROJECT-031): the structure, labels,
+ *   and accelerator display strings both hosts' menus present from.
  * - `newProjectDocument` / import/export composition — the document flows
  *   over the canonical `@genoffice/project-file` adapters.
  * - `scheduleRunner` / `workingTimeQuery` / `allocationQuery` — the three
@@ -45,6 +48,14 @@ export {
   PROJECT_FILE_FILTERS,
   type ProjectHostBridge,
 } from './bridge.js'
+export {
+  MENU_PRESENTATION,
+  type MenuPresentationItem,
+  type MenuPresentationSection,
+  MENU_PRESENTATION_COMMAND_IDS,
+  menuAcceleratorFor,
+  menuLabelFor,
+} from './menu-presentation.js'
 export {
   confirmUnsavedChanges,
   createTaskInformationDialog,

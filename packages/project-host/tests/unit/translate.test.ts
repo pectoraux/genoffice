@@ -16,6 +16,7 @@ import {
 } from '../../src/translate.js'
 import type { KeyInput } from '../../src/translate.js'
 import { MENU_COMMAND_IDS } from '../../src/bridge.js'
+import { menuAcceleratorFor } from '../../src/menu-presentation.js'
 
 const key = (partial: Partial<KeyInput>): KeyInput => ({
   key: '',
@@ -55,6 +56,41 @@ describe('keyboard translation — navigation', () => {
     })
   })
 
+  it('the focused-cell column keys (PROJECT-031): arrows and Tab walk the cells', () => {
+    expect(translateKeyDown(key({ key: 'ArrowRight' }), { editing: false })).toEqual({
+      kind: 'intent',
+      intent: { type: 'moveCellFocus', direction: 'next' },
+    })
+    expect(translateKeyDown(key({ key: 'ArrowLeft' }), { editing: false })).toEqual({
+      kind: 'intent',
+      intent: { type: 'moveCellFocus', direction: 'previous' },
+    })
+    expect(translateKeyDown(key({ key: 'Tab' }), { editing: false })).toEqual({
+      kind: 'intent',
+      intent: { type: 'moveCellFocus', direction: 'next' },
+    })
+    expect(translateKeyDown(key({ key: 'Tab', shift: true }), { editing: false })).toEqual({
+      kind: 'intent',
+      intent: { type: 'moveCellFocus', direction: 'previous' },
+    })
+    // While editing, the column keys pass through to the input (the
+    // pinned 023 editor rule — Tab is the browser's focus key there).
+    expect(translateKeyDown(key({ key: 'ArrowRight' }), { editing: true })).toEqual({
+      kind: 'none',
+    })
+    expect(translateKeyDown(key({ key: 'Tab' }), { editing: true })).toEqual({ kind: 'none' })
+  })
+
+  it('the outline gestures still own the ALT arrows (indent/outdent, not cell moves)', () => {
+    expect(translateKeyDown(key({ key: 'ArrowLeft', alt: true }), { editing: false })).toEqual({
+      kind: 'document',
+      action: 'outdentSelection',
+    })
+    expect(
+      translateKeyDown(key({ key: 'ArrowRight', alt: true, shift: true }), { editing: false }),
+    ).toEqual({ kind: 'document', action: 'indentSelection' })
+  })
+
   it('unmapped keys are none (the host invents no bindings)', () => {
     expect(translateKeyDown(key({ key: 'q' }), { editing: false })).toEqual({ kind: 'none' })
     expect(translateKeyDown(key({ key: 'F9' }), { editing: false })).toEqual({ kind: 'none' })
@@ -62,14 +98,14 @@ describe('keyboard translation — navigation', () => {
 })
 
 describe('keyboard translation — editing', () => {
-  it('enter and F2 activate the name editor of the focused row', () => {
+  it('enter and F2 begin the edit of the FOCUSED CELL (taskName when no field is focused)', () => {
     expect(translateKeyDown(key({ key: 'Enter' }), { editing: false })).toEqual({
       kind: 'edit',
-      action: 'beginEditName',
+      action: 'beginEditFocusedCell',
     })
     expect(translateKeyDown(key({ key: 'F2' }), { editing: false })).toEqual({
       kind: 'edit',
-      action: 'beginEditName',
+      action: 'beginEditFocusedCell',
     })
   })
 
@@ -247,5 +283,41 @@ describe('menu translation converges with the keyboard table', () => {
     expect(
       translateKeyDown(key({ key: 'ArrowRight', alt: true, shift: true }), { editing: false }),
     ).toEqual(translateMenuCommand('task.indent'))
+  })
+
+  it('EVERY displayed accelerator is a real keyboard-table binding of its command (PROJECT-031 presentation parity)', () => {
+    // The one-to-one map from the shared display form to the KeyInput
+    // facts the table binds — the proof that no menu DISPLAYS a binding
+    // the shared translation table does not own (and that every bound
+    // command's display agrees with its menu action).
+    const inputByAccelerator: Record<string, KeyInput> = {
+      'Ctrl+N': key({ key: 'n', ctrlOrMeta: true }),
+      'Ctrl+O': key({ key: 'o', ctrlOrMeta: true }),
+      'Ctrl+S': key({ key: 's', ctrlOrMeta: true }),
+      'Ctrl+Shift+S': key({ key: 'S', ctrlOrMeta: true, shift: true }),
+      'Ctrl+Z': key({ key: 'z', ctrlOrMeta: true }),
+      'Ctrl+Y': key({ key: 'y', ctrlOrMeta: true }),
+      Delete: key({ key: 'Delete' }),
+      Insert: key({ key: 'Insert' }),
+      'Alt+Shift+Right': key({ key: 'ArrowRight', alt: true, shift: true }),
+      'Alt+Shift+Left': key({ key: 'ArrowLeft', alt: true, shift: true }),
+      'Ctrl+=': key({ key: '=', ctrlOrMeta: true }),
+      'Ctrl+-': key({ key: '-', ctrlOrMeta: true }),
+      'Ctrl+Shift+F': key({ key: 'F', ctrlOrMeta: true, shift: true }),
+      'Alt+Shift+Minus': key({ key: '-', alt: true, shift: true }),
+      'Alt+Shift+Plus': key({ key: '+', alt: true, shift: true }),
+    }
+    for (const command of MENU_COMMAND_IDS) {
+      const accelerator = menuAcceleratorFor(command)
+      if (accelerator === undefined) {
+        // No display ⇔ no binding: the one command without an accelerator
+        // (task.information) must not be keyboard-reachable either.
+        expect(command).toBe('task.information')
+        continue
+      }
+      const input = inputByAccelerator[accelerator]
+      expect(input, `the display "${accelerator}" must be a known binding form`).toBeDefined()
+      expect(translateKeyDown(input!, { editing: false })).toEqual(translateMenuCommand(command))
+    }
   })
 })

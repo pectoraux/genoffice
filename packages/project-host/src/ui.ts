@@ -321,6 +321,7 @@ export function createUI(root: HTMLElement, callbacks: UICallbacks): UI {
   function createGridRow(
     gridRow: ProjectGridRow,
     columns: readonly { field: string; source: string }[],
+    focusField: string | undefined,
   ): HTMLElement {
     const row = gridRow.row
     const rowEl = el('div', 'gp-grid-row')
@@ -334,6 +335,7 @@ export function createUI(root: HTMLElement, callbacks: UICallbacks): UI {
       const cellEl = el('div', 'gp-grid-cell')
       cellEl.dataset.column = field === 'unsupported' ? (column?.source ?? 'unsupported') : field
       cellEl.dataset.taskId = row.taskId
+      cellEl.dataset.cellFocused = 'false'
       cellEl.setAttribute('role', 'gridcell')
       if (cell.kind === 'taskName') {
         cellEl.classList.add('gp-cell-name')
@@ -346,11 +348,20 @@ export function createUI(root: HTMLElement, callbacks: UICallbacks): UI {
       cellEl.style.width = `${width}px`
       rowEl.appendChild(cellEl)
     })
-    updateGridRow(rowEl, gridRow)
+    updateGridRow(rowEl, gridRow, focusField)
     return rowEl
   }
 
-  function updateGridRow(rowEl: HTMLElement, gridRow: ProjectGridRow): void {
+  /** The focused-cell presentation (PROJECT-031): the cell at
+   * (focused row, focused field) carries `data-cell-focused` — the
+   * keyboard's cell cursor, the same cell Enter/F2 edits and the mouse's
+   * cell activation reaches. An absent focusField is the implicit
+   * `taskName` (the view-state default). */
+  function updateGridRow(
+    rowEl: HTMLElement,
+    gridRow: ProjectGridRow,
+    focusField: string | undefined,
+  ): void {
     const row = gridRow.row
     rowEl.style.top = `${gridRow.index * ROW_HEIGHT}px`
     rowEl.style.height = `${ROW_HEIGHT}px`
@@ -360,9 +371,13 @@ export function createUI(root: HTMLElement, callbacks: UICallbacks): UI {
     rowEl.dataset.summary = String(row.summary)
     rowEl.setAttribute('aria-selected', String(row.selected))
     const cells = [...rowEl.children]
+    const effectiveFocusField = focusField ?? 'taskName'
     gridRow.cells.forEach((cell, columnIndex) => {
       const cellEl = cells[columnIndex]
       if (!(cellEl instanceof HTMLElement)) return
+      const cellFocused = row.focused && cellEl.dataset.column === effectiveFocusField
+      cellEl.dataset.cellFocused = String(cellFocused)
+      cellEl.classList.toggle('gp-cell-focused', cellFocused)
       if (cell.kind === 'taskName') {
         cellEl.style.paddingLeft = `${(cell.outlineLevel - 1) * 14 + 8}px`
         cellEl.classList.toggle('gp-cell-summary', cell.summary)
@@ -496,12 +511,12 @@ export function createUI(root: HTMLElement, callbacks: UICallbacks): UI {
       const taskId = gridRow.row.taskId
       let rowEl = rowEls.get(taskId)
       if (rowEl === undefined) {
-        rowEl = createGridRow(gridRow, view.taskGrid.columns)
+        rowEl = createGridRow(gridRow, view.taskGrid.columns, inputs.viewState.tasks.focusField)
         rowEls.set(taskId, rowEl)
         gridSpacer.appendChild(rowEl)
       } else {
         if (rowEl.parentElement !== gridSpacer) gridSpacer.appendChild(rowEl)
-        updateGridRow(rowEl, gridRow)
+        updateGridRow(rowEl, gridRow, inputs.viewState.tasks.focusField)
       }
     }
 

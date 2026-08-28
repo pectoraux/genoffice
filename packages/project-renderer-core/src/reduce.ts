@@ -23,14 +23,25 @@ import type {
   ResourceId,
   TaskId,
 } from '@genoffice/project-contracts'
-import type { MoveFocusDirection, ProjectViewIntent, SelectMode } from './intents.js'
+import type {
+  MoveCellFocusDirection,
+  MoveFocusDirection,
+  ProjectViewIntent,
+  SelectMode,
+} from './intents.js'
 import {
   type ProjectViewState,
   type TaskSelection,
   parseInstant,
   reconcileViewState,
 } from './state.js'
-import { type TaskEditing, initialTaskEditDraft, isTaskFieldEditable } from './editing.js'
+import {
+  type EditableTaskField,
+  type TaskEditing,
+  EDITABLE_TASK_FIELDS,
+  initialTaskEditDraft,
+  isTaskFieldEditable,
+} from './editing.js'
 import { type DependencyEditing, initialDependencyEditDraft } from './dependency-editing.js'
 /** Viewport span guards and fit padding are defined once in `./timeline.js`
  * (the module that owns the viewport math) and re-exported here for reducer
@@ -161,6 +172,22 @@ function nextVisibleFocus(
   return visible[nextIndex]
 }
 
+/** The next focused-cell field for one column move: `EDITABLE_TASK_FIELDS`
+ * walked in canonical order, CLAMPED at both ends (the moveTaskFocus
+ * discipline — running past the first/last field is a deterministic no-op,
+ * signaled by returning the SAME field). Pure order arithmetic; an absent
+ * field is the implicit `taskName` (the documented default), so `previous`
+ * from nothing clamps and `next` from nothing moves to `duration`. */
+function nextCellField(
+  current: EditableTaskField | undefined,
+  direction: MoveCellFocusDirection,
+): EditableTaskField | undefined {
+  const index = current === undefined ? 0 : EDITABLE_TASK_FIELDS.indexOf(current)
+  const nextIndex = direction === 'next' ? index + 1 : index - 1
+  if (nextIndex < 0 || nextIndex >= EDITABLE_TASK_FIELDS.length) return current
+  return EDITABLE_TASK_FIELDS[nextIndex]
+}
+
 /**
  * PROJECT-021 — reduce one view intent against a live document context.
  *
@@ -229,6 +256,35 @@ export function reduceViewState(
           }),
         )
       }
+      break
+    }
+    case 'moveCellFocus': {
+      // Bootstrap: no focused row — the first visible row receives the
+      // focus (the moveTaskFocus rule), arriving on `taskName` regardless
+      // of direction. Nothing visible → the deterministic no-op.
+      if (state.tasks.focusId === undefined) {
+        const visible = visibleTaskOrder(document, state.collapsed)
+        const bootstrapped = visible[0]
+        if (bootstrapped === undefined) return state
+        next = withTaskSelection(
+          state,
+          withoutKeys({
+            taskIds: [bootstrapped],
+            anchorId: bootstrapped,
+            focusId: bootstrapped,
+            focusField: EDITABLE_TASK_FIELDS[0],
+          }),
+        )
+        break
+      }
+      const nextField = nextCellField(state.tasks.focusField, intent.direction)
+      // Deterministic no-op: the move runs past the first/last editable
+      // field (the clamp) or the state already carries the target field.
+      if (nextField === state.tasks.focusField) return state
+      next = withTaskSelection(state, {
+        ...state.tasks,
+        focusField: nextField,
+      })
       break
     }
     case 'beginTaskEdit': {
