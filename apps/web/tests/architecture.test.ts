@@ -1068,3 +1068,88 @@ describe('architecture: EXCEL-024 Conditional Formatting uses the canonical wire
     expect(content).toContain('CF_MUTATION_IDS')
   })
 })
+
+describe('architecture: EXCEL-025 Defined Names uses the canonical wire family', () => {
+  const webFiles = readFiles(join(WEB_ROOT, 'src'))
+
+  it('apps/web/src has NO defined-names OOXML, JSZip, or browser XML construction', () => {
+    // The browser must never construct or parse <definedNames>/<definedName>
+    // XML — names travel ONLY through the typed definedNamesState family and
+    // the public Univer facade. (The A1 validation regexes for Name Box
+    // resolution are pure input validation, not XML.)
+    const forbidden = [/<definedNames\b/, /<definedName\b/, /from\s+['"]jszip['"]/]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('apps/web/src has no second defined-names persistence model', () => {
+    // The only writer is the canonical gateway (applyDefinedNamesState); the
+    // browser never re-implements name validation, scoping, or preservation
+    // semantics. The name predicate itself lives in the gateway and is never
+    // duplicated client-side.
+    const forbidden = [/applyDefinedNamesState/, /parseDefinedNamesState/, /definedNameIsSaveable/]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('defined-name types cross the browser boundary type-only (no gateway value imports)', () => {
+    const clientPath = join(WEB_ROOT, 'src', 'api', 'office-client.ts')
+    const content = readFileSync(clientPath, 'utf8')
+    expect(content).toContain('definedNamesState?:')
+    // The save-plan field is structurally typed on the client (mirroring the
+    // server shape) — no runtime import of the gateway barrel.
+    expect(/import \{[^}]*definedName[^}]*\} from '@genoffice\/xlsx-gateway'/.test(content)).toBe(
+      false,
+    )
+  })
+
+  it('ExcelEditor installs file names under suppression and journals the two name mutations', () => {
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    const content = readFileSync(editorPath, 'utf8')
+    // Read path: file names install into the live model via the PUBLIC
+    // builder facade (desktop applyDefinedNames parity).
+    expect(content).toContain('snapshot.definedNames')
+    expect(content).toContain('newDefinedNameBuilder')
+    expect(content).toContain('insertDefinedNameBuilder')
+    expect(content).toContain("'AllDefaultWorkbook'")
+    // Journal: the engine-formula mutation pair (the desktop's
+    // DEFINED_NAME_MUTATIONS).
+    expect(content).toContain("'formula.mutation.set-defined-name'")
+    expect(content).toContain("'formula.mutation.remove-defined-name'")
+    // Save path: declarative full-model snapshot + preserve union.
+    expect(content).toContain('collectDefinedNamesState')
+    expect(content).toContain('namesPreserveFileRef')
+    expect(content).toContain('namesUninstalledRef')
+    // Fail-closed: namesLocked refuses every Name Manager action.
+    expect(content).toContain('namesLockedRef')
+    // Split-save: names never ride the same save as structural ops.
+    expect(content).toContain('heldNames')
+  })
+
+  it('Ribbon Formulas → Name Manager is wired (no disabled stub)', () => {
+    const ribbonPath = join(WEB_ROOT, 'src', 'screens', 'excel', 'Ribbon.tsx')
+    const content = readFileSync(ribbonPath, 'utf8')
+    expect(content).toContain('onOpenNameManager')
+    expect(content).not.toContain('Name Manager — disabled')
+  })
+
+  it('Name Box resolution mirrors the desktop pure module (names win, A1-only jumps)', () => {
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    const content = readFileSync(editorPath, 'utf8')
+    expect(content).toContain('resolveGoToNameRef')
+    // No private Univer internals in the names surface: the facade methods
+    // only.
+    const namesSurface = readFileSync(
+      join(WEB_ROOT, 'src', 'screens', 'excel', 'NameManagerDialog.tsx'),
+      'utf8',
+    )
+    expect(namesSurface).not.toContain('__getInjector')
+    expect(namesSurface).not.toContain('_injector')
+  })
+})

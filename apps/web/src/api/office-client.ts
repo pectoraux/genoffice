@@ -214,6 +214,25 @@ export interface BrowserWorkbookSavePlan {
    * 1 px = 9525 EMU at 96 dpi).
    */
   readonly visualEdits?: readonly WorkbookVisualEdit[]
+  /**
+   * Defined names (Formulas → Name Manager, EXCEL-025). When present the
+   * engine rewrites workbook.xml's `<definedNames>` declaratively from
+   * this snapshot: `names` is the FULL live defined-name model (editing
+   * one name never drops its siblings), `preserveNames` are entries the
+   * editor never modeled (reader-classified unmodelable + engine install
+   * rejects) which stay byte-verbatim. `_xlnm.*` built-ins and hidden
+   * names are preserved by the writer's keep-rules. null/absent =
+   * untouched (byte-preserving no-op). Names + structural ops never ride
+   * the same save — the browser splits (desktop heldNames parity).
+   */
+  readonly definedNamesState?: {
+    readonly names: readonly {
+      readonly name: string
+      readonly formula: string
+      readonly sheetIndex?: number | undefined
+    }[]
+    readonly preserveNames: readonly string[]
+  } | null
   readonly [key: string]: unknown
 }
 

@@ -112,4 +112,89 @@ describe('applyDefinedNamesState', () => {
     expect(xml).toContain('<definedName name="Total">Data!$A$1</definedName>')
     expect(xml).toContain('<definedName name="Total" localSheetId="0">Data!$B$1</definedName>')
   })
+
+  it('rejects a case-insensitive duplicate within one scope (Excel resolves names case-insensitively)', () => {
+    // 'Total' and 'TOTAL' at workbook scope are the SAME name to Excel —
+    // the uniqueness key is (case-insensitive name, scope), so the pair
+    // is a duplicate and the save fails closed.
+    expect(() =>
+      applyDefinedNamesState(WORKBOOK, {
+        names: [
+          { name: 'Total', formula: 'Data!$A$1' },
+          { name: 'TOTAL', formula: 'Data!$A$2' },
+        ],
+        preserveNames: [],
+      }),
+    ).toThrow(/defined twice/)
+    // …while the case variant at a DIFFERENT scope is a legal pair.
+    expect(() =>
+      applyDefinedNamesState(WORKBOOK, {
+        names: [
+          { name: 'Total', formula: 'Data!$A$1' },
+          { name: 'TOTAL', formula: 'Data!$A$2', sheetIndex: 0 },
+        ],
+        preserveNames: [],
+      }),
+    ).not.toThrow()
+  })
+
+  it('rejects a case-variant modeled/preserved collision (fail closed, every case combination)', () => {
+    // The reader groups a same-scope case-variant pair ('Foo' + 'foo') as
+    // ONE genuine duplicate — winner modeled, loser preserved. A
+    // case-sensitive collision guard would let BOTH variants serialize
+    // (a duplicate Excel cannot distinguish); the guard matches the
+    // preserve list case-insensitively, exactly the way Excel resolves
+    // names, so every case combination fails closed.
+    const cases: Array<[string, string]> = [
+      ['Foo', 'foo'],
+      ['FOO', 'foo'],
+      ['foo', 'FOO'],
+      ['Foo', 'FOO'],
+    ]
+    for (const [modeled, preserved] of cases) {
+      expect(() =>
+        applyDefinedNamesState(WORKBOOK, {
+          names: [{ name: modeled, formula: 'Data!$A$1' }],
+          preserveNames: [preserved],
+        }),
+      ).toThrow(/duplicate/)
+    }
+  })
+
+  it('keeps every case-variant element of a preserved name verbatim (no silent deletion)', () => {
+    // The preserve list is name-granular and matches case-insensitively:
+    // an element whose name is a CASE VARIANT of a preserve entry must be
+    // kept verbatim — a case mismatch must never silently drop it — and
+    // must never be rewritten from the model.
+    const xml =
+      '<workbook><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets>' +
+      '<definedNames>' +
+      '<definedName name="Foo">#REF!</definedName>' +
+      '<definedName name="FOO" localSheetId="0">Data!$A$2</definedName>' +
+      '<definedName name="Revenue">Data!$B$2</definedName>' +
+      '</definedNames><calcPr/></workbook>'
+    const out = applyDefinedNamesState(xml, {
+      names: [{ name: 'Revenue', formula: 'Data!$B$9' }],
+      preserveNames: ['foo'],
+    })
+    expect(out).toContain('<definedName name="Foo">#REF!</definedName>')
+    expect(out).toContain('<definedName name="FOO" localSheetId="0">Data!$A$2</definedName>')
+    expect(out).toContain('<definedName name="Revenue">Data!$B$9</definedName>')
+  })
+
+  it('serializes a case-variant cross-scope pair as two distinct definitions', () => {
+    // Scope dominates case in the uniqueness key (case-insensitive name,
+    // scope): 'Total' at workbook scope and 'total' at sheet scope are TWO
+    // legitimate Excel definitions — the collision guard must not
+    // over-block them. Each serializes with its own case and scope.
+    const xml = applyDefinedNamesState(WORKBOOK, {
+      names: [
+        { name: 'Total', formula: 'Data!$A$1' },
+        { name: 'total', formula: 'Data!$B$1', sheetIndex: 0 },
+      ],
+      preserveNames: [],
+    })
+    expect(xml).toContain('<definedName name="Total">Data!$A$1</definedName>')
+    expect(xml).toContain('<definedName name="total" localSheetId="0">Data!$B$1</definedName>')
+  })
 })

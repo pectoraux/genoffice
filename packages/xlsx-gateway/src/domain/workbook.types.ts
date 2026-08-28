@@ -12,6 +12,7 @@ import type { SheetNote } from '../gateway/xlsx-notes'
 import type { SheetTableInfo } from '../gateway/xlsx-table-read'
 import type { SheetChartInfo } from '../gateway/xlsx-chart-read'
 import type { SheetImageInfo } from '../gateway/xlsx-image-read'
+import type { DefinedNameEntry } from '../gateway/xlsx-defined-names'
 
 export type CellScalar = string | number | boolean | null
 
@@ -197,6 +198,38 @@ export interface WorksheetState {
 export interface WorkbookSnapshot {
   readonly revision: number
   readonly sheets: readonly WorksheetState[]
+  /**
+   * Defined names (EXCEL-025) parsed from workbook.xml's
+   * `<definedNames>` — the canonical `DefinedNamesState` split: `names`
+   * are the entries the editor can safely model (valid per the writer's
+   * rules, non-hidden, non-`_xlnm`, scoped inside the workbook, the
+   * ranked winner of any duplicate group), `preserveNames` are the rest
+   * (invalid names, out-of-range scopes, empty bodies, duplicate
+   * losers) — entries the declarative rewrite must retain byte-verbatim
+   * because it would otherwise drop them. Hidden names and `_xlnm.*`
+   * built-ins (Print_Area/Print_Titles, owned by the page-setup family)
+   * never appear here: the writer's keep-rules preserve them without a
+   * preserve-list entry. The browser installs `names` into the real
+   * Univer defined-name model (desktop applyDefinedNames rank parity),
+   * unions its own install rejects into the preserve list, and journals
+   * name edits through the canonical `definedNamesState` save family.
+   * Absent means the workbook carries no names at all.
+   */
+  readonly definedNames?:
+    | Readonly<{
+        readonly names: readonly DefinedNameEntry[]
+        readonly preserveNames: readonly string[]
+      }>
+    | undefined
+  /**
+   * EXCEL-025 fail-closed marker: workbook.xml carries a
+   * `<definedNames>` section the reader could not structurally parse.
+   * The browser must refuse name mutations on this workbook — the
+   * declarative save would rewrite the section from a model that never
+   * saw every entry, silently dropping the unparseable ones. A no-op
+   * save (no name edits) leaves the section's XML byte-for-byte.
+   */
+  readonly namesLocked?: boolean | undefined
   /**
    * Workbook structure protection parsed from workbook.xml's
    * <workbookProtection> element. Absent means no element. The web shell

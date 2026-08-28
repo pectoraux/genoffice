@@ -223,3 +223,15 @@ export function CfIcon(): ReactElement {
     </Icon>
   )
 }
+
+/** A name tag over a grid — the Name Manager affordance (EXCEL-025). */
+export function NamesIcon(): ReactElement {
+  return (
+    <Icon>
+      <path d="M3.5 8.25 8 3.75h12.5v12.5L16 20.75" />
+      <path d="M8 3.75v4.5h4.5" />
+      <path d="M3.5 8.25h9v12.5h-9z" />
+      <path d="M6 12h4M6 15h4" />
+    </Icon>
+  )
+}

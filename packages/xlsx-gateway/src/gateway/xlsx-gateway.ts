@@ -74,6 +74,9 @@ import { applyCfRules, CfReadError, parseConditionalFormatting, type CfWireRule 
 import {
   applyDefinedNamesState,
   DefinedNameError,
+  DefinedNamesReadError,
+  parseDefinedNamesState,
+  type DefinedNameEntry,
   type DefinedNamesState,
 } from './xlsx-defined-names'
 import { applyDvRules, DvReadError, parseDataValidations, type DvWireRule } from './xlsx-dv'
@@ -603,10 +606,30 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
   // same way the per-sheet state comes from the worksheet part. Absent
   // field = no <workbookProtection> element (byte-preserving no-op saves).
   const workbookProtection = parseWorkbookProtectionState(workbookXml)
+  // Defined names (EXCEL-025): parsed from workbook.xml into the canonical
+  // model/preserve split. Fail closed on an unparseable <definedNames>
+  // section — the workbook still opens with `namesLocked`, the browser
+  // refuses name edits, and a no-op save preserves the bytes.
+  let definedNames:
+    { names: readonly DefinedNameEntry[]; preserveNames: readonly string[] } | undefined
+  let namesLocked: boolean | undefined
+  if (/<definedNames\b/.test(workbookXml)) {
+    try {
+      const parsed = parseDefinedNamesState(workbookXml, sheets.length)
+      if (parsed.names.length > 0 || parsed.preserveNames.length > 0) {
+        definedNames = parsed
+      }
+    } catch (error) {
+      if (!(error instanceof DefinedNamesReadError)) throw error
+      namesLocked = true
+    }
+  }
   return {
     snapshot: {
       revision: 0,
       sheets,
+      ...(definedNames ? { definedNames } : {}),
+      ...(namesLocked ? { namesLocked } : {}),
       ...(workbookProtection ? { workbookProtection } : {}),
     },
     sheetNamesById,

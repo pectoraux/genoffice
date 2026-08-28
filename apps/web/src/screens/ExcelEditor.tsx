@@ -85,6 +85,11 @@ import {
 } from '../office/cell-mutation-merge'
 import { Ribbon } from './excel/Ribbon'
 import { ChartPanel } from './excel/ChartPanel'
+import {
+  NameManagerDialog,
+  type DefinedNameAction,
+  type DefinedNameRow,
+} from './excel/NameManagerDialog'
 import type { ChartAdd } from '@genoffice/xlsx-gateway'
 import {
   chartAddToVisualState,
@@ -184,6 +189,20 @@ const CF_MUTATION_IDS = new Set([
   'sheet.mutation.set-conditional-rule',
   'sheet.mutation.delete-conditional-rule',
   'sheet.mutation.move-conditional-rule',
+])
+
+/**
+ * Defined-name mutation IDs (EXCEL-025 — Formulas → Name Manager). The
+ * same pair the desktop's DEFINED_NAME_MUTATIONS (app-constants.ts) listens
+ * for, verified against the installed @univerjs/engine-formula 0.25.1
+ * source. set fires for create AND edit AND the structural-op rewrites the
+ * sheets-formula UpdateDefinedNameController emits (a row insert that
+ * shifts a name's reference marks names dirty — which is exactly why the
+ * save splits when structural ops ride along); remove fires for delete.
+ */
+const DEFINED_NAME_MUTATION_IDS = new Set([
+  'formula.mutation.set-defined-name',
+  'formula.mutation.remove-defined-name',
 ])
 
 /**
@@ -479,6 +498,35 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   //    edited + untouched notes alike) — editing one note never drops its
   //    neighbors; an empty snapshot removes the whole comment set.
   const noteDirtyRef = useRef<Set<string>>(new Set())
+  // ── Defined-names journal (Formulas → Name Manager, EXCEL-025). Desktop
+  //    parity (App.tsx definedNames.dirty + uninstalledDefinedNames). The
+  //    journal is a single WORKBOOK-level dirty flag: a session without name
+  //    edits emits NO definedNamesState family, so a no-op save preserves
+  //    the file's <definedNames> XML byte-for-byte. At save, the FULL live
+  //    model is snapshotted (created + edited + untouched names alike) —
+  //    editing one name never drops its siblings.
+  const namesDirtyRef = useRef(false)
+  // Names the editor could NOT install into the live model (engine
+  // rejects: duplicate-name losers, sheet/table/function-name conflicts).
+  // Unioned with the reader's preserve list at save — the canonical writer
+  // keeps every one of them byte-verbatim.
+  const namesUninstalledRef = useRef<Set<string>>(new Set())
+  // The file's own preserve list (reader-classified unmodelable names:
+  // invalid per the writer's rules, out-of-range scopes, empty bodies).
+  const namesPreserveFileRef = useRef<Set<string>>(new Set())
+  // The workbook carries <definedNames> the reader could not structurally
+  // parse (namesLocked) — refuse every name edit: a names-dirty save would
+  // rewrite the section from a model that never saw every entry.
+  const namesLockedRef = useRef(false)
+  // Snapshot sheet order (workbook tab order at open). Univer sheet ids map
+  // back to localSheetId indices through this list — the web performs no
+  // sheet management, so the order is stable for the whole session.
+  const namesSheetOrderRef = useRef<string[]>([])
+  // Monotonic id sequence for same-name siblings installed through the
+  // public param path (see insertDefinedNameSiblingParam) — the engine's
+  // defined-name service keys entries by id, so each sibling needs a
+  // unique one for the whole session.
+  const namesEngineIdSeqRef = useRef(0)
   // ── Protection journal (Review → Protect Sheet / Protect Workbook,
   //    EXCEL-020). Desktop parity (App.tsx sheetProtections +
   //    edit-journal.ts recordSheetProtection): protection is a FILE-level
@@ -581,6 +629,12 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   const chartSeqRef = useRef(0)
   const [chartRenderSeq, setChartRenderSeq] = useState(0)
   const [chartPanelMode, setChartPanelMode] = useState<'create' | 'edit' | null>(null)
+  // ── EXCEL-025: Name Manager dialog state. `nameManagerOpen` gates the
+  //    modal; `namesVersion` bumps on every live-model change so the
+  //    dialog's row list re-reads the facade (the live model is not React
+  //    state — it lives in Univer's DefinedNamesService).
+  const [nameManagerOpen, setNameManagerOpen] = useState(false)
+  const [namesVersion, setNamesVersion] = useState(0)
   const chartVersion = useChartStoreVersion(chartStoreRef.current)
   // Echo for the ribbon's Protect Sheet / Protect Workbook buttons —
   // recomputed whenever the journal, the file state, or the ACTIVE SHEET
@@ -660,6 +714,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       dvDirtyRef,
       noteDirtyRef,
       cfDirtyRef,
+      namesDirtyRef,
       () => setDirty(true),
     )
     // ── EXCEL-021: table-owned filter gate (desktop App.tsx
@@ -1377,6 +1432,15 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       cfDirtyRef.current.clear()
       cfLockedRef.current.clear()
       noteDirtyRef.current.clear()
+      // EXCEL-025: seed the defined-names journal from the snapshot. A
+      // reopened workbook starts NOT names-dirty (a no-op save preserves
+      // the file's <definedNames> XML byte-for-byte); the file preserve
+      // list and the namesLocked marker ride along for the save + gates.
+      namesDirtyRef.current = false
+      namesUninstalledRef.current = new Set()
+      namesPreserveFileRef.current = new Set(snapshot.definedNames?.preserveNames ?? [])
+      namesLockedRef.current = snapshot.namesLocked === true
+      namesSheetOrderRef.current = snapshot.sheets.map((sheet) => sheet.id)
       try {
         rt.univerAPI.createWorkbook({
           id: WORKBOOK_UNIT_ID,
@@ -1698,6 +1762,108 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             }
           }
         }
+        // ── EXCEL-025: install the file's defined names into the REAL
+        //    Univer defined-name model (desktop applyDefinedNames parity,
+        //    scope-corrected). The reader models every (case-insensitive
+        //    name, scope) definition — including the same name at BOTH
+        //    workbook and sheet scope, two legitimate Excel definitions
+        //    that resolve differently by context. The engine's underlying
+        //    service is id-keyed and holds them all, but the PUBLIC
+        //    builder's build() validation is name-keyed and scope-blind
+        //    (it rejects ANY second entry with the same name), so each
+        //    case-insensitive name group installs its FIRST entry through
+        //    the validated builder path (full engine validation: reference
+        //    lookalikes, sheet/table/function-name conflicts) and the
+        //    same-name siblings — each provably unique per (name, scope)
+        //    in the canonical model — ride the same PUBLIC facade through
+        //    insertDefinedNameSiblingParam. A reject of the group's first
+        //    entry poisons the whole name (preserveNames is name-granular,
+        //    the writer rejects any modeled entry whose name it carries):
+        //    the siblings stay uninstalled and the save keeps every
+        //    element verbatim. Workbook-scope carries Univer's
+        //    'AllDefaultWorkbook' sentinel; sheet scope carries the
+        //    snapshot sheet id at the entry's localSheetId index. All
+        //    under install suppression: opening a workbook is not an edit
+        //    (a reopen must start NOT names-dirty).
+        if (snapshot.definedNames && snapshot.definedNames.names.length > 0) {
+          const wb = rt.univerAPI.getActiveWorkbook()
+          if (wb) {
+            const workbookFacade = wb as unknown as {
+              newDefinedNameBuilder(): {
+                load(param: Record<string, unknown>): { build(): unknown }
+              }
+              insertDefinedNameBuilder(param: unknown): void
+              getDefinedNames(): Array<{ getName(): string; delete(): void }>
+            }
+            const groups = new Map<
+              string,
+              Array<{ name: string; formula: string; sheetIndex?: number }>
+            >()
+            for (const defined of snapshot.definedNames.names) {
+              const key = defined.name.toLowerCase()
+              const list = groups.get(key) ?? []
+              list.push(defined)
+              groups.set(key, list)
+            }
+            const localSheetIdOf = (defined: {
+              name: string
+              formula: string
+              sheetIndex?: number
+            }): string => {
+              const id =
+                defined.sheetIndex === undefined
+                  ? 'AllDefaultWorkbook'
+                  : (namesSheetOrderRef.current[defined.sheetIndex] ?? '')
+              if (defined.sheetIndex !== undefined && id === '') {
+                throw new Error('Scope index out of range.')
+              }
+              return id
+            }
+            for (const group of groups.values()) {
+              const first = group[0]!
+              try {
+                workbookFacade.insertDefinedNameBuilder(
+                  workbookFacade
+                    .newDefinedNameBuilder()
+                    .load({
+                      name: first.name,
+                      formulaOrRefString: first.formula,
+                      localSheetId: localSheetIdOf(first),
+                    })
+                    .build(),
+                )
+              } catch {
+                // Names the engine can't model stay file-only; the save
+                // keeps them verbatim (desktop uninstalledDefinedNames).
+                for (const defined of group) namesUninstalledRef.current.add(defined.name)
+                continue
+              }
+              for (const sibling of group.slice(1)) {
+                try {
+                  insertDefinedNameSiblingParam(
+                    workbookFacade,
+                    {
+                      name: sibling.name,
+                      formula: sibling.formula,
+                      localSheetId: localSheetIdOf(sibling),
+                    },
+                    namesEngineIdSeqRef.current++,
+                  )
+                } catch {
+                  // Roll the group back to file-only: preserveNames is
+                  // name-granular, so a half-installed name would fail
+                  // every names-dirty save at the writer's collision guard.
+                  for (const installed of workbookFacade.getDefinedNames()) {
+                    if (installed.getName().toLowerCase() === first.name.toLowerCase()) {
+                      installed.delete()
+                    }
+                  }
+                  for (const defined of group) namesUninstalledRef.current.add(defined.name)
+                }
+              }
+            }
+          }
+        }
       } finally {
         journalSuppressionRef.current = false
         moduleJournalSuppression.active = false
@@ -1836,15 +2002,37 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         const chartVisualAdditions = collectChartAdditions(chartStore)
         const visualAdditions = [...imageVisualAdditions, ...chartVisualAdditions]
         const allVisualEdits = [...visualEdits, ...chartVisualEdits]
-        // SPLIT-SAVE (desktop save-actions heldTables parity): the gateway
-        // fails closed when a new table rides with row/column changes on
-        // its sheet ("A new table cannot be saved together with row/column
-        // changes on its sheet — save the table first."). Instead of
-        // bouncing the user, hold the tables back: phase 1 saves the
-        // structure (and every other family) without them, phase 2 saves
-        // the held tables ALONE against the phase-1 bytes.
-        const heldTables = structuralOps.length > 0 ? tableAdditions : []
-        const splitSave = heldTables.length > 0
+        // EXCEL-025: the defined-names declarative snapshot (Formulas → Name
+        //   Manager). Desktop collectDefinedNamesState parity — null when
+        //   the model never changed (a no-op save emits NO family and the
+        //   file's <definedNames> XML survives byte-for-byte); the FULL
+        //   live model otherwise, so editing one name never drops its
+        //   siblings. preserveNames = reader-classified unmodelable ∪
+        //   engine install rejects.
+        const definedNamesState = collectDefinedNamesState(
+          runtimeRef.current,
+          namesDirtyRef.current,
+          namesPreserveFileRef.current,
+          namesUninstalledRef.current,
+          namesSheetOrderRef.current,
+        )
+        // SPLIT-SAVE (desktop save-actions heldTables + heldNames parity):
+        // the gateway fails closed when a new table rides with row/column
+        // changes on its sheet ("A new table cannot be saved together with
+        // row/column changes on its sheet — save the table first."), and
+        // when defined-name edits ride with ANY structural or sheet change
+        // ("Defined-name edits cannot be saved together with row/column or
+        // sheet changes — save one of them first."). Instead of bouncing
+        // the user, hold BOTH back: phase 1 saves the structure (and every
+        // other family) without them, phase 2 saves the held tables + names
+        // ALONE against the phase-1 bytes. The phase-2 names snapshot
+        // carries POST-shift coordinates — the live model was already
+        // rewritten by Univer's UpdateDefinedNameController when the
+        // structural op ran — so it applies cleanly to the shifted file.
+        const hasStructural = structuralOps.length > 0
+        const heldTables = hasStructural ? tableAdditions : []
+        const heldNames = hasStructural ? definedNamesState : null
+        const splitSave = heldTables.length > 0 || heldNames !== null
         let nextFileName = handle.fileName
         if (saveAs) {
           const newName = window.prompt('Save as:', nextFileName)
@@ -1871,16 +2059,21 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
             ...(allVisualEdits.length > 0 ? { visualEdits: allVisualEdits } : {}),
             ...(visualAdditions.length > 0 ? { visualAdditions } : {}),
             ...(chartEdits.length > 0 ? { chartEdits } : {}),
+            ...(!splitSave && definedNamesState !== null ? { definedNamesState } : {}),
           },
         })
         if (splitSave) {
-          // Phase 2: the held tables alone, against the phase-1 bytes —
-          // the same two-phase save the desktop runs when structural ops
-          // and new tables collide.
+          // Phase 2: the held tables + names alone, against the phase-1
+          // bytes — the same two-phase save the desktop runs when
+          // structural ops collide with new tables or name edits.
           saved = await saveWorkbook({
             fileName: nextFileName,
             fileBytes: saved.bytes,
-            savePlan: { edits: [], tableAdditions: heldTables },
+            savePlan: {
+              edits: [],
+              ...(heldTables.length > 0 ? { tableAdditions: heldTables } : {}),
+              ...(heldNames !== null ? { definedNamesState: heldNames } : {}),
+            },
           })
         }
         const savedBytes = saved.bytes
@@ -1899,6 +2092,11 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         dvDirtyRef.current.clear()
         cfDirtyRef.current.clear()
         noteDirtyRef.current.clear()
+        // EXCEL-025: the saved name state is now IN the source bytes — the
+        // workbook is no longer names-dirty (a subsequent no-op save must
+        // not re-emit the family). The file preserve list survives verbatim
+        // (the writer kept every preserve entry), so it stays seeded.
+        namesDirtyRef.current = false
         // EXCEL-020: the saved protection state is now IN the source bytes —
         // merge the journal into the file refs (the ribbon echo must reflect
         // the saved state) and clear the journals, so a subsequent no-op
@@ -2230,6 +2428,150 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     })
   }, [])
 
+  // ── EXCEL-025: Name Manager. The rows read the LIVE Univer model through
+  //    the public facade (namesVersion re-reads after every change); the
+  //    scope label maps the sheet id back to the tab name. The action
+  //    handler is the desktop's handleDefinedNameAction port: add goes
+  //    through the builder (whose build() runs the engine's own validation
+  //    — duplicate names, reference lookalikes, sheet/table/function-name
+  //    conflicts — surfacing the error right in the dialog), update
+  //    renames + re-points the reference in place (scope never changes —
+  //    desktop semantics), remove deletes. A namesLocked workbook (the
+  //    file's <definedNames> could not be parsed) refuses every action —
+  //    the save-side fail-closed stays unreachable.
+  const definedNameRows = useCallback((): DefinedNameRow[] => {
+    const wb = runtimeRef.current?.univerAPI.getActiveWorkbook()
+    if (!wb) return []
+    const facade = definedNamesFacade(wb)
+    if (!facade) return []
+    const sheetNameById = new Map(
+      namesSheetOrderRef.current.map((id) => {
+        const sheet = wb.getSheetBySheetId(id)
+        return [id, sheet?.getSheetName() ?? '']
+      }),
+    )
+    return facade.getDefinedNames().map((defined) => {
+      const localSheetId = defined.getLocalSheetId()
+      const scoped = localSheetId !== undefined && localSheetId !== 'AllDefaultWorkbook'
+      return {
+        name: defined.getName(),
+        ref: defined.getFormulaOrRefString(),
+        scopeSheetId: scoped ? localSheetId : null,
+        scopeLabel: scoped ? (sheetNameById.get(localSheetId) ?? localSheetId) : 'Workbook',
+      }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [namesVersion])
+
+  const handleDefinedNameAction = useCallback((action: DefinedNameAction): string | null => {
+    if (namesLockedRef.current) {
+      return 'This workbook\u2019s defined names cannot be edited — the file\u2019s name section is not fully readable, and saving an edit could damage it.'
+    }
+    const rt = runtimeRef.current
+    const wb = rt?.univerAPI.getActiveWorkbook()
+    const facade = definedNamesFacade(wb)
+    if (!wb || !facade) return 'No workbook open.'
+    // EXCEL-025 scope correction: the engine's builder duplicate check is
+    // name-keyed and scope-blind, so Excel's rule — the same name across
+    // scopes is legal, within one scope it is a duplicate
+    // (case-insensitively) — is enforced here against the live model.
+    const live = facade.getDefinedNames().map((defined) => {
+      const localSheetId = defined.getLocalSheetId()
+      const scoped = localSheetId !== undefined && localSheetId !== 'AllDefaultWorkbook'
+      return { name: defined.getName(), scopeSheetId: scoped ? localSheetId : null }
+    })
+    const nameTakenAtScope = (
+      name: string,
+      scopeSheetId: string | null,
+      exceptNameLower: string | null,
+    ): boolean =>
+      live.some(
+        (entry) =>
+          entry.name.toLowerCase() === name.toLowerCase() &&
+          entry.scopeSheetId === scopeSheetId &&
+          (exceptNameLower === null || entry.name.toLowerCase() !== exceptNameLower),
+      )
+    const nameTakenAnywhere = (name: string): boolean =>
+      live.some((entry) => entry.name.toLowerCase() === name.toLowerCase())
+    // The writer keeps every element carrying a preserved name verbatim and
+    // rejects any modeled entry with it — CASE-INSENSITIVELY, the way Excel
+    // resolves names ('FOO' collides with a preserved 'Foo', mirroring the
+    // canonical writer's and the route's collision guards) — so a name in
+    // either preserve set can never be modeled, and creating or renaming to
+    // it in ANY case is refused up front.
+    const namePreserved = (name: string): boolean => {
+      const lower = name.toLowerCase()
+      for (const candidate of namesPreserveFileRef.current) {
+        if (candidate.toLowerCase() === lower) return true
+      }
+      for (const candidate of namesUninstalledRef.current) {
+        if (candidate.toLowerCase() === lower) return true
+      }
+      return false
+    }
+    try {
+      if (action.kind === 'add') {
+        if (nameTakenAtScope(action.name, action.sheetId, null)) {
+          return `The name "${action.name}" is already defined at this scope.`
+        }
+        if (namePreserved(action.name)) {
+          return `The name "${action.name}" exists in a form the editor cannot model — saving would duplicate it.`
+        }
+        const localSheetId = action.sheetId ?? 'AllDefaultWorkbook'
+        if (nameTakenAnywhere(action.name)) {
+          // Same name at a DIFFERENT scope: a legal Excel pair the engine's
+          // scope-blind builder cannot express — public sibling param path.
+          insertDefinedNameSiblingParam(
+            facade,
+            { name: action.name, formula: action.ref.replace(/^=/, ''), localSheetId },
+            namesEngineIdSeqRef.current++,
+          )
+        } else {
+          facade.insertDefinedNameBuilder(
+            facade
+              .newDefinedNameBuilder()
+              .load({
+                name: action.name,
+                formulaOrRefString: action.ref.replace(/^=/, ''),
+                localSheetId,
+              })
+              .build(),
+          )
+        }
+      } else {
+        const target = facade.getDefinedNames().find((defined) => {
+          const localSheetId = defined.getLocalSheetId()
+          const scoped = localSheetId !== undefined && localSheetId !== 'AllDefaultWorkbook'
+          const scopeSheetId = scoped ? localSheetId : null
+          const originalName = action.kind === 'update' ? action.originalName : action.name
+          return defined.getName() === originalName && scopeSheetId === action.scopeSheetId
+        })
+        if (!target) return 'That name no longer exists.'
+        if (action.kind === 'remove') {
+          target.delete()
+        } else {
+          if (action.name !== action.originalName) {
+            if (
+              nameTakenAtScope(action.name, action.scopeSheetId, action.originalName.toLowerCase())
+            ) {
+              return `The name "${action.name}" is already defined at this scope.`
+            }
+            if (namePreserved(action.name)) {
+              return `The name "${action.name}" exists in a form the editor cannot model — saving would duplicate it.`
+            }
+            target.setName(action.name)
+          }
+          target.setRef(action.ref.replace(/^=/, ''))
+        }
+      }
+    } catch (error: unknown) {
+      return error instanceof Error ? error.message : 'The name could not be applied.'
+    }
+    setNamesVersion((v) => v + 1)
+    setStatus('Defined names updated — they persist on save.')
+    return null
+  }, [])
+
   const handleChartInsertFromPanel = useCallback(
     (chart: ChartAdd) => {
       const rt = runtimeRef.current
@@ -2361,6 +2703,7 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         images={{ onInsertPicture: handleInsertPicture }}
         charts={{ onInsertChart: handleInsertChart }}
         cf={{ onOpenConditionalFormatting: handleOpenConditionalFormatting }}
+        names={{ onOpenNameManager: () => setNameManagerOpen(true) }}
       />
 
       {/* EXCEL-023 — the Chart Design pane (create mode after Insert →
@@ -2385,10 +2728,55 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         />
       )}
 
+      {/* EXCEL-025 — the Name Manager dialog (Formulas → Name Manager).
+          Rows read the live model; actions run through the public facade
+          with the namesLocked fail-closed gate. */}
+      {nameManagerOpen && (
+        <NameManagerDialog
+          names={definedNameRows()}
+          sheets={namesSheetOrderRef.current.map((id) => ({
+            id,
+            name:
+              runtimeRef.current?.univerAPI
+                .getActiveWorkbook()
+                ?.getSheetBySheetId(id)
+                ?.getSheetName() ?? id,
+          }))}
+          locked={namesLockedRef.current}
+          lockedReason={
+            namesLockedRef.current
+              ? 'The file\u2019s defined-names section could not be fully read — editing is disabled so nothing is lost. Untouched names still save byte-for-byte.'
+              : null
+          }
+          onAction={handleDefinedNameAction}
+          onClose={() => setNameManagerOpen(false)}
+        />
+      )}
+
       <div className="excel-formula-row" data-testid="excel-formula-row">
         <NameBox
           activeCellA1={api?.state.activeCellA1 ?? ''}
-          onGoTo={(ref) => (api ? api.goTo(ref) : 'No workbook open')}
+          onGoTo={(ref) => {
+            if (!api) return 'No workbook open'
+            // EXCEL-025: resolve defined names first (desktop
+            // resolveGoToRef parity — names win over addresses,
+            // case-insensitively; a name whose ref is a formula is not a
+            // jump target) with Excel scope precedence: a definition
+            // scoped to the ACTIVE sheet shadows the workbook-level one.
+            // The resolved A1 reference flows into the same goTo path an
+            // address takes (sheet switch + select + scroll).
+            const activeSheetId =
+              runtimeRef.current?.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId() ??
+              null
+            const entries = definedNameRows().map((row) => ({
+              name: row.name,
+              ref: row.ref,
+              scopeSheetId: row.scopeSheetId,
+            }))
+            const resolved = resolveGoToNameRef(ref, entries, activeSheetId)
+            if (resolved === null) return 'Invalid reference'
+            return api.goTo(resolved.a1)
+          }}
         />
         <span className="excel-formula-fx">ƒx</span>
         <FormulaBar
@@ -2588,6 +2976,161 @@ function collectCfStates(
 }
 
 /**
+ * The PUBLIC defined-name facade on the workbook (verified from the
+ * installed @univerjs/sheets 0.25.1 f-defined-name.d.ts — the desktop's
+ * exact UniverDefinedName shape). Public API only: no injector reach-ins,
+ * no private internals.
+ */
+interface UniverDefinedNameFacade {
+  getName(): string
+  getFormulaOrRefString(): string
+  getLocalSheetId(): string | undefined
+  setName(name: string): void
+  setRef(ref: string): void
+  delete(): void
+}
+
+interface DefinedNamesWorkbookFacade {
+  getDefinedNames(): UniverDefinedNameFacade[]
+  newDefinedNameBuilder(): {
+    load(param: Record<string, unknown>): { build(): unknown }
+  }
+  insertDefinedNameBuilder(param: unknown): void
+}
+
+function definedNamesFacade(workbook: unknown): DefinedNamesWorkbookFacade | null {
+  if (!workbook) return null
+  return workbook as DefinedNamesWorkbookFacade
+}
+
+/**
+ * Insert a defined name the engine's validated builder cannot express: a
+ * name that already exists at a DIFFERENT scope (Excel-legal, and the
+ * canonical writer's (name, scope) uniqueness key permits it). Verified
+ * from the installed @univerjs/sheets 0.25.1 source: the underlying
+ * DefinedNamesService map is id-keyed — it holds, lists, edits, deletes,
+ * and structurally shifts same-name siblings per id — but
+ * FDefinedNameBuilder.build() → validateDefinedName → getValueByName is
+ * name-keyed and scope-blind, so the builder rejects ANY second entry with
+ * the same name. This is NOT a second persistence model: the entry rides
+ * the same PUBLIC insertDefinedNameBuilder facade with a hand-filled
+ * public param (ISetDefinedNameMutationParam, the shape the builder itself
+ * produces), and the caller must have already proven the
+ * (case-insensitive name, scope) key is unique — everything else still
+ * goes through the validated builder path.
+ */
+function insertDefinedNameSiblingParam(
+  workbook: { insertDefinedNameBuilder(param: unknown): void },
+  entry: { name: string; formula: string; localSheetId: string },
+  seq: number,
+): void {
+  workbook.insertDefinedNameBuilder({
+    id: `web-defined-name-${seq}`,
+    unitId: WORKBOOK_UNIT_ID,
+    name: entry.name,
+    formulaOrRefString: entry.formula,
+    localSheetId: entry.localSheetId,
+  })
+}
+
+/**
+ * Snapshot the LIVE Univer defined-name model when it changed this session
+ * (desktop collectDefinedNamesState parity — a declarative full-model
+ * snapshot, never a mutation replay). Every modeled name rides along
+ * (created + edited + untouched alike), so editing one name never drops
+ * its siblings. Sheet-scoped names map back to the file's tab order index
+ * through the snapshot sheet order; a scope the file does not contain
+ * fails the save closed. preserveNames = the reader's file preserve list
+ * ∪ the names the engine refused to install.
+ */
+function collectDefinedNamesState(
+  runtime: BrowserUniverRuntime | null,
+  namesDirty: boolean,
+  namesPreserveFile: ReadonlySet<string>,
+  namesUninstalled: ReadonlySet<string>,
+  namesSheetOrder: readonly string[],
+): {
+  names: Array<{ name: string; formula: string; sheetIndex?: number }>
+  preserveNames: string[]
+} | null {
+  if (!namesDirty) return null
+  const workbook = runtime?.univerAPI.getActiveWorkbook()
+  const facade = definedNamesFacade(workbook)
+  if (!facade) return null
+  const names: Array<{ name: string; formula: string; sheetIndex?: number }> = []
+  for (const defined of facade.getDefinedNames()) {
+    const localSheetId = defined.getLocalSheetId()
+    // Univer reports workbook scope as the literal 'AllDefaultWorkbook'
+    // sentinel (verified from the installed engine source).
+    const scoped = localSheetId !== undefined && localSheetId !== 'AllDefaultWorkbook'
+    const sheetIndex = scoped ? namesSheetOrder.indexOf(localSheetId) : -1
+    if (scoped && sheetIndex === -1) {
+      throw new Error(
+        `The defined name "${defined.getName()}" is scoped to a sheet the file does ` +
+          'not contain — it cannot be saved.',
+      )
+    }
+    names.push({
+      name: defined.getName(),
+      formula: defined.getFormulaOrRefString().replace(/^=/, ''),
+      ...(scoped ? { sheetIndex } : {}),
+    })
+  }
+  const preserveNames = [...new Set([...namesPreserveFile, ...namesUninstalled])]
+  return { names, preserveNames }
+}
+
+/**
+ * Resolve Name Box / Go To input against the live defined names (desktop
+ * resolveGoToRef port — goto.ts is a frozen-surface module the web cannot
+ * import, so the pure logic is re-implemented verbatim here). Defined
+ * names win over addresses (names that look like cell refs are invalid
+ * anyway) and match case-insensitively. EXCEL-025 scope precedence: when
+ * the same name exists at several scopes, the definition scoped to the
+ * ACTIVE sheet shadows the workbook-level one (Excel semantics; the
+ * engine's own name resolution is name-keyed and scope-blind, so this
+ * browser-side pick is the scope-correct one); a workbook-level definition
+ * applies everywhere else, and a name scoped to another sheet remains a
+ * jump target (desktop parity). A name whose ref is a formula (e.g.
+ * OFFSET) is not a jump target and resolves to null.
+ */
+function resolveGoToNameRef(
+  input: string,
+  entries: readonly { name: string; ref: string; scopeSheetId: string | null }[],
+  activeSheetId: string | null,
+): { a1: string; sheetScoped: boolean } | null {
+  const trimmed = input.trim()
+  if (trimmed === '') return null
+  const lower = trimmed.toLowerCase()
+  const named = entries.filter((entry) => entry.name.toLowerCase() === lower)
+  if (named.length > 0) {
+    const pick =
+      named.find((entry) => entry.scopeSheetId !== null && entry.scopeSheetId === activeSheetId) ??
+      named.find((entry) => entry.scopeSheetId === null) ??
+      named[0]!
+    const ref = pick.ref.replace(/^=/, '').trim()
+    if (!isA1GoToReference(ref)) return null
+    return { a1: ref, sheetScoped: ref.includes('!') }
+  }
+  if (!isA1GoToReference(trimmed)) return null
+  return { a1: trimmed, sheetScoped: trimmed.includes('!') }
+}
+
+const GO_TO_CELL_OR_RANGE = /^\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?$/
+const GO_TO_COLUMN_SPAN = /^\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}$/
+const GO_TO_ROW_SPAN = /^\$?\d+:\$?\d+$/
+
+/** A1 address / range / whole-column span / whole-row span (desktop
+ *  isA1Reference port, with the optional `Sheet1!` / `'My Sheet'!` prefix
+ *  split). */
+function isA1GoToReference(ref: string): boolean {
+  const bang = ref.lastIndexOf('!')
+  if (bang === 0) return false
+  const body = bang === -1 ? ref : ref.slice(bang + 1)
+  return GO_TO_CELL_OR_RANGE.test(body) || GO_TO_COLUMN_SPAN.test(body) || GO_TO_ROW_SPAN.test(body)
+}
+
+/**
  * Snapshot the LIVE Univer note model for every note-dirty sheet into the
  * canonical SheetNoteState wire shape (desktop collectNoteStates parity —
  * a declarative full-set snapshot, never a mutation replay). Univer's note
@@ -2736,6 +3279,7 @@ function subscribeToCellMutations(
   dvDirtyRef: React.MutableRefObject<Set<string>>,
   noteDirtyRef: React.MutableRefObject<Set<string>>,
   cfDirtyRef: React.MutableRefObject<Set<string>>,
+  namesDirtyRef: React.MutableRefObject<boolean>,
   onDirty: () => void,
 ): { dispose(): void } {
   const sub = runtime.univerAPI.addEvent(runtime.univerAPI.Event.CommandExecuted, (event) => {
@@ -3139,6 +3683,22 @@ function subscribeToCellMutations(
       const ws = wb.getSheetBySheetId(sheetId)
       if (!ws) return
       noteDirtyRef.current.add(ws.getSheetName())
+      onDirty()
+      return
+    }
+
+    // ── Defined-name mutations (EXCEL-025 — engine-formula preset). set
+    //    covers create AND edit AND the structural-op rewrites the
+    //    sheets-formula UpdateDefinedNameController emits (a row insert
+    //    that shifts a name reference marks names dirty — the save then
+    //    splits, because the gateway refuses names + structural ops in
+    //    one pass); remove covers delete. A single WORKBOOK-level dirty
+    //    flag — exactly the desktop's DEFINED_NAME_MUTATIONS handler. The
+    //    SAVE snapshots the live model declaratively
+    //    (collectDefinedNamesState); individual mutations are never
+    //    replayed.
+    if (DEFINED_NAME_MUTATION_IDS.has(event.id)) {
+      namesDirtyRef.current = true
       onDirty()
       return
     }
