@@ -1153,3 +1153,107 @@ describe('architecture: EXCEL-025 Defined Names uses the canonical wire family',
     expect(namesSurface).not.toContain('_injector')
   })
 })
+
+describe('architecture: EXCEL-026 View / Page Layout uses the canonical wire family', () => {
+  const webFiles = readFiles(join(WEB_ROOT, 'src'))
+
+  it('apps/web/src has NO view/page OOXML, JSZip, or browser XML construction', () => {
+    // The browser must never construct or parse sheetView/pageSetup/
+    // pageMargins/pane XML — view and page state travel ONLY through the
+    // typed pageSetupStates family. (Select values like "portrait" and
+    // paper-size codes are wire enum values, not XML.)
+    const forbidden = [
+      /<sheetView\b/,
+      /<pageSetup\b/,
+      /<pageMargins\b/,
+      /<pageSetUpPr\b/,
+      /<pane\b/,
+      /from\s+['"]jszip['"]/,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('apps/web/src has no second view/page persistence model', () => {
+    // The only writer is the canonical gateway (applyPageSetupState); the
+    // browser never re-implements pageSetup merging, margin presets, pane
+    // construction, or print-area semantics.
+    const forbidden = [/applyPageSetupState/, /setSheetViewAttr/, /MARGIN_PRESETS/, /setFrozenPane/]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('view/page types cross the browser boundary type-only (no gateway value imports)', () => {
+    const clientPath = join(WEB_ROOT, 'src', 'api', 'office-client.ts')
+    const content = readFileSync(clientPath, 'utf8')
+    expect(content).toContain('pageSetupStates?:')
+    expect(content).toContain('showGridlines?: boolean')
+    expect(content).toContain('showFormulas?: boolean')
+    // No runtime import of the gateway barrel for the page-setup family.
+    expect(
+      /import\s+\{[^}]*SheetPageSetupState[^}]*\}\s+from\s+'@genoffice\/xlsx-gateway'/.test(
+        content,
+      ),
+    ).toBe(false)
+  })
+
+  it('ExcelEditor journals view state through the single page-setup family', () => {
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    const content = readFileSync(editorPath, 'utf8')
+    // The generalized per-sheet journal (freeze + view flags + print).
+    expect(content).toContain('PageSetupJournalEntry')
+    expect(content).toContain('pageSetupRef')
+    // Freeze mutation journals INCLUDING the 0/0 clear (the defect fix).
+    expect(content).toContain('SET_FROZEN_MUTATION_ID')
+    // Gridlines journal from the engine's own built-in mutation.
+    expect(content).toContain("'sheet.mutation.toggle-gridlines'")
+    // Formula view: render state + journal through the same family.
+    expect(content).toContain('toggleShowFormulas')
+    expect(content).toContain('applyShowFormulasView')
+    expect(content).toContain('installFormulaViewInterceptor')
+    expect(content).toContain('formulaViewRef')
+    // Save emission: every journaled sheet (no freeze-only filter that
+    // would drop clears or view flags).
+    expect(content).toContain('pageSetupStates = Array.from(pageSetupRef.current.entries())')
+    // Import: the file's view state seeds the live config (gridlines +
+    // headings) and the formula-view set.
+    expect(content).toContain('sheet.view?.showGridlines === false')
+    expect(content).toContain('sheet.view?.showHeadings === false')
+    expect(content).toContain('sheet.view?.showFormulas === true')
+    // Page Layout commands journal with the desktop's scale/fit semantics.
+    expect(content).toContain('applyPageLayout')
+  })
+
+  it('Ribbon View → Show and Page Layout are wired (no disabled stubs)', () => {
+    const ribbonPath = join(WEB_ROOT, 'src', 'screens', 'excel', 'Ribbon.tsx')
+    const content = readFileSync(ribbonPath, 'utf8')
+    // View → Show: Gridlines (persists) + Show Formulas.
+    expect(content).toContain('onToggleShowFormulas')
+    expect(content).toContain('persists on save as sheet view state')
+    expect(content).not.toContain('Toggle gridlines (in-session)')
+    // Page Layout: the five former disabled placeholders are live selects.
+    expect(content).toContain('onOrientation')
+    expect(content).toContain('onMargins')
+    expect(content).toContain('onPaperSize')
+    expect(content).toContain('onFitWidth')
+    expect(content).toContain('onFitHeight')
+    expect(content).not.toContain('disabled: pageSetupStates is wired only for freeze panes today')
+  })
+
+  it('formula-view module has no gateway imports and no private Univer internals', () => {
+    const modulePath = join(WEB_ROOT, 'src', 'office', 'formula-view.ts')
+    const content = readFileSync(modulePath, 'utf8')
+    // Render-only module: engine presets + core, no persistence imports.
+    expect(content).not.toContain('@genoffice/xlsx-gateway')
+    expect(content).toContain("from '@univerjs/preset-sheets-core'")
+    // The desktop's exact mechanism: context key + CELL_CONTENT interceptor.
+    expect(content).toContain('RENDER_RAW_FORMULA_KEY')
+    expect(content).toContain('INTERCEPTOR_POINT.CELL_CONTENT')
+  })
+})

@@ -4205,3 +4205,100 @@ export async function buildExcelNamesCasePairFixture(): Promise<Buffer> {
 
   return toBytes(zip)
 }
+
+/**
+ * EXCEL-026 — View / Page Layout persistence fixture. Two visible sheets:
+ * "Data" (formula cells + a configurable <sheetView>) and "Other" (default
+ * view). `dataView` is the sheetView element XML for sheet 1 (e.g.
+ * '<sheetView showGridLines="0" showFormulas="1" workbookViewId="0"/>');
+ * `dataTail` appends extra worksheet elements (pageSetup, etc.).
+ */
+export async function buildExcelViewFixture(
+  dataView = '<sheetView workbookViewId="0"/>',
+  dataTail = '',
+): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Data" sheetId="1" r:id="rId1"/>
+    <sheet name="Other" sheetId="2" r:id="rId2"/>
+  </sheets>
+  <calcPr calcId="191029"/>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews>${dataView}</sheetViews>
+  <sheetData>
+    <row r="1">
+      <c r="A1"><v>10</v></c>
+      <c r="B1"><v>32</v></c>
+      <c r="C1"><f>SUM(A1:B1)</f><v>42</v></c>
+      <c r="D1"><f>A1*2</f><v>20</v></c>
+    </row>
+    <row r="2">
+      <c r="A2"><v>5</v></c>
+      <c r="B2"><v>7</v></c>
+    </row>
+  </sheetData>
+  ${dataTail}
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet2.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews><sheetView workbookViewId="0"/></sheetViews>
+  <sheetData>
+    <row r="2"><c r="B2"><v>5</v></c></row>
+  </sheetData>
+  <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}

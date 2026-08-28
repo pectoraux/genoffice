@@ -88,16 +88,30 @@ export interface BrowserSheetStructuralOps {
 
 /**
  * Per-sheet page-setup state for a save plan. Mirrors the canonical
- * `SheetPageSetupState` from @genoffice/xlsx-gateway — only the
- * `frozenRows` / `frozenColumns` fields are wired by the web shell today
- * (View → Freeze Panes); the remaining optional fields are kept open so
- * future View commands (gridlines-on-print, page breaks, …) can land
- * without a wire-breaking change.
+ * `SheetPageSetupState` from @genoffice/xlsx-gateway — the EXCEL-026
+ * surface wires freeze panes (View → Freeze Panes), the view flags
+ * (View → Show: gridlines / formulas), and the print family (Page Layout
+ * tab: orientation, margins, paper size, scale, fit-to-page); the
+ * remaining optional fields are kept open so future View commands can
+ * land here without a wire-breaking change.
  */
 export interface BrowserSheetPageSetupState {
   readonly sheetName: string
   readonly frozenRows?: number
   readonly frozenColumns?: number
+  /** sheetView@showGridLines — false hides the gridlines. */
+  readonly showGridlines?: boolean
+  /** sheetView@showFormulas — true renders formulas instead of values. */
+  readonly showFormulas?: boolean
+  /** sheetView@showRowColHeaders — false hides the heading strips. */
+  readonly showHeadings?: boolean
+  readonly orientation?: 'portrait' | 'landscape'
+  readonly margins?: 'normal' | 'wide' | 'narrow'
+  readonly paperSize?: number
+  readonly scale?: number
+  readonly fitToWidth?: number
+  readonly fitToHeight?: number
+  readonly fitToPage?: boolean
   readonly [key: string]: unknown
 }
 
@@ -106,9 +120,11 @@ export interface BrowserWorkbookSavePlan {
   /** Row/column structural operations, replayed by the engine BEFORE edits. */
   readonly structuralOps?: readonly BrowserSheetStructuralOps[]
   /**
-   * Per-sheet page-setup states (freeze panes, …). Replayed by the engine
-   * AFTER structural ops and edits. Only `frozenRows`/`frozenColumns` are
-   * emitted by the web shell today.
+   * Per-sheet page-setup states. Replayed by the engine AFTER structural
+   * ops and edits. EXCEL-026 wires freeze panes, the View → Show flags
+   * (gridlines / formulas), and the Page Layout print family; a sheet
+   * with no journaled view/print change emits NO entry, so a no-op save
+   * preserves its view/page XML byte-for-byte.
    */
   readonly pageSetupStates?: readonly BrowserSheetPageSetupState[]
   /**

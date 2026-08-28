@@ -1995,12 +1995,20 @@ function expectSheetStructuralOps(value: unknown, index: number): SheetStructura
 }
 
 /**
- * Validate one per-sheet page-setup state from the wire. Only the
- * `frozenRows` / `frozenColumns` fields are wired by the web shell today;
- * the remaining optional SheetPageSetupState fields are accepted (and
- * type-validated) so future View commands can land here without a
- * wire-breaking change. Frozen-row/column counts are bounded by the
- * OOXML maximum row/column counts.
+ * Validate one per-sheet page-setup state from the wire. The View/Page
+ * Layout surface (EXCEL-026) wires frozenRows/frozenColumns (Freeze Panes),
+ * showGridlines/showFormulas/showHeadings (View → Show; showHeadings is
+ * read-only today), and the print family (orientation, margins presets,
+ * paperSize, scale, fitToWidth/fitToHeight, fitToPage — Page Layout tab).
+ * The remaining optional SheetPageSetupState fields (printArea,
+ * printTitles, header/footer, rowBreaks/colBreaks, printGridlines,
+ * printHeadings) are accepted as documented forward-compatibility seams:
+ * unknown keys are ignored without error, and the typed readers here keep
+ * every wired field validated BEFORE the engine touches bytes. Frozen
+ * counts are bounded by the OOXML maximum row/column counts; scale/fit
+ * bounds mirror the canonical writer's Excel semantics (scale 10–400,
+ * fit axes 0 = automatic … 1000 pages, paperSize 1–118 = the OOXML paper
+ * code range).
  */
 function expectSheetPageSetupState(value: unknown, index: number): SheetPageSetupState {
   if (!isRecord(value)) {
@@ -2011,6 +2019,16 @@ function expectSheetPageSetupState(value: unknown, index: number): SheetPageSetu
     sheetName: string
     frozenRows?: number
     frozenColumns?: number
+    showGridlines?: boolean
+    showFormulas?: boolean
+    showHeadings?: boolean
+    orientation?: 'portrait' | 'landscape'
+    margins?: 'normal' | 'wide' | 'narrow'
+    paperSize?: number
+    scale?: number
+    fitToWidth?: number
+    fitToHeight?: number
+    fitToPage?: boolean
     [k: string]: unknown
   } = { sheetName }
   if (value.frozenRows !== undefined) {
@@ -2033,10 +2051,84 @@ function expectSheetPageSetupState(value: unknown, index: number): SheetPageSetu
     }
     out.frozenColumns = n
   }
+  if (value.showGridlines !== undefined) {
+    out.showGridlines = expectBoolean(
+      value.showGridlines,
+      `pageSetupStates[${index}].showGridlines`,
+    )
+  }
+  if (value.showFormulas !== undefined) {
+    out.showFormulas = expectBoolean(value.showFormulas, `pageSetupStates[${index}].showFormulas`)
+  }
+  if (value.showHeadings !== undefined) {
+    out.showHeadings = expectBoolean(value.showHeadings, `pageSetupStates[${index}].showHeadings`)
+  }
+  if (value.orientation !== undefined) {
+    if (value.orientation !== 'portrait' && value.orientation !== 'landscape') {
+      throw new OfficeValidationError(
+        'validation',
+        `pageSetupStates[${index}].orientation must be "portrait" or "landscape"`,
+      )
+    }
+    out.orientation = value.orientation
+  }
+  if (value.margins !== undefined) {
+    if (value.margins !== 'normal' && value.margins !== 'wide' && value.margins !== 'narrow') {
+      throw new OfficeValidationError(
+        'validation',
+        `pageSetupStates[${index}].margins must be "normal", "wide", or "narrow"`,
+      )
+    }
+    out.margins = value.margins
+  }
+  if (value.paperSize !== undefined) {
+    const n = expectNumber(value.paperSize, `pageSetupStates[${index}].paperSize`)
+    if (!Number.isInteger(n) || n < 1 || n > 118) {
+      throw new OfficeValidationError(
+        'validation',
+        `pageSetupStates[${index}].paperSize must be an integer 1..118`,
+      )
+    }
+    out.paperSize = n
+  }
+  if (value.scale !== undefined) {
+    const n = expectNumber(value.scale, `pageSetupStates[${index}].scale`)
+    if (!Number.isInteger(n) || n < 10 || n > 400) {
+      throw new OfficeValidationError(
+        'validation',
+        `pageSetupStates[${index}].scale must be an integer 10..400`,
+      )
+    }
+    out.scale = n
+  }
+  if (value.fitToWidth !== undefined) {
+    const n = expectNumber(value.fitToWidth, `pageSetupStates[${index}].fitToWidth`)
+    if (!Number.isInteger(n) || n < 0 || n > 1_000) {
+      throw new OfficeValidationError(
+        'validation',
+        `pageSetupStates[${index}].fitToWidth must be an integer 0..1000`,
+      )
+    }
+    out.fitToWidth = n
+  }
+  if (value.fitToHeight !== undefined) {
+    const n = expectNumber(value.fitToHeight, `pageSetupStates[${index}].fitToHeight`)
+    if (!Number.isInteger(n) || n < 0 || n > 1_000) {
+      throw new OfficeValidationError(
+        'validation',
+        `pageSetupStates[${index}].fitToHeight must be an integer 0..1000`,
+      )
+    }
+    out.fitToHeight = n
+  }
+  if (value.fitToPage !== undefined) {
+    out.fitToPage = expectBoolean(value.fitToPage, `pageSetupStates[${index}].fitToPage`)
+  }
   // Forward-compatibility seam: ignore unknown keys (the canonical
-  // SheetPageSetupState carries many optional fields — orientation,
-  // paperSize, margins, … — that the web shell does not yet emit; future
-  // increments can add validated readers here without bumping the wire).
+  // SheetPageSetupState carries further optional fields — printArea,
+  // printTitles, header/footer, breaks, printGridlines/printHeadings —
+  // that the web shell does not yet emit; future increments can add
+  // validated readers here without bumping the wire).
   return out as SheetPageSetupState
 }
 
@@ -2059,6 +2151,9 @@ const MAX_FILTER_ROW_OR_COLUMN = 1_048_576
 const MAX_FILTER_COLUMN_INDEX = 16_384
 /** Guard against absurd payloads (one filter per sheet, plus headroom). */
 const MAX_FILTER_STATES = 100
+/// One pageSetupStates entry per sheet (freeze/view/print state) — the
+/// same ceiling as filter states.
+const MAX_PAGE_SETUP_STATES = 100
 /** Guard against absurd per-column value lists. */
 const MAX_FILTER_VALUES = 10_000
 /** OOXML allows at most two customFilters per customFilters element. */
@@ -4422,6 +4517,12 @@ function parseSaveWorkbookRequest(
             expectSheetPageSetupState,
           )
         : undefined
+    if (pageSetupStates !== undefined && pageSetupStates.length > MAX_PAGE_SETUP_STATES) {
+      throw new OfficeValidationError(
+        'validation',
+        `savePlan.pageSetupStates exceeds ${MAX_PAGE_SETUP_STATES} entries`,
+      )
+    }
     const filterStates =
       body.savePlan.filterStates !== undefined && body.savePlan.filterStates !== null
         ? expectArray(body.savePlan.filterStates, 'savePlan.filterStates', expectSheetFilterState)
