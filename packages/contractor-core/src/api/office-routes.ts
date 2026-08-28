@@ -33,10 +33,12 @@ import {
   type ChartSeriesEdit,
   type ChartSeriesSetEntry,
   type EditableBorderStyle,
+  type DefinedNamesState,
   type SheetDvState,
   type SheetCfState,
   type SheetFilterState,
   OOXML_ICON_SETS,
+  definedNameIsSaveable,
   type SheetNoteState,
   type SheetPageSetupState,
   type SheetProtectionState,
@@ -189,6 +191,28 @@ export interface BrowserWorkbookSavePlan {
    * removed only when no remaining relationship references it).
    */
   readonly visualEdits?: readonly WorkbookVisualEdit[]
+  /**
+   * Defined names (Formulas → Name Manager, EXCEL-025). When present the
+   * engine rewrites workbook.xml's `<definedNames>` declaratively from
+   * this snapshot: `names` is the FULL live defined-name model (so
+   * editing one name never drops its siblings), `preserveNames` are
+   * entries the editor never modeled (invalid file-native names,
+   * out-of-range scopes, empty bodies, duplicate losers, engine install
+   * rejects) which stay byte-verbatim. `_xlnm.*` built-ins and hidden
+   * names are preserved by the writer's keep-rules without a
+   * preserve-list entry. null/absent = untouched (byte-preserving
+   * no-op). The gateway fails closed when this family rides with
+   * row/column structural ops or sheet management in the same save —
+   * the browser splits the save (desktop heldNames parity).
+   */
+  readonly definedNamesState?: {
+    readonly names: readonly {
+      readonly name: string
+      readonly formula: string
+      readonly sheetIndex?: number | undefined
+    }[]
+    readonly preserveNames: readonly string[]
+  } | null
   // Extensibility seam — future mutation families land here as optional
   // readonly fields (chartEdits?, hyperlinkEdits?, …).
   // The route handler ignores unknown keys, so adding a field is a
@@ -2490,6 +2514,14 @@ const MAX_CF_TEXT_LENGTH = 255
 const MAX_CF_FORMULA_LENGTH = 1_000
 const MAX_CF_NUMBER = 1e15
 
+// EXCEL-025: defined-name wire caps. Excel's own name limit is 255 chars;
+// the formula body cap mirrors the CF/DV formula bound; the entry caps keep
+// the declarative rewrite bounded.
+const MAX_DEFINED_NAME_ENTRIES = 1_000
+const MAX_DEFINED_NAME_PRESERVE = 1_000
+const MAX_DEFINED_NAME_FORMULA_LENGTH = 1_000
+const MAX_DEFINED_NAME_SHEET_INDEX = 255
+
 const CF_RULE_TYPES = new Set(['highlightCell', 'colorScale', 'dataBar', 'iconSet'])
 const CF_SUB_TYPES = new Set([
   'number',
@@ -3000,6 +3032,123 @@ const MAX_VISUAL_EDITS = 200
 const MAX_VISUAL_IMAGE_BASE64_CHARS = 11_000_000
 const MAX_ANCHOR_ROW = 1_048_575
 const MAX_ANCHOR_COLUMN = 16_383
+
+/**
+ * Validate the defined-names save family (EXCEL-025, Formulas → Name
+ * Manager). Strict at every level: unknown fields rejected, names must
+ * pass the canonical writer's predicate (imported from the gateway — one
+ * rule set, no copy), formula bodies bounded, sheet scopes bounded
+ * integers, per-(name, scope) duplicates rejected, and the
+ * modeled∩preserve collision the writer fails closed on surfaces here as
+ * a 400 BEFORE the engine touches bytes. preserveNames entries are
+ * exempt from the saveable-name predicate by design — they are exactly
+ * the names the editor could NOT model.
+ */
+function expectDefinedNamesState(value: unknown, field: string): DefinedNamesState {
+  if (!isRecord(value)) {
+    throw new OfficeValidationError('validation', `${field} must be an object`)
+  }
+  if (!Array.isArray(value.names)) {
+    throw new OfficeValidationError('validation', `${field}.names must be an array`)
+  }
+  if (value.names.length > MAX_DEFINED_NAME_ENTRIES) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.names exceeds ${MAX_DEFINED_NAME_ENTRIES} entries`,
+    )
+  }
+  const names = value.names.map((entry, index) => {
+    if (!isRecord(entry)) {
+      throw new OfficeValidationError('validation', `${field}.names[${index}] must be an object`)
+    }
+    const name = expectString(entry.name, `${field}.names[${index}].name`)
+    if (!definedNameIsSaveable(name)) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.names[${index}].name "${name}" is not a saveable defined name`,
+      )
+    }
+    const formula = expectString(entry.formula, `${field}.names[${index}].formula`)
+    if (formula.length > MAX_DEFINED_NAME_FORMULA_LENGTH) {
+      throw new OfficeValidationError(
+        'validation',
+        `${field}.names[${index}].formula exceeds ${MAX_DEFINED_NAME_FORMULA_LENGTH} characters`,
+      )
+    }
+    if (entry.sheetIndex !== undefined) {
+      if (typeof entry.sheetIndex !== 'number' || !Number.isInteger(entry.sheetIndex)) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.names[${index}].sheetIndex must be an integer`,
+        )
+      }
+      if (entry.sheetIndex < 0 || entry.sheetIndex > MAX_DEFINED_NAME_SHEET_INDEX) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.names[${index}].sheetIndex must be 0..${MAX_DEFINED_NAME_SHEET_INDEX}`,
+        )
+      }
+    }
+    for (const key of Object.keys(entry)) {
+      if (key !== 'name' && key !== 'formula' && key !== 'sheetIndex') {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.names[${index}] carries an unknown field "${key}"`,
+        )
+      }
+    }
+    return {
+      name,
+      formula,
+      ...(entry.sheetIndex === undefined ? {} : { sheetIndex: entry.sheetIndex }),
+    }
+  })
+  const seen = new Set<string>()
+  for (const entry of names) {
+    const key = `${entry.name}\u0000${entry.sheetIndex ?? -1}`
+    if (seen.has(key)) {
+      throw new OfficeValidationError(
+        'validation',
+        `The name "${entry.name}" is defined twice in ${field}.names`,
+      )
+    }
+    seen.add(key)
+  }
+  const preserveNames = (Array.isArray(value.preserveNames) ? value.preserveNames : []).map(
+    (entry, index) => {
+      if (typeof entry !== 'string' || entry.length === 0 || entry.length > 255) {
+        throw new OfficeValidationError(
+          'validation',
+          `${field}.preserveNames[${index}] must be a 1..255 character string`,
+        )
+      }
+      return entry
+    },
+  )
+  if (preserveNames.length > MAX_DEFINED_NAME_PRESERVE) {
+    throw new OfficeValidationError(
+      'validation',
+      `${field}.preserveNames exceeds ${MAX_DEFINED_NAME_PRESERVE} entries`,
+    )
+  }
+  const preserved = new Set(preserveNames)
+  for (const entry of names) {
+    if (preserved.has(entry.name)) {
+      throw new OfficeValidationError(
+        'validation',
+        `The name "${entry.name}" also exists in a form the editor cannot model — ` +
+          'saving would duplicate it.',
+      )
+    }
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'names' && key !== 'preserveNames') {
+      throw new OfficeValidationError('validation', `${field} carries an unknown field "${key}"`)
+    }
+  }
+  return { names, preserveNames }
+}
+
 const MAX_ANCHOR_OFFSET_EMU = 50_000_000
 const DRAWING_PATH_PATTERN = /^xl\/drawings\/[A-Za-z0-9._/-]+\.xml$/
 const VISUAL_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif'])
@@ -4381,6 +4530,14 @@ function parseSaveWorkbookRequest(
         `savePlan.chartEdits exceeds ${MAX_CHART_EDITS} entries`,
       )
     }
+    // EXCEL-025: the defined-names declarative snapshot (Formulas → Name
+    // Manager). Strictly validated — names must pass the canonical
+    // writer's predicate, scopes/duplicates/collisions checked, unknown
+    // fields rejected, all BEFORE the engine touches bytes.
+    const definedNamesState =
+      body.savePlan.definedNamesState !== undefined && body.savePlan.definedNamesState !== null
+        ? expectDefinedNamesState(body.savePlan.definedNamesState, 'savePlan.definedNamesState')
+        : null
     return {
       fileName,
       fileBytes,
@@ -4398,6 +4555,7 @@ function parseSaveWorkbookRequest(
         ...(visualAdditions && visualAdditions.length > 0 ? { visualAdditions } : {}),
         ...(visualEdits && visualEdits.length > 0 ? { visualEdits } : {}),
         ...(chartEdits && chartEdits.length > 0 ? { chartEdits } : {}),
+        ...(definedNamesState !== null ? { definedNamesState } : {}),
       },
     }
   }
@@ -4478,6 +4636,7 @@ async function handleSaveWorkbook(
   const visualAdditions = req.savePlan.visualAdditions ?? []
   const visualEdits = req.savePlan.visualEdits ?? []
   const chartEdits = req.savePlan.chartEdits ?? []
+  const definedNamesState = (req.savePlan.definedNamesState ?? null) as DefinedNamesState | null
   let mutation
   try {
     // filterStates is argument 6 (after chartEdits/sheetPlan): the canonical
@@ -4508,7 +4667,7 @@ async function handleSaveWorkbook(
       cfStates,
       dvStates,
       sheetProtections,
-      null,
+      definedNamesState,
       pageSetupStates,
       noteStates,
       [],

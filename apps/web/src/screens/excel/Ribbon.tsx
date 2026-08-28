@@ -98,6 +98,7 @@ import {
   FreezePaneIcon,
   FunctionIcon,
   CfIcon,
+  NamesIcon,
 } from './RibbonIcons'
 
 type TabId = 'home' | 'insert' | 'page' | 'formulas' | 'data' | 'review' | 'view'
@@ -250,6 +251,17 @@ export interface RibbonCfProps {
 }
 
 /**
+ * EXCEL-025 — Formulas → Defined Names. The Name Manager button opens the
+ * web shell's own dialog (the desktop's NameManagerDialog parity), whose
+ * actions run through the PUBLIC Univer defined-name facade and persist
+ * through the canonical definedNamesState save family.
+ */
+export interface RibbonNamesProps {
+  /** Formulas → Name Manager: open the Name Manager dialog. */
+  readonly onOpenNameManager: () => void
+}
+
+/**
  * EXCEL-023 charts surface (Insert → Charts group). The shell
  * (ExcelEditor) owns the chart store + session journal and passes the
  * command down here; the button only calls back (the Chart Design pane
@@ -267,6 +279,7 @@ export function Ribbon({
   images,
   charts,
   cf,
+  names,
 }: {
   api: ExcelRuntimeApi | null
   protection?: RibbonProtectionProps | null
@@ -274,6 +287,7 @@ export function Ribbon({
   images?: RibbonImagesProps | null
   charts?: RibbonChartsProps | null
   cf?: RibbonCfProps | null
+  names?: RibbonNamesProps | null
 }) {
   const [tab, setTab] = useState<TabId>('home')
   // EXCEL-018 — Remove Duplicates dialog state. Mirrors the desktop's
@@ -649,12 +663,16 @@ export function Ribbon({
               />
             </Group>
             <Group label="Defined Names">
-              {/* Disabled: the wire save plan does not expose
-                 definedNamesState. */}
+              {/* EXCEL-025 — Name Manager. Opens the web shell's dialog
+                  (desktop NameManagerDialog parity); actions run through
+                  the public Univer defined-name facade and persist via the
+                  canonical definedNamesState save family. */}
               <RibbonButton
                 label="Name Manager"
-                title="Name Manager — disabled: the web save plan does not yet expose definedNamesState"
-                disabled
+                title="Name Manager — create, edit, and delete defined names (persists through save)"
+                icon={<NamesIcon />}
+                disabled={disabled}
+                onClick={() => names?.onOpenNameManager()}
               />
             </Group>
           </>

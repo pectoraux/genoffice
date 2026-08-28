@@ -910,3 +910,160 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ── EXCEL-025: Name Manager dialog ─────────────────────────────────── */
+
+.name-manager-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgb(0 0 0 / 32%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.name-manager-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-strong, #fff);
+  border: 1px solid var(--border, #d8dde6);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+  font-size: 12px;
+  color: var(--text, #222);
+}
+
+.name-manager-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, #e4e8ee);
+  font-weight: 600;
+}
+
+.name-manager-dialog header button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-tertiary, #777);
+}
+
+.name-manager-body {
+  padding: 8px 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.name-manager-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.name-manager-table th {
+  text-align: left;
+  font-size: 10px;
+  color: var(--text-secondary, #555);
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border, #e4e8ee);
+}
+
+.name-manager-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border, #f0f2f5);
+  max-width: 180px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.name-manager-table tr.selected td {
+  background: var(--accent-soft, #e7f2ec);
+}
+
+.name-manager-table tbody tr {
+  cursor: pointer;
+}
+
+.name-manager-empty {
+  text-align: center;
+  color: var(--text-tertiary, #888);
+  padding: 12px 0;
+}
+
+.name-manager-grid {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 8px;
+}
+
+.name-manager-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--text-secondary, #555);
+}
+
+.name-manager-grid input,
+.name-manager-grid select {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--border, #d8dde6);
+  border-radius: 4px;
+  background: var(--surface, #fff);
+  color: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.name-manager-grid input:disabled,
+.name-manager-grid select:disabled {
+  opacity: 0.6;
+}
+
+.name-manager-error {
+  color: var(--danger, #b3261e);
+  font-size: 11px;
+  margin: 0;
+}
+
+.name-manager-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border, #e4e8ee);
+}
+
+.name-manager-actions button {
+  font: inherit;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.name-manager-actions .secondary {
+  border: 1px solid var(--border, #d8dde6);
+  background: var(--surface, #fff);
+  color: var(--text, #222);
+}
+
+.name-manager-actions .primary-action {
+  border: none;
+  background: var(--accent, #0f7b3d);
+  color: #fff;
+}
+
+.name-manager-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

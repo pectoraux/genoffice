@@ -121,8 +121,12 @@ export type { SheetChartInfo } from './gateway/xlsx-chart-read.js'
 export { ChartReadError } from './gateway/xlsx-chart-read.js'
 
 // ── Defined names ──
-export type { DefinedNamesState } from './gateway/xlsx-defined-names.js'
-export { DefinedNameError } from './gateway/xlsx-defined-names.js'
+export type { DefinedNamesState, DefinedNameEntry } from './gateway/xlsx-defined-names.js'
+export {
+  DefinedNameError,
+  DefinedNamesReadError,
+  definedNameIsSaveable,
+} from './gateway/xlsx-defined-names.js'
 
 // ── Page setup ──
 export type { SheetPageSetupState } from './gateway/xlsx-page-setup.js'

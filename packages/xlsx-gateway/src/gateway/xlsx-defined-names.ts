@@ -5,6 +5,12 @@
 
 export class DefinedNameError extends Error {}
 
+/// A `<definedNames>` section the reader could not classify at all (XML it
+/// cannot structurally parse). The whole family fails closed: the snapshot
+/// carries no `definedNames` state plus a `namesLocked` marker, so the
+/// browser refuses name edits and a no-op save preserves the bytes.
+export class DefinedNamesReadError extends Error {}
+
 export interface DefinedNameEntry {
   readonly name: string
   readonly formula: string
@@ -122,4 +128,147 @@ function escapeXmlAttribute(input: string): string {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
+}
+
+/// True when the entry is one the writer's keep-rules retain verbatim with
+/// no help from `preserveNames` (Excel built-ins and hidden names).
+function autoPreserved(name: string, element: string): boolean {
+  return name.startsWith('_xlnm') || /\bhidden="(?:1|true)"/.test(element)
+}
+
+/// True when a name is valid per the WRITER's rules — the exact predicate
+/// `validateName` enforces at save time. A file-native name that fails this
+/// must never enter the model: the writer would reject the save (or worse,
+/// a rewrite would drop the entry), so the reader routes it to
+/// `preserveNames` instead. Exported so the office route's wire validation
+/// can enforce the same predicate before bytes reach the engine — one
+/// canonical rule set, no browser-side copy.
+export function definedNameIsSaveable(name: string): boolean {
+  if (
+    name.length === 0 ||
+    name.length > 255 ||
+    !NAME_PATTERN.test(name) ||
+    CELL_REF_PATTERN.test(name) ||
+    name.toLowerCase() === 'true' ||
+    name.toLowerCase() === 'false'
+  ) {
+    return false
+  }
+  return !name.startsWith('_xlnm')
+}
+
+function nameIsSaveable(name: string): boolean {
+  return definedNameIsSaveable(name)
+}
+
+/// Parses workbook.xml's `<definedNames>` into the editable model plus the
+/// preserve list — the exact inverse of `applyDefinedNamesState`, mirroring
+/// the desktop's Rust reader (which filters `_xlnm`, hidden, empty-name, and
+/// empty-formula entries) with two additions the web needs:
+///
+/// - Writer-mirrored name validation (anything `validateName` would reject
+///   goes to `preserveNames`, so editing another name can never drop it).
+/// - Scope bounds + duplicate ranking (desktop `applyDefinedNames` parity):
+///   per name (case-insensitive — the engine resolves case-insensitively),
+///   the live workbook-scoped definition outranks a sheet-scoped one, which
+///   outranks a `#REF!` residue; only the winner is modeled, the losers are
+///   preserved verbatim.
+///
+/// Throws `DefinedNamesReadError` when the section's XML cannot be
+/// structurally parsed (unclosed elements, duplicate name attributes on one
+/// element, non-numeric localSheetId) — the whole family fails closed and
+/// the workbook still opens.
+export function parseDefinedNamesState(workbookXml: string, sheetCount: number): DefinedNamesState {
+  const section = /<definedNames\b[^>]*>([\s\S]*?)<\/definedNames>|<definedNames\b[^>]*\/>/.exec(
+    workbookXml,
+  )
+  if (section === null) return { names: [], preserveNames: [] }
+  const inner = section[1] ?? ''
+  const names: DefinedNameEntry[] = []
+  const preserveNames: string[] = []
+  const seenElements = new Set<string>()
+  const elementPattern = /<definedName\b([^>]*?)(?:\/>|>([\s\S]*?)<\/definedName>)/g
+  let match: RegExpExecArray | null
+  while ((match = elementPattern.exec(inner)) !== null) {
+    const [element, attributeText = '', body = ''] = match
+    if (seenElements.has(element)) {
+      throw new DefinedNamesReadError('Duplicate <definedName> element parsed.')
+    }
+    seenElements.add(element)
+    const rawName = new RegExp('(?:^|\\s)name="([^"]*)"').exec(attributeText)?.[1] ?? ''
+    if (rawName === '' && !/\bname=/.test(attributeText)) {
+      throw new DefinedNamesReadError('A <definedName> element carries no name attribute.')
+    }
+    const name = unescapeXml(rawName)
+    if (autoPreserved(name, attributeText)) continue
+    const localSheetIdText = /(?:^|\s)localSheetId="([^"]*)"/.exec(attributeText)?.[1]
+    let sheetIndex: number | undefined
+    if (localSheetIdText !== undefined) {
+      if (!/^\d+$/.test(localSheetIdText)) {
+        throw new DefinedNamesReadError(
+          `The defined name "${name}" carries a non-numeric localSheetId.`,
+        )
+      }
+      const parsed = Number(localSheetIdText)
+      if (parsed >= sheetCount) {
+        // Scoped to a sheet the workbook does not contain (Excel leaves such
+        // names behind when a sheet is deleted). Not modelable — preserve.
+        preserveNames.push(name)
+        continue
+      }
+      sheetIndex = parsed
+    }
+    const formula = unescapeXml(body).trim()
+    if (formula === '') {
+      // The desktop reader skips empty bodies; the writer round-trips text
+      // verbatim, but an empty element body cannot survive the declarative
+      // rewrite as a modeled entry — preserve it verbatim instead.
+      preserveNames.push(name)
+      continue
+    }
+    if (!nameIsSaveable(name)) {
+      preserveNames.push(name)
+      continue
+    }
+    names.push({ name, formula, ...(sheetIndex === undefined ? {} : { sheetIndex }) })
+  }
+  // The element scan must account for every element the section carries —
+  // anything left (a nested or malformed construct) fails the whole family
+  // closed rather than risking a rewrite that drops it.
+  const elementCount = (inner.match(/<definedName\b/g) ?? []).length
+  if (elementCount !== seenElements.size) {
+    throw new DefinedNamesReadError('The <definedNames> section could not be fully parsed.')
+  }
+  // Duplicate ranking (desktop applyDefinedNames parity): per name —
+  // case-insensitively, the way the engine resolves — keep only the highest
+  // ranked definition (workbook-scope 0 → sheet-scope 1 → #REF! residue 2)
+  // and preserve the losers verbatim.
+  const rank = (entry: DefinedNameEntry): number =>
+    entry.formula.includes('#REF!') ? 2 : entry.sheetIndex === undefined ? 0 : 1
+  const byName = new Map<string, DefinedNameEntry[]>()
+  for (const entry of names) {
+    const list = byName.get(entry.name.toLowerCase()) ?? []
+    list.push(entry)
+    byName.set(entry.name.toLowerCase(), list)
+  }
+  const modeled: DefinedNameEntry[] = []
+  for (const list of byName.values()) {
+    const sorted = [...list].sort((a, b) => rank(a) - rank(b))
+    modeled.push(sorted[0]!)
+    for (const loser of sorted.slice(1)) preserveNames.push(loser.name)
+  }
+  // Stable order: keep the file's element order among the modeled entries.
+  modeled.sort((a, b) => names.indexOf(a) - names.indexOf(b))
+  return { names: modeled, preserveNames: dedupeNames(preserveNames) }
+}
+
+function dedupeNames(values: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const value of values) {
+    if (seen.has(value)) continue
+    seen.add(value)
+    out.push(value)
+  }
+  return out
 }

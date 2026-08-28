@@ -496,14 +496,23 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
       if (!wb || !ws) return 'No active sheet'
       const trimmed = ref.trim()
       if (!trimmed) return null
-      // Validate A1 / range syntax first (the web has no defined-names layer,
-      // so plain syntax validation is the resolution step the desktop's
-      // resolveGoToRef performs for named refs).
+      // Validate A1 / range syntax first. EXCEL-025: the reference may
+      // carry an optional `Sheet1!` / `'My Sheet'!` prefix and `$` absolute
+      // markers — the same forms the desktop's isA1Reference (goto.ts)
+      // accepts, and the forms defined-name refs resolve to (a Name Box
+      // jump to "LocalTotal" lands on "Other!$B$2:$B$4"). The prefix is
+      // stripped for the syntax check; the ORIGINAL string flows into
+      // FWorksheet.getRange below, which resolves the prefix and returns
+      // a range on the target sheet.
+      const bang = trimmed.lastIndexOf('!')
+      const body = bang === -1 ? trimmed : trimmed.slice(bang + 1)
+      if (bang !== -1 && bang === 0) return 'Invalid reference'
+      const bare = body.replaceAll('$', '')
       try {
         try {
-          parseRange(trimmed)
+          parseRange(bare)
         } catch {
-          parseAddress(trimmed)
+          parseAddress(bare)
         }
       } catch {
         return 'Invalid reference'
