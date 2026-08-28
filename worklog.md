@@ -1585,3 +1585,21 @@ Work Log:
 Stage Summary:
 
 - EXCEL-027 complete on branch excel-027-advanced-formatting: per-edge borders (13 line styles, colors, clears, side isolation, diagonal preservation), text rotation (positive/negative/vertical/clear), indent (read/journal/wire; UI with EXCEL-032's dialog), and number-format import rendering — all through the ONE canonical WorkbookStyleEdit family on the existing cell-edit pipeline, plus two route defect fixes (border null-clear pass-through; indent bound/integer alignment). Workflow state: IMPLEMENTING → PR_OPEN (next: push + PR + CI web gate). NOT VERIFIED — the architect owns ARCHITECT_REVIEW → APPROVED → MERGED → VERIFIED.
+
+---
+
+Task ID: EXCEL-027-push-pr-ci
+Agent: Z.ai (Implementation Operator)
+Task: EXCEL-027 — push branch, open PR, drive CI to conclusion, attribute failures with API-level evidence.
+
+Work Log:
+
+- Pushed excel-027-advanced-formatting (head e92b8e9) and opened PR #37 (https://github.com/pectoraux/genoffice/pull/37) with the full house-style body: objective, Phase A findings, the supported/fail-closed matrix (incl. the two route defect fixes), the canonical data flow, the 16-file inventory, the local gate table, independent byte evidence, known limitations, and the explicit awaiting-architect-review statement.
+- CI driven to conclusion on e92b8e9: `web` gate GREEN — Typecheck ×3 clean; web unit 257/257; web-host 78/78; contractor-core 510 passed + 4 skipped; production build green (16.61s); Playwright browser E2E **154 passed (19.5m)** — exactly matching the local 9-batch run (147 established + 7 new). The 154 includes the 7 new ribbon-advanced-formatting tests covering all 14 mandated scenarios.
+- Failure attribution (all API-level): `test` fails ONLY at Lint — 20 annotations across 10 files (check-run annotations API), file-for-file the established pre-existing set (.github×2, apps/docs×3, apps/sheets×5, apps/slides×3, BOQ.tsx×1 — all frozen/non-Excel), ZERO in the EXCEL-027 diff (verified against git diff origin/main...e92b8e9: 18 files, no overlap); Check formatting SUCCESS. `e2e` fails ONLY at the frozen "E2E (Electron shell)" step (job-steps API) — the documented baseline. `foundation` fails ONLY at "Verify branch isolation" (the structural cross-domain guard, identical on merged+verified PRs #23/#25/#29/#31); its desktop-e2e and web-e2e jobs both SUCCESS. Vercel Preview Comments SUCCESS.
+- CI evidence comment posted on PR #37 (issuecomment 5454449857) with the full gate table + attribution.
+- Docs evidence commit (this one): verification-matrix.md EXCEL-027 CI line + this worklog entry. No further code commits — the green head stays intact for architect review.
+
+Stage Summary:
+
+- EXCEL-027 workflow state: PR_OPEN — PR #37, head e92b8e9, canonical `web` gate GREEN (154 E2E in CI), all other check failures attributed pre-existing with API-level evidence. Awaiting ARCHITECT_REVIEW → APPROVED → MERGED (architect-owned). DEPLOYED evidence pending post-merge. NOT VERIFIED.
