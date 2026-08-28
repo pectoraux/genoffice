@@ -65,6 +65,28 @@ export interface WorksheetState {
   readonly freeze?:
     Readonly<{ readonly frozenRows: number; readonly frozenColumns: number }> | undefined
   /**
+   * View-state flags parsed from the worksheet's first <sheetView> (EXCEL-026).
+   * Each is exposed ONLY when the file explicitly sets the NON-DEFAULT value —
+   * absent means the schema default the canonical writer also restores by
+   * dropping the attribute (showGridLines / showRowColHeaders default true,
+   * showFormulas defaults false). Malformed boolean values are ignored for
+   * modeling (the raw attribute stays byte-preserved on no-op saves because
+   * such a sheet never enters the pageSetupStates save family; a user toggle
+   * overwrites it with a definite canonical value). The web shell (View →
+   * Show) journals changes through the canonical `SheetPageSetupState` save
+   * family and reads them back via these fields on reopen.
+   */
+  readonly view?:
+    | Readonly<{
+        /** sheetView@showGridLines="0" — gridlines hidden. */
+        readonly showGridlines: false
+        /** sheetView@showFormulas="1" — the sheet renders formulas, not values. */
+        readonly showFormulas: true
+        /** sheetView@showRowColHeaders="0" — row/column heading strips hidden. */
+        readonly showHeadings: false
+      }>
+    | undefined
+  /**
    * AutoFilter state parsed from the worksheet's <autoFilter> element plus
    * the row-visibility it implies. Absent means no parseable filter —
    * including when the element carries criteria the canonical model cannot

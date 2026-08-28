@@ -1,14 +1,14 @@
 /**
- * REAL browser E2E — View tab (Phase 4 Inc. 3).
+ * REAL browser E2E — View tab (Phase 4 Inc. 3; EXCEL-026 regression).
  *
- * Proves Gridlines and Zoom work in-session, and Freeze Panes PERSISTS
- * through save/reopen via the canonical pipeline:
+ * Proves Gridlines and Zoom work in-session on the blank workbook, and
+ * Freeze Panes PERSISTS through save/reopen via the canonical pipeline:
  *
  *   View → Freeze Panes
  *   → FWorksheet.setFreeze({ startRow, startColumn, xSplit, ySplit })
  *   → sheet.mutation.set-frozen
- *   → ExcelEditor's expanded journal subscription captures the freeze
- *     state and stores it in the per-sheet freezeStateRef
+ *   → ExcelEditor's journal subscription captures the freeze state into
+ *     the per-sheet pageSetupRef (the EXCEL-026 page-setup journal)
  *   → on Save, emit as a BrowserSheetPageSetupState
  *   → savePlan.pageSetupStates → /api/office/workbooks/save → routeOffice
  *     → applyCellEditsToXlsx(buf, edits, structuralOps, [], undefined, [],
@@ -17,6 +17,10 @@
  *   → reopen → readBasicWorkbook parses <pane> → WorksheetState.freeze
  *   → loadSnapshot seeds the freeze into Univer's freeze config
  *   → freeze visible on reopen
+ *
+ * The full EXCEL-026 view-persistence surface (gridline persistence,
+ * formula view, freeze CLEAR, page layout, byte preservation) lives in
+ * ribbon-view-persistence.spec.ts.
  */
 import { test, expect } from '@playwright/test'
 import { writeFileSync } from 'node:fs'

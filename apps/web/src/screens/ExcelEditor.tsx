@@ -83,6 +83,11 @@ import {
   mergeCellEdit,
   numfmtEditsFromMutation,
 } from '../office/cell-mutation-merge'
+import {
+  applyShowFormulasView,
+  createFormulaViewState,
+  installFormulaViewInterceptor,
+} from '../office/formula-view'
 import { Ribbon } from './excel/Ribbon'
 import { ChartPanel } from './excel/ChartPanel'
 import {
@@ -133,6 +138,43 @@ const REORDER_RANGE_MUTATION_ID = 'sheet.mutation.reorder-range'
 
 /** Freeze-pane mutation ID (built-in sheets). */
 const SET_FROZEN_MUTATION_ID = 'sheet.mutation.set-frozen'
+
+/**
+ * Gridlines mutation ID (built-in sheets, EXCEL-026). FWorksheet
+ * .setHiddenGridlines() runs ToggleGridlinesCommand, which fires this
+ * mutation with { unitId, subUnitId, showGridlines: 0|1 } — the same
+ * event the desktop's App.tsx journals. 0|1 are Univer's BooleanNumber.
+ */
+const TOGGLE_GRIDLINES_MUTATION_ID = 'sheet.mutation.toggle-gridlines'
+
+/**
+ * EXCEL-026 — the per-sheet page-setup journal entry. Mirrors the
+ * desktop's PageSetupJournalState for every field the web shell wires:
+ * freeze panes (set-frozen mutation), gridline visibility
+ * (toggle-gridlines mutation), formula view (View → Show Formulas), and
+ * the print family (Page Layout tab). A sheet absent from the journal
+ * emits NO pageSetupState — its view/page XML survives a no-op save
+ * byte-for-byte.
+ */
+export interface PageSetupJournalEntry {
+  /// Frozen pane counts; 0/0 removes the pane (the writer's canonical
+  /// clear — this FIXES the old defect where a cleared freeze dropped
+  /// out of the save plan and the file kept its <pane>).
+  frozenRows?: number
+  frozenColumns?: number
+  /// sheetView@showGridLines — false hides.
+  showGridlines?: boolean
+  /// sheetView@showFormulas — true renders formulas.
+  showFormulas?: boolean
+  /// Print family (Page Layout tab).
+  orientation?: 'portrait' | 'landscape'
+  margins?: 'normal' | 'wide' | 'narrow'
+  paperSize?: number
+  scale?: number
+  fitToWidth?: number
+  fitToHeight?: number
+  fitToPage?: boolean
+}
 
 /**
  * Filter mutation IDs (sheets-filter preset) — the same set the desktop's
@@ -442,14 +484,25 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   /// the journal and mark a freshly opened workbook "dirty". A load is
   /// not an edit.
   const journalSuppressionRef = useRef(false)
-  // Per-sheet journaled freeze state. Seeded from the snapshot on open,
-  // updated when the user changes View → Freeze Panes (the journal
-  // subscription captures sheet.mutation.set-frozen), and emitted on save
-  // as a BrowserSheetPageSetupState. Cleared on snapshot reload so stale
-  // freeze state never persists across an open.
-  const freezeStateRef = useRef<Map<string, { frozenRows: number; frozenColumns: number }>>(
-    new Map(),
-  )
+  // ── EXCEL-026: per-sheet page-setup journal (freeze panes + View →
+  //    Show flags + Page Layout print family). Freeze is seeded from the
+  //    snapshot on open (so a save without any freeze change still
+  //    round-trips the file's existing freeze — unchanged EXCEL-015
+  //    behavior); gridlines / formula view / print fields are journaled
+  //    ONLY when the user changes them (desktop recordPageSetup parity —
+  //    a no-op save never touches that XML). The journal subscription
+  //    updates this map when the user acts; the save emits it as
+  //    BrowserSheetPageSetupState, which the canonical applyPageSetupState
+  //    persists. Cleared on snapshot reload so stale state never persists
+  //    across an open.
+  const pageSetupRef = useRef<Map<string, PageSetupJournalEntry>>(new Map())
+  // ── EXCEL-026: formula-view RENDER state (sheetIds in formula view).
+  //    Desktop formula-view.ts parity: the flag set is shell state (the
+  //    engine has no public formula-view API), seeded from the file's
+  //    sheetView@showFormulas on open, flipped by View → Show Formulas,
+  //    journaled through the page-setup family above, and rendered by the
+  //    CELL_CONTENT interceptor installed once per runtime.
+  const formulaViewRef = useRef(createFormulaViewState())
   // ── AutoFilter journal (Data → Filter). Two structures, desktop parity
   //    (App.tsx filterDirty / univer-sync.ts filterOrigins):
   //    - filterDirtyRef: sheet NAMES whose filter changed in-session. A
@@ -641,6 +694,10 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   // changes (the runtime's ActiveSheetChanged subscription re-renders the
   // editor, and the echo is derived at render time below).
   const [protectionSeq, setProtectionSeq] = useState(0)
+  // ── EXCEL-026: view/page-layout echo sequence. Bumped by the
+  //    formula-view toggle and the Page Layout commands so the ribbon
+  //    re-reads the journal echo for the active sheet.
+  const [viewSeq, setViewSeq] = useState(0)
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState<string>('Ready')
   const [fileName, setFileName] = useState<string>('workbook.xlsx')
@@ -703,11 +760,26 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
     // filtered workbook does not leave "undo the file's filter" on the
     // stack. Idempotent; patches LocalUndoRedoService.prototype once.
     installJournalSuppressionUndoFilter()
+    // ── EXCEL-026: formula-view CELL_CONTENT interceptor (desktop
+    //    installFormulaViewInterceptor parity). Renders formula text
+    //    instead of values for every sheet in the formula-view set. The
+    //    interceptor reads formulaViewRef live, so sheet set membership
+    //    changes take effect on the next repaint (the RENDER_RAW_FORMULA_KEY
+    //    flip in applyShowFormulasView forces that repaint).
+    const formulaViewDisposer = installFormulaViewInterceptor(rt, formulaViewRef)
+    // ── EXCEL-026: re-apply the formula-view render key when the ACTIVE
+    //    sheet changes — the key is global (engine-level) while formula
+    //    view is per-sheet, so each switch syncs it to the new active
+    //    sheet's flag (desktop applyShowFormulasView parity).
+    const formulaViewSheetSub = rt.univerAPI.addEvent(rt.univerAPI.Event.ActiveSheetChanged, () => {
+      const sheetId = rt.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId()
+      if (sheetId !== undefined) applyShowFormulasView(rt, formulaViewRef.current, sheetId)
+    })
     const sub = subscribeToCellMutations(
       rt,
       dirtyCellsRef,
       structuralOpsRef,
-      freezeStateRef,
+      pageSetupRef,
       journalSuppressionRef,
       filterDirtyRef,
       filterOriginsRef,
@@ -715,6 +787,13 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       noteDirtyRef,
       cfDirtyRef,
       namesDirtyRef,
+      // Live file-open probe (computed, never stale — handleRef mutations
+      // do not re-render).
+      {
+        get current() {
+          return handleRef.current !== null
+        },
+      },
       () => setDirty(true),
     )
     // ── EXCEL-021: table-owned filter gate (desktop App.tsx
@@ -790,6 +869,8 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
       imageSub.dispose()
       filterGate.dispose()
       cfGate.dispose()
+      formulaViewSheetSub.dispose()
+      formulaViewDisposer.dispose()
       sub.dispose()
       delete w.__genofficeExcelRuntime
       rt.univer.dispose()
@@ -817,6 +898,18 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
   const activeSheetName =
     runtimeRef.current?.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName() ?? null
   const hasFile = handleRef.current !== null
+  // ── EXCEL-026 echo: formula-view flag of the ACTIVE sheet + the active
+  //    sheet's journaled page-layout fields (undefined = as saved in the
+  //    file — the desktop's "As saved in file" display). Derived at render
+  //    time; viewSeq re-renders after toggles/commands.
+  void viewSeq
+  const activeSheetId =
+    runtimeRef.current?.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId() ?? null
+  const showFormulasActive =
+    activeSheetId !== null && formulaViewRef.current.sheets.has(activeSheetId)
+  const pageLayoutEcho = activeSheetName
+    ? (pageSetupRef.current.get(activeSheetName) ?? null)
+    : null
   const sheetEcho = (() => {
     if (!activeSheetName) return null
     const journaled = sheetProtectionJournalRef.current.get(activeSheetName)
@@ -1010,6 +1103,87 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         : 'Workbook structure protection will be removed on save.',
     )
   }, [bumpProtectionEcho])
+
+  /**
+   * View → Show Formulas (EXCEL-026). Desktop 'toggle-show-formulas'
+   * parity: the per-sheet flag lives in the shell's formula-view set (the
+   * engine has no public formula-view API), the RENDER_RAW_FORMULA_KEY
+   * flip forces the repaint, and the toggle journals { showFormulas }
+   * through the canonical pageSetupStates family — persisted as
+   * sheetView@showFormulas. Works on the blank workbook too (render-only,
+   * no journal), matching the desktop's demo-workbook behavior.
+   */
+  const toggleShowFormulas = useCallback(() => {
+    const rt = runtimeRef.current
+    const wb = rt?.univerAPI.getActiveWorkbook()
+    const ws = wb?.getActiveSheet()
+    const sheetId = ws?.getSheetId()
+    const sheetName = ws?.getSheetName()
+    if (!rt || !sheetId || !sheetName) return
+    const view = formulaViewRef.current
+    const next = !view.sheets.has(sheetId)
+    if (next) view.sheets.add(sheetId)
+    else view.sheets.delete(sheetId)
+    applyShowFormulasView(rt, view, sheetId)
+    // Journal only when a file is open — the blank workbook has nothing to
+    // persist (desktop recordPageSetup runs only for file-backed sheets).
+    if (handleRef.current) {
+      const entry = pageSetupRef.current.get(sheetName) ?? {}
+      pageSetupRef.current.set(sheetName, { ...entry, showFormulas: next })
+      setDirty(true)
+    }
+    setViewSeq((n) => n + 1)
+    setStatus(next ? 'Showing formulas — saved as sheet view state.' : 'Showing values.')
+  }, [])
+
+  /**
+   * Page Layout commands (EXCEL-026): orientation / margins / paper size /
+   * scale / fit-to-page. Journal-only semantics with the desktop's exact
+   * rules (page-layout-actions.ts): a scale edit clears fit-to-page; a
+   * fit edit derives fitToPage from whether EITHER axis is engaged and
+   * leaves the untouched axis at its journaled value (or automatic).
+   */
+  const applyPageLayout = useCallback(
+    (patch: {
+      orientation?: 'portrait' | 'landscape'
+      margins?: 'normal' | 'wide' | 'narrow'
+      paperSize?: number
+      scale?: number
+      fitAxis?: 'width' | 'height'
+      fitPages?: number
+    }) => {
+      const rt = runtimeRef.current
+      const sheetName = rt?.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
+      if (!handleRef.current || !sheetName) {
+        setStatus('Open an XLSX file first — page setup saves into the file.')
+        return
+      }
+      const prior = pageSetupRef.current.get(sheetName) ?? {}
+      const next: PageSetupJournalEntry = { ...prior }
+      if (patch.orientation !== undefined) next.orientation = patch.orientation
+      if (patch.margins !== undefined) next.margins = patch.margins
+      if (patch.paperSize !== undefined) next.paperSize = patch.paperSize
+      if (patch.scale !== undefined) {
+        next.scale = patch.scale
+        // Scale and fit are exclusive; the user touching scale disengages
+        // fit-to-page (desktop 'page-layout:scale' records fitToPage=false).
+        next.fitToPage = false
+      }
+      if (patch.fitAxis !== undefined && patch.fitPages !== undefined) {
+        // Excel treats the untouched axis as Automatic (0) once fit engages.
+        const fitToWidth = patch.fitAxis === 'width' ? patch.fitPages : (prior.fitToWidth ?? 0)
+        const fitToHeight = patch.fitAxis === 'height' ? patch.fitPages : (prior.fitToHeight ?? 0)
+        next.fitToWidth = fitToWidth
+        next.fitToHeight = fitToHeight
+        next.fitToPage = fitToWidth > 0 || fitToHeight > 0
+      }
+      pageSetupRef.current.set(sheetName, next)
+      setDirty(true)
+      setViewSeq((n) => n + 1)
+      setStatus('Page setup change recorded — it will be written on save.')
+    },
+    [],
+  )
 
   /**
    * Review → Lock Cell / Unlock Cell (EXCEL-020 — "editable vs locked cell
@@ -1284,10 +1458,11 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           /* already gone */
         }
       }
-      // Clear the freeze-state journal before seeding from the snapshot —
-      // stale freeze state from a previous workbook must never leak across
-      // an open.
-      freezeStateRef.current.clear()
+      // Clear the page-setup journal before seeding from the snapshot —
+      // stale freeze/view state from a previous workbook must never leak
+      // across an open. Same for the formula-view render set.
+      pageSetupRef.current.clear()
+      formulaViewRef.current = createFormulaViewState()
       // Same leak guard for the EXCEL-020 protection state: the file refs are
       // re-seeded from THIS snapshot (per-sheet sheetProtection + the
       // workbook-level workbookProtection the gateway reader surfaces), and
@@ -1407,9 +1582,20 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           mergeData: buildMergeData(sheet.merges),
           rowData: buildRowData(sheet.rowHeights),
           columnData: buildColumnData(sheet.colWidths),
-          rowHeader: { width: 46, hidden: 0 as BooleanNumber },
-          columnHeader: { height: 20, hidden: 0 as BooleanNumber },
-          showGridlines: 1 as BooleanNumber,
+          // EXCEL-026: the file's sheetView@showGridLines / @showRowColHeaders
+          // seed the live config (desktop univer-sync parity) — the browser
+          // renders exactly what the file says. These are LOAD config, not
+          // journaled state: an untouched sheet never enters pageSetupStates,
+          // so its raw XML survives a no-op save byte-for-byte.
+          rowHeader: {
+            width: 46,
+            hidden: (sheet.view?.showHeadings === false ? 1 : 0) as BooleanNumber,
+          },
+          columnHeader: {
+            height: 20,
+            hidden: (sheet.view?.showHeadings === false ? 1 : 0) as BooleanNumber,
+          },
+          showGridlines: (sheet.view?.showGridlines === false ? 0 : 1) as BooleanNumber,
           rightToLeft: 0 as BooleanNumber,
         }
       }
@@ -1448,15 +1634,25 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
           sheets: sheetsConfig,
         })
         for (const sheet of snapshot.sheets) {
-          // Seed the freeze-state journal from the snapshot — so a save
+          // Seed the freeze journal from the snapshot — so a save
           // without any freeze change still round-trips the file's existing
-          // freeze. The journal subscription updates this map when the user
-          // toggles freeze interactively.
+          // freeze (unchanged EXCEL-015 semantics). The journal subscription
+          // updates this map when the user toggles freeze interactively.
+          // Gridlines / formula view / print fields are NOT seeded: they are
+          // journaled only when the user changes them (desktop parity), so
+          // an untouched sheet's view XML survives a no-op save verbatim.
           if (sheet.freeze && (sheet.freeze.frozenRows > 0 || sheet.freeze.frozenColumns > 0)) {
-            freezeStateRef.current.set(sheet.name, {
+            pageSetupRef.current.set(sheet.name, {
               frozenRows: sheet.freeze.frozenRows,
               frozenColumns: sheet.freeze.frozenColumns,
             })
+          }
+          // EXCEL-026: seed the formula-view RENDER set from the file's
+          // sheetView@showFormulas, then apply the opening sheet's flag (the
+          // key is global while the flag is per-sheet — every later sheet
+          // switch re-syncs it through the ActiveSheetChanged subscription).
+          if (sheet.view?.showFormulas === true) {
+            formulaViewRef.current.sheets.add(sheet.id)
           }
           // Render the file's existing AutoFilter in the REAL Univer UI:
           // install the filter range, then re-apply the file's criteria so
@@ -1868,6 +2064,15 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         journalSuppressionRef.current = false
         moduleJournalSuppression.active = false
       }
+      // EXCEL-026: apply the OPENING sheet's formula-view flag now that the
+      // workbook exists (the render key is global; every later sheet switch
+      // re-syncs it through the ActiveSheetChanged subscription).
+      {
+        const sheetId = rt.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId()
+        if (sheetId !== undefined) {
+          applyShowFormulasView(rt, formulaViewRef.current, sheetId)
+        }
+      }
       dirtyCellsRef.current.clear()
       structuralOpsRef.current.clear()
       setDirty(false)
@@ -1906,16 +2111,18 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         const structuralOps = Array.from(structuralOpsRef.current.entries())
           .map(([sheetName, ops]) => ({ sheetName, ops }))
           .filter((s) => s.ops.length > 0)
-        // Emit per-sheet page-setup states for every sheet with journaled
-        // freeze (View → Freeze Panes). The engine's applyPageSetupState
-        // writes the <pane> element into the worksheet XML on save.
-        const pageSetupStates = Array.from(freezeStateRef.current.entries())
-          .filter(([, f]) => f.frozenRows > 0 || f.frozenColumns > 0)
-          .map(([sheetName, f]) => ({
-            sheetName,
-            frozenRows: f.frozenRows,
-            frozenColumns: f.frozenColumns,
-          }))
+        // Emit per-sheet page-setup states for every sheet with ANY
+        // journaled view/print field (EXCEL-026): freeze panes (View →
+        // Freeze Panes — including the 0/0 CLEAR, which the writer turns
+        // into <pane> removal), gridline visibility (View → Show →
+        // Gridlines), formula view (View → Show Formulas), and the print
+        // family (Page Layout tab). The engine's applyPageSetupState
+        // writes/merges the sheetView attributes, <pane>, and pageSetup
+        // elements into the worksheet XML on save. A sheet with NO entry
+        // keeps its view/page XML untouched (byte-preserving no-op saves).
+        const pageSetupStates = Array.from(pageSetupRef.current.entries())
+          .filter(([, entry]) => Object.keys(entry).length > 0)
+          .map(([sheetName, entry]) => ({ sheetName, ...entry }))
         // Snapshot the LIVE filter model for every filter-dirty sheet
         // (Data → Filter). Declarative, desktop collectFilterStates parity:
         // never replay mutations. Sheets NOT in the set emit NO filter state,
@@ -2704,6 +2911,24 @@ export function ExcelEditor({ onRoute, onLogout, session, theme }: ExcelEditorPr
         charts={{ onInsertChart: handleInsertChart }}
         cf={{ onOpenConditionalFormatting: handleOpenConditionalFormatting }}
         names={{ onOpenNameManager: () => setNameManagerOpen(true) }}
+        viewState={{
+          showFormulasActive,
+          onToggleShowFormulas: toggleShowFormulas,
+        }}
+        pageLayout={{
+          orientation: pageLayoutEcho?.orientation ?? null,
+          margins: pageLayoutEcho?.margins ?? null,
+          paperSize: pageLayoutEcho?.paperSize ?? null,
+          scale: pageLayoutEcho?.scale ?? null,
+          fitToWidth: pageLayoutEcho?.fitToWidth ?? null,
+          fitToHeight: pageLayoutEcho?.fitToHeight ?? null,
+          onOrientation: (value) => void applyPageLayout({ orientation: value }),
+          onMargins: (value) => void applyPageLayout({ margins: value }),
+          onPaperSize: (value) => void applyPageLayout({ paperSize: value }),
+          onScale: (value) => void applyPageLayout({ scale: value }),
+          onFitWidth: (value) => void applyPageLayout({ fitAxis: 'width', fitPages: value }),
+          onFitHeight: (value) => void applyPageLayout({ fitAxis: 'height', fitPages: value }),
+        }}
       />
 
       {/* EXCEL-023 — the Chart Design pane (create mode after Insert →
@@ -3270,7 +3495,7 @@ function subscribeToCellMutations(
   runtime: BrowserUniverRuntime,
   dirtyRef: React.MutableRefObject<Map<string, CellEdit>>,
   structuralRef: React.MutableRefObject<Map<string, JournaledStructuralOp[]>>,
-  freezeRef: React.MutableRefObject<Map<string, { frozenRows: number; frozenColumns: number }>>,
+  pageSetupRef: React.MutableRefObject<Map<string, PageSetupJournalEntry>>,
   suppressionRef: React.MutableRefObject<boolean>,
   filterDirtyRef: React.MutableRefObject<Set<string>>,
   filterOriginsRef: React.MutableRefObject<
@@ -3280,6 +3505,10 @@ function subscribeToCellMutations(
   noteDirtyRef: React.MutableRefObject<Set<string>>,
   cfDirtyRef: React.MutableRefObject<Set<string>>,
   namesDirtyRef: React.MutableRefObject<boolean>,
+  /// EXCEL-026: gridline toggles journal ONLY for file-backed workbooks
+  /// (desktop recordPageSetup parity — the demo/blank workbook is
+  /// render-only and never dirties).
+  hasFileRef: { readonly current: boolean },
   onDirty: () => void,
 ): { dispose(): void } {
   const sub = runtime.univerAPI.addEvent(runtime.univerAPI.Event.CommandExecuted, (event) => {
@@ -3732,14 +3961,47 @@ function subscribeToCellMutations(
       const startColumn = Number.isInteger(params.startColumn) ? (params.startColumn as number) : -1
       const frozenRows = startRow > 0 ? startRow : 0
       const frozenColumns = startColumn > 0 ? startColumn : 0
-      if (frozenRows === 0 && frozenColumns === 0) {
-        // Freeze cleared — drop the journal entry so the save plan doesn't
-        // re-emit a zero freeze (which applyPageSetupState treats as a no-op
-        // anyway, but a clean journal keeps the save plan minimal).
-        freezeRef.current.delete(sheetName)
-      } else {
-        freezeRef.current.set(sheetName, { frozenRows, frozenColumns })
-      }
+      // EXCEL-026 defect fix: a CLEAR (0/0) is a REAL journaled state —
+      // the canonical writer's setFrozenPane(0, 0) REMOVES the <pane>
+      // element. The old behavior deleted the journal entry, which dropped
+      // the sheet out of the save plan entirely: the file kept its <pane>
+      // and the user's freeze-clear was silently lost on reopen. Desktop
+      // parity: the desktop journals { frozenRows: 0, frozenColumns: 0 }
+      // through recordPageSetup on the same mutation. The zero entry is
+      // merged into whatever else the sheet's journal holds.
+      const entry = pageSetupRef.current.get(sheetName) ?? {}
+      pageSetupRef.current.set(sheetName, {
+        ...entry,
+        frozenRows,
+        frozenColumns,
+      })
+      onDirty()
+      return
+    }
+
+    // ── Gridlines mutation (built-in sheets, EXCEL-026). FWorksheet
+    //    .setHiddenGridlines() fires sheet.mutation.toggle-gridlines with
+    //    { unitId, subUnitId, showGridlines: 0|1 } (Univer BooleanNumber).
+    //    The journal stores the BOOLEAN the canonical writer expects
+    //    (false writes showGridLines="0"; true drops the attribute to
+    //    restore the default) — the same recordPageSetup({ showGridlines })
+    //    the desktop performs on this exact mutation. Render-only for the
+    //    blank workbook (no file → nothing to journal, nothing to dirty).
+    if (event.id === TOGGLE_GRIDLINES_MUTATION_ID) {
+      const params = event.params as
+        { subUnitId?: string; showGridlines?: number; unitId?: string } | undefined
+      if (!params?.subUnitId || params.showGridlines === undefined) return
+      if (!hasFileRef.current) return
+      const wb = runtime.univerAPI.getActiveWorkbook()
+      if (!wb) return
+      const ws = wb.getSheetBySheetId(params.subUnitId)
+      if (!ws) return
+      const sheetName = ws.getSheetName()
+      const entry = pageSetupRef.current.get(sheetName) ?? {}
+      pageSetupRef.current.set(sheetName, {
+        ...entry,
+        showGridlines: params.showGridlines === 1,
+      })
       onDirty()
       return
     }

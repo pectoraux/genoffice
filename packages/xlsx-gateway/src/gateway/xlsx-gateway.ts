@@ -589,6 +589,7 @@ export async function readBasicWorkbook(buffer: Buffer): Promise<ImportedXlsx> {
         ? { colWidths: presentation.colWidths }
         : {}),
       ...(presentation.freeze ? { freeze: presentation.freeze } : {}),
+      ...(presentation.view ? { view: presentation.view } : {}),
       ...(filterState ? { filterState } : {}),
       ...(dvRules ? { dvRules } : {}),
       ...(sheetNotes ? { notes: sheetNotes } : {}),
@@ -652,6 +653,7 @@ function parseWorksheetPresentation(
   rowHeights: Readonly<Record<string, number>>
   colWidths: Readonly<Record<string, number>>
   freeze: { frozenRows: number; frozenColumns: number } | undefined
+  view: WorksheetViewState | undefined
 } {
   const styles: Record<string, CellFormatState> = {}
   if (styleReader) {
@@ -701,7 +703,8 @@ function parseWorksheetPresentation(
     }
   }
   const freeze = parseFrozenPane(worksheetXml)
-  return { styles, merges, rowHeights, colWidths, freeze }
+  const view = parseSheetViewState(worksheetXml)
+  return { styles, merges, rowHeights, colWidths, freeze, view }
 }
 
 /**
@@ -732,6 +735,42 @@ function parseFrozenPane(
   const frozenColumns = Number.isInteger(xSplit) && xSplit > 0 ? xSplit : 0
   if (frozenRows === 0 && frozenColumns === 0) return undefined
   return { frozenRows, frozenColumns }
+}
+
+/** Non-default <sheetView> display flags exposed to the browser (EXCEL-026). */
+type WorksheetViewState = Readonly<{
+  showGridlines: false
+  showFormulas: true
+  showHeadings: false
+}>
+
+/**
+ * Parse the display flags from a worksheet's FIRST <sheetView> (EXCEL-026):
+ *   - showGridLines / showRowColHeaders default TRUE → exposed only when
+ *     explicitly turned OFF ("0" / "false")
+ *   - showFormulas defaults FALSE → exposed only when explicitly turned
+ *     ON ("1" / "true")
+ *
+ * This mirrors the canonical writer exactly: applyPageSetupState restores
+ * every default by DROPPING the attribute, so the round-trip contract is
+ * "expose non-default state only". Values outside xsd:boolean are ignored
+ * for modeling — the raw attribute stays byte-preserved on no-op saves
+ * (a sheet with unmodeled view state never enters pageSetupStates), and a
+ * user toggle replaces the malformed value with a definite canonical one.
+ */
+function parseSheetViewState(worksheetXml: string): WorksheetViewState | undefined {
+  const viewMatch = /<sheetView\b([^>]*?\/?)>/.exec(worksheetXml)
+  if (!viewMatch) return undefined
+  const attrs = viewMatch[1] ?? ''
+  const gridlines = readXmlAttribute(attrs, 'showGridLines')
+  const formulas = readXmlAttribute(attrs, 'showFormulas')
+  const headings = readXmlAttribute(attrs, 'showRowColHeaders')
+  const view: { showGridlines?: false; showFormulas?: true; showHeadings?: false } = {}
+  if (gridlines === '0' || gridlines === 'false') view.showGridlines = false
+  if (formulas === '1' || formulas === 'true') view.showFormulas = true
+  if (headings === '0' || headings === 'false') view.showHeadings = false
+  if (Object.keys(view).length === 0) return undefined
+  return view as WorksheetViewState
 }
 
 /** 1-based column index → A1 column label (1 → "A", 27 → "AA"). */

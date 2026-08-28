@@ -272,6 +272,51 @@ export interface RibbonChartsProps {
   readonly onInsertChart: () => void
 }
 
+/**
+ * EXCEL-026 — View → Show surface (Show Formulas toggle; the Gridlines
+ * toggle is the runtime's own). The shell (ExcelEditor) owns the
+ * formula-view render set + the page-setup journal; the buttons only
+ * reflect the echo and call back.
+ */
+export interface RibbonViewStateProps {
+  /** Formula view is ON for the active sheet. */
+  readonly showFormulasActive: boolean
+  readonly onToggleShowFormulas: () => void
+}
+
+/**
+ * EXCEL-026 — Page Layout surface (orientation, margins, paper size,
+ * scale, fit-to-page). Journal-only semantics: the echo carries the
+ * ACTIVE sheet's journaled fields (null = as saved in the file — the
+ * desktop's "As saved in file" display); the selects call back with the
+ * new value.
+ */
+export interface RibbonPageLayoutProps {
+  readonly orientation: 'portrait' | 'landscape' | null
+  readonly margins: 'normal' | 'wide' | 'narrow' | null
+  readonly paperSize: number | null
+  readonly scale: number | null
+  readonly fitToWidth: number | null
+  readonly fitToHeight: number | null
+  readonly onOrientation: (value: 'portrait' | 'landscape') => void
+  readonly onMargins: (value: 'normal' | 'wide' | 'narrow') => void
+  readonly onPaperSize: (value: number) => void
+  readonly onScale: (value: number) => void
+  readonly onFitWidth: (value: number) => void
+  readonly onFitHeight: (value: number) => void
+}
+
+/** Paper sizes the desktop's Page Layout → Size menu offers (OOXML codes). */
+const PAPER_SIZES: ReadonlyArray<{ code: number; label: string }> = [
+  { code: 1, label: 'Letter' },
+  { code: 5, label: 'Legal' },
+  { code: 3, label: 'Tabloid' },
+  { code: 7, label: 'Executive' },
+  { code: 8, label: 'A3' },
+  { code: 9, label: 'A4' },
+  { code: 11, label: 'A5' },
+]
+
 export function Ribbon({
   api,
   protection,
@@ -280,6 +325,8 @@ export function Ribbon({
   charts,
   cf,
   names,
+  viewState,
+  pageLayout,
 }: {
   api: ExcelRuntimeApi | null
   protection?: RibbonProtectionProps | null
@@ -288,6 +335,8 @@ export function Ribbon({
   charts?: RibbonChartsProps | null
   cf?: RibbonCfProps | null
   names?: RibbonNamesProps | null
+  viewState?: RibbonViewStateProps | null
+  pageLayout?: RibbonPageLayoutProps | null
 }) {
   const [tab, setTab] = useState<TabId>('home')
   // EXCEL-018 — Remove Duplicates dialog state. Mirrors the desktop's
@@ -610,37 +659,119 @@ export function Ribbon({
         {tab === 'page' && (
           <>
             <Group label="Page Setup">
-              {/* Disabled: pageSetupStates is exposed on the wire but only
-                 frozenRows/frozenColumns are wired by the web shell today.
-                 Orientation / paperSize / margins / print area remain
-                 disabled until the web shell emits them. */}
-              <RibbonButton
-                label="Margins"
-                title="Margins — disabled: pageSetupStates is wired only for freeze panes today"
-                disabled
-              />
-              <RibbonButton
-                label="Orientation"
-                title="Orientation — disabled: pageSetupStates is wired only for freeze panes today"
-                disabled
-              />
-              <RibbonButton
-                label="Size"
-                title="Size — disabled: pageSetupStates is wired only for freeze panes today"
-                disabled
-              />
+              {/* EXCEL-026 — Page Layout journal-only commands. The select
+                  shows the ACTIVE sheet's journaled value; "As in file"
+                  means no session edit (the desktop's "As saved in file").
+                  The canonical writer merges every field into the
+                  worksheet's pageSetup/pageMargins/sheetPr on save. */}
+              <select
+                className="rb-select"
+                aria-label="Margins"
+                title="Margins — printed page margins (persists on save)"
+                disabled={disabled}
+                value={pageLayout?.margins ?? ''}
+                onChange={(e) =>
+                  pageLayout?.onMargins(e.target.value as 'normal' | 'wide' | 'narrow')
+                }
+              >
+                <option value="" disabled>
+                  Margins: As in file
+                </option>
+                <option value="normal">Normal</option>
+                <option value="wide">Wide</option>
+                <option value="narrow">Narrow</option>
+              </select>
+              <select
+                className="rb-select"
+                aria-label="Orientation"
+                title="Orientation — portrait or landscape (persists on save)"
+                disabled={disabled}
+                value={pageLayout?.orientation ?? ''}
+                onChange={(e) =>
+                  pageLayout?.onOrientation(e.target.value as 'portrait' | 'landscape')
+                }
+              >
+                <option value="" disabled>
+                  Orientation: As in file
+                </option>
+                <option value="portrait">Portrait</option>
+                <option value="landscape">Landscape</option>
+              </select>
+              <select
+                className="rb-select"
+                aria-label="Size"
+                title="Size — printed paper size (persists on save)"
+                disabled={disabled}
+                value={
+                  pageLayout?.paperSize != null &&
+                  PAPER_SIZES.some((p) => p.code === pageLayout.paperSize)
+                    ? String(pageLayout.paperSize)
+                    : ''
+                }
+                onChange={(e) => pageLayout?.onPaperSize(Number(e.target.value))}
+              >
+                <option value="" disabled>
+                  Size: As in file
+                </option>
+                {PAPER_SIZES.map((p) => (
+                  <option key={p.code} value={p.code}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
             </Group>
-            <Group label="Scale">
-              <RibbonButton
-                label="Width"
-                title="Width — disabled: pageSetupStates is wired only for freeze panes today"
-                disabled
-              />
-              <RibbonButton
-                label="Height"
-                title="Height — disabled: pageSetupStates is wired only for freeze panes today"
-                disabled
-              />
+            <Group label="Scale to Fit">
+              <select
+                className="rb-select"
+                aria-label="Width"
+                title="Width — fit print columns to N pages (persists on save)"
+                disabled={disabled}
+                value={pageLayout?.fitToWidth != null ? String(pageLayout.fitToWidth) : ''}
+                onChange={(e) => pageLayout?.onFitWidth(Number(e.target.value))}
+              >
+                <option value="" disabled>
+                  Width: Auto
+                </option>
+                {[1, 2, 3, 4, 5].map((pages) => (
+                  <option key={pages} value={pages}>
+                    {pages} page{pages > 1 ? 's' : ''}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="rb-select"
+                aria-label="Height"
+                title="Height — fit print rows to N pages (persists on save)"
+                disabled={disabled}
+                value={pageLayout?.fitToHeight != null ? String(pageLayout.fitToHeight) : ''}
+                onChange={(e) => pageLayout?.onFitHeight(Number(e.target.value))}
+              >
+                <option value="" disabled>
+                  Height: Auto
+                </option>
+                {[1, 2, 3, 4, 5].map((pages) => (
+                  <option key={pages} value={pages}>
+                    {pages} page{pages > 1 ? 's' : ''}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="rb-select"
+                aria-label="Scale"
+                title="Scale — printed scale percent 10..400 (persists on save)"
+                disabled={disabled}
+                value={pageLayout?.scale != null ? String(pageLayout.scale) : ''}
+                onChange={(e) => pageLayout?.onScale(Number(e.target.value))}
+              >
+                <option value="" disabled>
+                  Scale: As in file
+                </option>
+                {[50, 75, 100, 125, 150, 200].map((percent) => (
+                  <option key={percent} value={percent}>
+                    {percent}%
+                  </option>
+                ))}
+              </select>
             </Group>
           </>
         )}
@@ -809,11 +940,22 @@ export function Ribbon({
             <Group label="Show">
               <RibbonButton
                 label="Gridlines"
-                title="Toggle gridlines (in-session)"
+                title="Toggle gridlines (persists on save as sheet view state)"
                 icon={<GridlinesIcon />}
                 active={s.gridlinesVisible}
                 disabled={disabled}
                 onClick={() => api?.toggleGridlines()}
+              />
+              {/* EXCEL-026 — View → Show Formulas. Desktop parity: per-sheet
+                  sheetView@showFormulas, rendered through the shell's
+                  CELL_CONTENT interceptor, journaled through the canonical
+                  pageSetupStates family. */}
+              <RibbonButton
+                label="Show Formulas"
+                title="Show formulas instead of values (persists on save as sheet view state)"
+                active={viewState?.showFormulasActive ?? false}
+                disabled={disabled}
+                onClick={() => viewState?.onToggleShowFormulas()}
               />
             </Group>
             <Group label="Zoom">
