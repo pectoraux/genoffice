@@ -614,3 +614,112 @@ test.describe('W14 — bounded web reads (the single web transport cap)', () => 
     await expect(page.locator('[data-testid="file-label"]')).toHaveText('e2e-build.gproj')
   })
 })
+
+test.describe('W15 — the corrected unload lifecycle boundary', () => {
+  // The beforeunload guard is PURELY SYNCHRONOUS: it consults the dirty
+  // probe and (when dirty) prevents the unload so the browser asks the
+  // user natively — it NEVER initiates the controller's asynchronous
+  // Save/Don't-Save/Cancel close handshake, which cannot complete inside
+  // the browser's synchronous unload lifecycle. The in-app close request
+  // (`window.projectWeb.requestClose`, the native window-close button's
+  // web analog) is the one firing path for that handshake.
+
+  test('a DIRTY beforeunload dispatch stays purely synchronous: no controller dialog, no orphaned DOM dialog', async ({
+    page,
+  }) => {
+    await boot(page)
+    await dropFixture(page)
+    await page.keyboard.press('Insert')
+    await expect(rows(page)).toHaveCount(5)
+    await expect(page.locator('[data-testid="dirty-indicator"]')).toHaveAttribute(
+      'data-dirty',
+      'true',
+    )
+
+    // A synthetic beforeunload dispatch runs the real guard listener; a
+    // synthetic event raises NO native leave prompt (only real
+    // navigations do), so any dialog observed here would be the
+    // controller's — the defect this correction removes.
+    const dialogs: string[] = []
+    page.on('dialog', async (dialog) => {
+      dialogs.push(dialog.type())
+      await dialog.dismiss()
+    })
+
+    const prevented = await page.evaluate(() => {
+      const event = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(event)
+      return event.defaultPrevented
+    })
+    expect(prevented).toBe(true)
+
+    // The async close handshake was never begun: no DOM discard dialog,
+    // now or after the queue drains; the dirty document is untouched.
+    await expect(page.locator('[data-testid="discard-dialog"]')).toHaveCount(0)
+    await page.waitForTimeout(150)
+    await expect(page.locator('[data-testid="discard-dialog"]')).toHaveCount(0)
+    await expect(rows(page)).toHaveCount(5)
+    await expect(page.locator('[data-testid="dirty-indicator"]')).toHaveAttribute(
+      'data-dirty',
+      'true',
+    )
+    expect(dialogs).toEqual([])
+  })
+
+  test('the IN-APP close request runs the shared Save/Don’t-Save/Cancel flow to completion — never during unload', async ({
+    page,
+  }) => {
+    await boot(page)
+    await dropFixture(page)
+    await page.keyboard.press('Insert')
+    await expect(rows(page)).toHaveCount(5)
+    await expect(page.locator('[data-testid="dirty-indicator"]')).toHaveAttribute(
+      'data-dirty',
+      'true',
+    )
+
+    // The in-app path never touches the unload lifecycle: no native
+    // beforeunload dialog may appear at any point in this test.
+    const dialogs: string[] = []
+    page.on('dialog', async (dialog) => {
+      dialogs.push(dialog.type())
+      await dialog.dismiss()
+    })
+
+    // In-app close → the shared controller's three-button dialog.
+    await page.evaluate(() => {
+      ;(window as unknown as { projectWeb: { requestClose(): void } }).projectWeb.requestClose()
+    })
+    await expect(page.locator('[data-testid="discard-dialog"]')).toBeVisible()
+
+    // Cancel refuses: the dialog settles, the document survives.
+    await page.click('[data-testid="discard-cancel"]')
+    await expect(page.locator('[data-testid="discard-dialog"]')).toHaveCount(0)
+    await expect(rows(page)).toHaveCount(5)
+    await expect(page.locator('[data-testid="file-label"]')).toHaveText('e2e-build.gproj')
+
+    // In-app close again → Don't Save completes the handshake. The page
+    // does NOT unload (the browser owns that): the still-open document
+    // remains loaded — the in-app close settles the guard question only.
+    await page.evaluate(() => {
+      ;(window as unknown as { projectWeb: { requestClose(): void } }).projectWeb.requestClose()
+    })
+    await expect(page.locator('[data-testid="discard-dialog"]')).toBeVisible()
+    await page.click('[data-testid="discard-dont-save"]')
+    await expect(page.locator('[data-testid="discard-dialog"]')).toHaveCount(0)
+    await expect(rows(page)).toHaveCount(5)
+    await expect(page.locator('[data-testid="file-label"]')).toHaveText('e2e-build.gproj')
+
+    // The unload lifecycle remains independent of the settled handshake:
+    // a dirty-document unload attempt still prompts natively (here: the
+    // synthetic dispatch is still prevented, still with no DOM dialog).
+    const prevented = await page.evaluate(() => {
+      const event = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(event)
+      return event.defaultPrevented
+    })
+    expect(prevented).toBe(true)
+    await expect(page.locator('[data-testid="discard-dialog"]')).toHaveCount(0)
+    expect(dialogs).toEqual([])
+  })
+})

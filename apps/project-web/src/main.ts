@@ -37,8 +37,10 @@ declare global {
 }
 window.projectWeb = bridge
 
-// The beforeunload guard's synchronous dirty answer (the browser cannot
-// await the async close handshake during unload — see web-bridge.ts).
+// The beforeunload guard's synchronous dirty answer. The guard is purely
+// synchronous — it never initiates the controller's async close handshake
+// during unload (see web-bridge.ts); the in-app close request is the one
+// firing path for that handshake.
 bridge.setDirtyProbe(() => app.dirty)
 
 // The DOM menu bar: activation forwards through the bridge's menu-command

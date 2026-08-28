@@ -3,7 +3,12 @@
  * contract types): the ONE bounded web read (size-first rejection — the
  * browser analog of the desktop's stat-first bounded read), the
  * external-file (drag-and-drop) staging + readFile surface, the
- * three-button discard dialog, the beforeunload close guard, the
+ * three-button discard dialog, the BEFOREUNLOAD CLOSE GUARD (the
+ * corrected lifecycle boundary: the unload event is purely synchronous
+ * and NEVER initiates the controller's asynchronous close handshake —
+ * asserted with a registered close-handler spy AND against the REAL
+ * shared controller mounted on the REAL web bridge), the in-app close
+ * request (the one firing path for the registered handshake), the
  * menu-command dispatch path, and the download save flow (with the
  * `URL.createObjectURL` seam jsdom lacks stubbed; the real download is
  * E2E-proven in chromium).
@@ -12,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createWebBridge, MAX_WEB_FILE_BYTES, readCapped } from '../../src/web-bridge.js'
 import type { WebBridge } from '../../src/web-bridge.js'
 import type { MenuCommandId, NativeReadResult } from '@genoffice/project-host'
+import { createProjectApp } from '@genoffice/project-host'
 
 const flush = async (): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -145,39 +151,187 @@ describe('the unsaved-changes dialog', () => {
   })
 })
 
-describe('the beforeunload close guard', () => {
-  // ONE bridge per window — exactly the production shape (the entry creates
-  // a single bridge for the page's lifetime); the guard states are driven
-  // through the same bridge's probe/approval surfaces.
+describe('the beforeunload close guard (purely synchronous)', () => {
+  // ONE bridge per window — exactly the production shape (the entry
+  // creates a single bridge for the page's lifetime); the guard states
+  // are driven through the same bridge's probe surface. THE CORRECTED
+  // LIFECYCLE BOUNDARY: the unload event NEVER initiates the controller's
+  // asynchronous close handshake — the close-handler spy below must stay
+  // at ZERO across every unload dispatch, clean or dirty; the unload
+  // decision is the dirty probe alone.
   const bridge = createWebBridge()
-  let closed = 0
+  let closeRequests = 0
   let dirty = false
   bridge.onCloseRequested(() => {
-    closed += 1
+    closeRequests += 1
   })
   bridge.setDirtyProbe(() => dirty)
 
-  it('a clean document unloads without the native confirmation', () => {
+  afterEach(() => {
+    dirty = false // the shared window outlives this describe: never leave a stale preventing probe
+    document.querySelector('[data-testid="discard-dialog"]')?.remove()
+  })
+
+  it('a CLEAN unload allows the page to leave — and NEVER invokes the controller close handler', () => {
     dirty = false
     const event = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(event)
-    expect(closed).toBe(1)
+    expect(closeRequests).toBe(0)
     expect(event.defaultPrevented).toBe(false)
+    expect(document.querySelector('[data-testid="discard-dialog"]')).toBeNull()
   })
 
-  it('a DIRTY document triggers the native leave confirmation', () => {
+  it('a DIRTY unload is prevented (the native leave confirmation) — and NEVER invokes the controller close handler', () => {
     dirty = true
     const event = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(event)
+    expect(closeRequests).toBe(0)
     expect(event.defaultPrevented).toBe(true)
+    expect(document.querySelector('[data-testid="discard-dialog"]')).toBeNull()
   })
 
-  it('an approved close unloads without the confirmation', () => {
+  it('a DIRTY unload creates NO orphaned discard dialog — not during the event, not after the queue drains', async () => {
+    // The async close handshake is never BEGUN, so no DOM dialog can
+    // appear mid-unload; flush the microtask/timer queue to prove no
+    // deferred dialog materializes either.
+    dirty = true
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    await flush()
+    await flush()
+    expect(closeRequests).toBe(0)
+    expect(event.defaultPrevented).toBe(true)
+    expect(document.querySelector('[data-testid="discard-dialog"]')).toBeNull()
+  })
+
+  it('approveClose is a no-op on the web host — it creates NO unload bypass (a dirty document still prompts)', () => {
+    // The browser owns the unload decision (the dirty probe alone): no
+    // approval may silently allow a dirty unload, and no pending host
+    // close exists for an approval to release.
     dirty = true
     bridge.approveClose()
     const event = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(closeRequests).toBe(0)
+  })
+})
+
+describe('the in-app close request (the native window-close button’s web analog)', () => {
+  it('requestClose fires the registered controller close handshake — the in-app path, where it CAN complete', () => {
+    const bridge = createWebBridge()
+    let closeRequests = 0
+    bridge.onCloseRequested(() => {
+      closeRequests += 1
+    })
+    expect(closeRequests).toBe(0)
+    bridge.requestClose()
+    expect(closeRequests).toBe(1)
+  })
+
+  it('requestClose with NO registered handler is a harmless no-op', () => {
+    const bridge = createWebBridge()
+    expect(() => bridge.requestClose()).not.toThrow()
+  })
+})
+
+describe('the unload lifecycle NEVER starts the controller close flow (the REAL shared controller on the REAL web bridge)', () => {
+  // The integration proof of the corrected boundary: the controller the
+  // entry mounts (createProjectApp + start — which registers the REAL
+  // close handshake through onCloseRequested) is driven through a real
+  // edit, and a beforeunload dispatch must leave it completely untouched
+  // — no handshake, no approval, no dialog, the dirty document intact.
+  const mount = (): HTMLElement => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    return root
+  }
+  const insert = (app: ReturnType<typeof createProjectApp>): void => {
+    app.keydown({ key: 'Insert', ctrlOrMeta: false, shift: false, alt: false })
+  }
+  const undoAll = (app: ReturnType<typeof createProjectApp>): void => {
+    // The shared window outlives each test: leave the app CLEAN so this
+    // describe's bridges never prevent a LATER test's unload dispatch.
+    app.keydown({ key: 'z', ctrlOrMeta: true, shift: false, alt: false })
+  }
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('a CLEAN beforeunload proceeds, with NO close handshake and NO dialog', async () => {
+    const root = mount()
+    const bridge = createWebBridge()
+    const approvals: string[] = []
+    bridge.approveClose = () => approvals.push('approved')
+    const app = createProjectApp({ bridge, root })
+    bridge.setDirtyProbe(() => app.dirty)
+    app.start()
+    expect(app.dirty).toBe(false)
+
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+
     expect(event.defaultPrevented).toBe(false)
+    await flush()
+    expect(approvals).toEqual([]) // NOT even the clean-close approval ran
+    expect(document.querySelector('[data-testid="discard-dialog"]')).toBeNull()
+  })
+
+  it('a DIRTY beforeunload is prevented, with NO close handshake, NO approval, and NO orphaned discard dialog', async () => {
+    const root = mount()
+    const bridge = createWebBridge()
+    const approvals: string[] = []
+    bridge.approveClose = () => approvals.push('approved')
+    const app = createProjectApp({ bridge, root })
+    bridge.setDirtyProbe(() => app.dirty)
+    app.start()
+    insert(app)
+    expect(app.dirty).toBe(true)
+
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(document.querySelector('[data-testid="discard-dialog"]')).toBeNull()
+    await flush()
+    await flush()
+    expect(document.querySelector('[data-testid="discard-dialog"]')).toBeNull()
+    expect(approvals).toEqual([]) // the handshake never ran
+    expect(app.dirty).toBe(true) // the document survives untouched
+    undoAll(app)
+    expect(app.dirty).toBe(false)
+  })
+
+  it('the IN-APP close request runs the REAL handshake to completion (the flow that CAN complete)', async () => {
+    const root = mount()
+    const bridge = createWebBridge()
+    const approvals: string[] = []
+    bridge.approveClose = () => approvals.push('approved')
+    const app = createProjectApp({ bridge, root })
+    bridge.setDirtyProbe(() => app.dirty)
+    app.start()
+    insert(app)
+    expect(app.dirty).toBe(true)
+
+    // In-app close → the shared controller's Save/Don't-Save/Cancel dialog.
+    bridge.requestClose()
+    await flush()
+    expect(document.querySelector('[data-testid="discard-dialog"]')).not.toBeNull()
+
+    // Don't Save → the handshake completes with the approval.
+    document.querySelector<HTMLButtonElement>('[data-testid="discard-dont-save"]')!.click()
+    await flush()
+    expect(approvals).toEqual(['approved'])
+    expect(document.querySelector('[data-testid="discard-dialog"]')).toBeNull()
+
+    // The page does NOT unload (the browser owns that): a subsequent
+    // unload attempt still consults the dirty probe synchronously.
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    undoAll(app)
+    expect(app.dirty).toBe(false)
   })
 })
 

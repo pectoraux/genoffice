@@ -17,13 +17,21 @@
  * - `confirmDiscard`→ a three-button DOM dialog (Save / Don't Save /
  *                     Cancel — `window.confirm` is two-button and cannot
  *                     express the contract);
- * - `onCloseRequested`/`approveClose` → the `beforeunload` guard: the
- *                     browser cannot await an async handshake during
- *                     unload, so the bridge consults a registered DIRTY
- *                     PROBE synchronously and confirms leaving natively
- *                     when the document is dirty; the controller's
- *                     save/discard/cancel flow still governs every in-app
- *                     destructive action (New/Open over unsaved changes);
+ * - `onCloseRequested`/`approveClose` → the close-handshake registration
+ *                     surfaces. The beforeunload guard is PURELY
+ *                     SYNCHRONOUS: it consults the registered dirty probe
+ *                     and, when the document is dirty, prevents the
+ *                     unload so the browser asks the user natively. It
+ *                     NEVER initiates the controller's asynchronous
+ *                     save/discard/cancel close handshake — an async
+ *                     transaction cannot complete inside the browser's
+ *                     synchronous unload lifecycle. The registered close
+ *                     handler fires ONLY through the in-app close
+ *                     request (`requestClose` — the native window-close
+ *                     button's web analog), where the handshake CAN
+ *                     complete; and every in-app destructive action
+ *                     (New/Open over unsaved changes) consults the same
+ *                     confirmDiscard dialog the desktop uses;
  * - `onMenuCommand` → the DOM menu bar's activation path (the web analog
  *                     of the native menu's forwarding).
  *
@@ -88,9 +96,10 @@ export async function readCapped(file: File): Promise<NativeReadResult> {
 const baseName = (path: string): string => path.split(/[\\/]/).pop() ?? path
 
 /**
- * The web bridge surface: the shared `ProjectHostBridge` plus the two
- * web-only wiring seams (the dirty probe for the synchronous beforeunload
- * guard, and the menu-bar/external-file dispatch paths).
+ * The web bridge surface: the shared `ProjectHostBridge` plus the
+ * web-only wiring seams — the dirty probe for the SYNCHRONOUS beforeunload
+ * guard, the menu-bar/external-file dispatch paths, and the in-app close
+ * request (the one firing path for the registered close handshake).
  */
 export interface WebBridge extends ProjectHostBridge {
   /** Registers the synchronous dirty answer the beforeunload guard
@@ -105,6 +114,17 @@ export interface WebBridge extends ProjectHostBridge {
    * gate, the bounded read, and the adapter import all flow through the
    * SHARED controller path. */
   stageExternalFile(file: File): void
+  /** Fires the registered in-app close request — the controller's
+   * ASYNCHRONOUS save/discard/cancel close handshake, which CAN complete
+   * here because the page is not unloading (the native window-close
+   * button's web analog). The beforeunload guard NEVER calls this: the
+   * browser's unload lifecycle is synchronous and must not begin an
+   * async close transaction it cannot finish. No in-app affordance in
+   * the shared menu vocabulary closes the page today — the seam is the
+   * honest firing path for the contract registration the shared
+   * controller wires at `start()` (and the tests pin the boundary:
+   * unload never fires it, the in-app request does). */
+  requestClose(): void
 }
 
 export function createWebBridge(): WebBridge {
@@ -112,20 +132,21 @@ export function createWebBridge(): WebBridge {
   let closeHandler: (() => void) | undefined
   let openHandler: ((path: string) => void) | undefined
   let dirtyProbe: (() => boolean) | undefined
-  let closeApproved = false
   /** Staged external files by name (the readFile surface's store). */
   const stagedFiles = new Map<string, File>()
 
   // ---- the beforeunload close guard ------------------------------------
-  // The browser cannot await the controller's async save/discard/cancel
-  // handshake during unload: the guard consults the dirty probe
-  // synchronously and asks the user natively. The controller's
-  // handleCloseRequested still runs (its dialog is moot mid-unload), and
-  // every in-app destructive path (New/Open over unsaved changes) consults
-  // the same confirmDiscard dialog the desktop uses.
+  // PURELY SYNCHRONOUS (the corrected lifecycle boundary): the browser's
+  // unload event cannot complete the controller's asynchronous
+  // save/discard/cancel handshake, so the guard NEVER initiates it — no
+  // close-handler call, no dialog, no async transaction mid-unload. The
+  // unload decision is the DIRTY PROBE ALONE: clean → the unload
+  // proceeds; dirty → preventDefault (+ the legacy returnValue) so the
+  // browser asks the user natively. The controller's close handshake
+  // runs only through the in-app close request (`requestClose`), and
+  // every in-app destructive path (New/Open over unsaved changes)
+  // consults the same confirmDiscard dialog the desktop uses.
   window.addEventListener('beforeunload', (event) => {
-    closeHandler?.()
-    if (closeApproved) return
     if (dirtyProbe?.() === true) {
       event.preventDefault()
       // The legacy property some engines require for the prompt to appear.
@@ -198,11 +219,21 @@ export function createWebBridge(): WebBridge {
     },
 
     onCloseRequested(handler: () => void): void {
+      // The shared controller registers its close handshake here at
+      // start(). The web transport fires it ONLY through the in-app
+      // close request (requestClose) — never from the synchronous
+      // beforeunload lifecycle (see the guard above).
       closeHandler = handler
     },
 
     approveClose(): void {
-      closeApproved = true
+      // A deliberate no-op on the web host: the browser owns the unload
+      // decision (the synchronous dirty probe governs it), and the page
+      // has no programmatic close for an approval to permit — so there
+      // is no pending host close to release and NO unload bypass. The
+      // desktop transport releases its pending native close here; the
+      // web's in-app close handshake (requestClose) completes entirely
+      // in-page.
     },
 
     onOpenRequested(handler: (path: string) => void): void {
@@ -215,6 +246,12 @@ export function createWebBridge(): WebBridge {
 
     dispatchMenuCommand(command: MenuCommandId): void {
       menuHandler?.(command)
+    },
+
+    requestClose(): void {
+      // The in-app close request — the ONE web firing path for the
+      // registered controller close handshake (see the interface doc).
+      closeHandler?.()
     },
 
     stageExternalFile(file: File): void {
