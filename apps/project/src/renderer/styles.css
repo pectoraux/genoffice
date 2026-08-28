@@ -1,0 +1,406 @@
+/**
+ * PROJECT-027 — the Project desktop host stylesheet.
+ *
+ * Presentation only: the semantic content of every surface comes from the
+ * renderer-core view models; this file decides pixels, colors, and chrome.
+ * Deterministic accent palette (teal/amber) — no theme engine in the shell
+ * increment.
+ */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  font-family:
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    sans-serif;
+  font-size: 12px;
+  color: #1f2933;
+  background: #f7f8fa;
+}
+
+#root {
+  height: 100%;
+}
+
+.gp-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.gp-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid #d7dde3;
+  border-bottom: 1px solid #d7dde3;
+  background: #ffffff;
+}
+
+/* ---- task grid ---- */
+.gp-grid {
+  position: relative;
+  flex: none;
+  border-right: 1px solid #d7dde3;
+  background: #fff;
+}
+
+.gp-grid-header {
+  position: relative;
+  background: #eef1f4;
+  border-bottom: 1px solid #d7dde3;
+  overflow: hidden;
+}
+
+.gp-grid-header-cell {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-weight: 600;
+  color: #3e4c59;
+  border-right: 1px solid #d7dde3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gp-grid-scroll {
+  position: relative;
+  height: calc(100% - 30px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  outline: none;
+}
+
+.gp-grid-spacer {
+  position: relative;
+}
+
+.gp-grid-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #eef1f4;
+  cursor: default;
+}
+
+.gp-grid-row[data-selected='true'] {
+  background: #cdeef0;
+}
+
+.gp-grid-row[data-focused='true'] {
+  box-shadow: inset 0 0 0 1px #14808a;
+}
+
+.gp-grid-cell {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid #eef1f4;
+  color: #1f2933;
+}
+
+.gp-grid-cell[data-column='rowNumber'] {
+  color: #616e7c;
+  justify-content: flex-end;
+}
+
+.gp-cell-name .gp-name-marker {
+  display: inline-block;
+  width: 14px;
+  flex: none;
+  color: #616e7c;
+}
+
+.gp-cell-name .gp-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gp-cell-summary .gp-name-text {
+  font-weight: 700;
+}
+
+.gp-cell-milestone .gp-name-marker {
+  color: #b7791f;
+}
+
+.gp-cell-schedule {
+  color: #3e4c59;
+  font-variant-numeric: tabular-nums;
+}
+
+.gp-empty {
+  position: absolute;
+  top: 40px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: #9aa5b1;
+}
+
+/* ---- timeline ---- */
+.gp-timeline {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background: #fdfdfd;
+}
+
+.gp-axis {
+  position: relative;
+  background: #eef1f4;
+  border-bottom: 1px solid #d7dde3;
+  overflow: hidden;
+}
+
+.gp-axis-band {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  border-right: 1px solid #d7dde3;
+  color: #3e4c59;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.gp-timeline-scroll {
+  position: relative;
+  height: calc(100% - 30px);
+  overflow: hidden;
+}
+
+.gp-timeline-spacer {
+  position: relative;
+}
+
+.gp-calendar-band {
+  position: absolute;
+  top: 0;
+  pointer-events: none;
+}
+
+.gp-calendar-band[data-working='false'] {
+  background: #eceff2;
+}
+
+.gp-calendar-band[data-working='true'] {
+  background: transparent;
+}
+
+.gp-row-calendar-band {
+  position: absolute;
+  background: #e4e9ee;
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.gp-links {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.gp-link {
+  fill: none;
+  stroke: #7b8794;
+  stroke-width: 1.4;
+  pointer-events: none;
+}
+
+.gp-link-selected {
+  stroke: #14808a;
+  stroke-width: 2;
+}
+
+.gp-link-critical {
+  stroke: #c8532d;
+}
+
+.gp-link-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 9;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.gp-bar {
+  position: absolute;
+  background: #2b8ea0;
+  border-radius: 2px;
+  cursor: default;
+}
+
+.gp-bar[data-critical='true'] {
+  background: #c8532d;
+}
+
+.gp-bar-summary {
+  background: #3e4c59;
+}
+
+.gp-bar-summary::before,
+.gp-bar-summary::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+
+.gp-bar-summary::before {
+  left: -4px;
+  border-right: 5px solid #3e4c59;
+}
+
+.gp-bar-summary::after {
+  right: -4px;
+  border-left: 5px solid #3e4c59;
+}
+
+.gp-bar-progress {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: #14808a;
+  opacity: 0.75;
+}
+
+.gp-bar[data-critical='true'] .gp-bar-progress {
+  background: #8a3418;
+}
+
+.gp-milestone {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: #2b8ea0;
+  transform: rotate(45deg);
+  cursor: default;
+}
+
+.gp-milestone[data-critical='true'] {
+  background: #c8532d;
+}
+
+.gp-slack-bar {
+  position: absolute;
+  height: 4px;
+  background: repeating-linear-gradient(90deg, #9aa5b1 0 3px, transparent 3px 6px);
+  pointer-events: none;
+}
+
+.gp-resource-label {
+  position: absolute;
+  left: 0;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  color: #3e4c59;
+  border-top: 1px solid #eef1f4;
+  background: #f7f8fa;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gp-resource-band {
+  position: absolute;
+  height: 18px;
+  margin-top: 4px;
+  background: #9fd3da;
+  border: 1px solid #2b8ea0;
+  border-radius: 2px;
+}
+
+.gp-resource-band[data-overallocated='true'] {
+  background: #f2b8a2;
+  border-color: #c8532d;
+}
+
+/* ---- cell editor ---- */
+.gp-editor {
+  position: absolute;
+  z-index: 20;
+  border: 2px solid #14808a;
+  border-radius: 2px;
+  padding: 0 6px;
+  font: inherit;
+  color: inherit;
+  background: #fff;
+  outline: none;
+}
+
+/* ---- statusbar ---- */
+.gp-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 26px;
+  padding: 0 10px;
+  background: #eef1f4;
+  color: #3e4c59;
+  font-size: 11px;
+  flex: none;
+}
+
+.gp-status-file {
+  font-weight: 600;
+}
+
+.gp-status-dirty {
+  color: #c8532d;
+}
+
+.gp-status-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gp-status-error {
+  color: #c8532d;
+}
+
+.gp-status-diag {
+  color: #b7791f;
+}
+
+.gp-status-history {
+  color: #616e7c;
+}
+
+.gp-status-count {
+  color: #616e7c;
+}

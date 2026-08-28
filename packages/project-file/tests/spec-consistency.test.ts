@@ -25,7 +25,7 @@ import verificationMatrixRaw from '../../../spec/project/verification-matrix.md?
  *   - PROJECT-019A remains correctly represented as the accepted rescope
  *     decision (never as a separate graph node);
  *   - the next authorized product increment is correctly recorded
- *     (PROJECT-026 after the lockstep advance upon PROJECT-025's
+ *     (PROJECT-027 after the lockstep advance upon PROJECT-026's
  *     acceptance), with all of its direct dependencies inside the accepted
  *     set.
  *
@@ -240,14 +240,14 @@ describe('specification consistency — work-items ↔ dependency-graph', () => 
     expect(graphOrder).toHaveLength(49)
   })
 
-  it('PROJECT-026 remains the next authorized product increment', () => {
-    expect(frontierNext).toBe('PROJECT-026')
+  it('PROJECT-027 remains the next authorized product increment', () => {
+    expect(frontierNext).toBe('PROJECT-027')
     // The frontier must be well-formed: the accepted set is contiguous from
     // PROJECT-001, fully populated in the roadmap, and the next authorized
     // item sits beyond it.
     expect(frontierAcceptedFirst).toBe(1)
-    expect(frontierAcceptedLast).toBe(25)
-    for (let n = 1; n <= 25; n += 1) {
+    expect(frontierAcceptedLast).toBe(26)
+    for (let n = 1; n <= 26; n += 1) {
       const id = `PROJECT-${String(n).padStart(3, '0')}`
       expect(workItems.has(id), `${id} missing although inside the accepted frontier`).toBe(true)
       expect(graphDeps.has(id), `${id} missing from the graph although accepted`).toBe(true)
@@ -257,13 +257,13 @@ describe('specification consistency — work-items ↔ dependency-graph', () => 
     // and EVERY direct dependency is inside the accepted set (the
     // authorization gate: "a work item cannot be authorized until all direct
     // dependencies are objectively accepted").
-    expect(workItems.get('PROJECT-026')?.title).toBe('Critical-path/resource visualization')
-    const depsFromTable = [...(workItems.get('PROJECT-026')?.deps ?? [])].sort()
-    const depsFromGraph = [...(graphDeps.get('PROJECT-026') ?? [])].sort()
+    expect(workItems.get('PROJECT-027')?.title).toBe('Electron shell')
+    const depsFromTable = [...(workItems.get('PROJECT-027')?.deps ?? [])].sort()
+    const depsFromGraph = [...(graphDeps.get('PROJECT-027') ?? [])].sort()
     expect(depsFromGraph).toEqual(depsFromTable)
-    expect(depsFromTable).toEqual(['PROJECT-012', 'PROJECT-022'])
+    expect(depsFromTable).toEqual(['PROJECT-021', 'PROJECT-022'])
     for (const dep of depsFromTable) {
-      expect(acceptedSet, `PROJECT-026 dependency ${dep} is not yet accepted`).toContain(dep)
+      expect(acceptedSet, `PROJECT-027 dependency ${dep} is not yet accepted`).toContain(dep)
     }
   })
 
