@@ -1530,3 +1530,21 @@ Work Log:
 Stage Summary:
 
 - EXCEL-026 complete on branch excel-026-view-persistence: gridline visibility, formula-view state, the freeze-clear defect fix, and the print page-setup family all persist through the ONE canonical pageSetupStates family (read → typed wire → strict route validation → import → journal → save → reopen proven at every layer, with byte-preservation proofs). Workflow state: IMPLEMENTING → PR_OPEN (next: push + PR + CI web gate). NOT VERIFIED — the architect owns ARCHITECT_REVIEW → APPROVED → MERGED → VERIFIED.
+
+---
+
+Task ID: EXCEL-026-push-pr-ci
+Agent: Z.ai (Implementation Operator)
+Task: EXCEL-026 — push branch, open PR, drive CI to conclusion, attribute failures with API-level evidence.
+
+Work Log:
+
+- Pushed excel-026-view-persistence (head 67500a7) and opened PR #35 (https://github.com/pectoraux/genoffice/pull/35) with the full house-style body: Phase A audit summary, layer-by-layer implementation table, scope classification, no-op preservation proof, evidence table (all local gates), 14-file inventory.
+- CI driven to conclusion on 67500a7 (web job id 98850173257, log downloaded and parsed): `web` gate GREEN — Typecheck (web app + office API host) success; Unit tests success (web 241/241, web-host 78/78, contractor-core 499 passed + 4 skipped); Production build success (16.42s); Playwright browser E2E **147 passed (18.3m)** — exactly matching the local 7-batch run. The 147 includes the 6 new ribbon-view-persistence tests.
+- Failure attribution (all API-level): `test` fails ONLY at Lint — 20 annotations (check-run annotations API) file-for-file the established pre-existing set (.github×2, apps/docs×3, apps/sheets×5, apps/slides×3, BOQ.tsx×1 — 10 files, all frozen/non-Excel, zero in the EXCEL-026 diff; BOQ.tsx verified not in the diff via git); Check formatting SUCCESS + Check theme colors SUCCESS (no new debt). `e2e` fails ONLY at the frozen "E2E (Electron shell)" step (job-steps API) — the documented baseline. `foundation` fails ONLY at "Verify branch isolation" (the structural cross-domain guard that fires on every Excel PR, identical on merged+verified PRs #23/#25/#29/#31); its desktop-e2e and web-e2e jobs both SUCCESS. Vercel Preview Comments SUCCESS.
+- CI evidence comment posted on PR #35 (issuecomment 5452797708) with the full gate table + the 147-E2E breakdown for the EXCEL-026 scenarios.
+- Docs evidence commit (this one): verification-matrix.md EXCEL-026 CI line + this worklog entry. No further code commits — the green head stays intact for architect review.
+
+Stage Summary:
+
+- EXCEL-026 workflow state: PR_OPEN — PR #35, head 67500a7, canonical `web` gate GREEN (147 E2E in CI), all other check failures attributed pre-existing with API-level evidence. Awaiting ARCHITECT_REVIEW → APPROVED → MERGED (architect-owned). DEPLOYED evidence pending post-merge. NOT VERIFIED.
