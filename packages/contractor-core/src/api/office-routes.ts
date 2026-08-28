@@ -37,6 +37,7 @@ import {
   type SheetDvState,
   type SheetCfState,
   type SheetFilterState,
+  type StyleEditBorder,
   OOXML_ICON_SETS,
   definedNameIsSaveable,
   type SheetNoteState,
@@ -727,6 +728,18 @@ function expectStyleBorder(
 }
 
 /**
+ * One border edge on the wire (EXCEL-027): an object sets the edge, `null`
+ * CLEARS it, `undefined` leaves it alone. The null clear must survive
+ * validation — dropping it would silently keep the file's border (the same
+ * class of defect the EXCEL-026 freeze-clear fix closed for panes).
+ */
+function expectStyleBorderEdge(value: unknown, field: string): StyleEditBorder | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  return expectStyleBorder(value, field)
+}
+
+/**
  * Validate a `WorkbookStyleEdit` delta (Excel cell formatting). Malformed
  * deltas throw OfficeValidationError → the existing 400 validation error
  * shape. Only typed fields pass — the browser can never inject raw XML.
@@ -777,12 +790,21 @@ function expectStyleEdit(value: unknown, field: string): WorkbookStyleEdit {
   }
   const wrapText = expectOptionalBoolean(value.wrapText, `${field}.wrapText`)
   const textRotation = expectOptionalNumber(value.textRotation, `${field}.textRotation`)
+  if (textRotation !== undefined && !Number.isInteger(textRotation)) {
+    throw new OfficeValidationError('validation', `${field}.textRotation must be an integer`)
+  }
   if (textRotation !== undefined && (textRotation < 0 || textRotation > 255)) {
     throw new OfficeValidationError('validation', `${field}.textRotation must be within 0..255`)
   }
+  // EXCEL-027: the OOXML CT_CellAlignment indent is an unsignedInt (the
+  // desktop dialog and journal accept 0..250); the canonical writer passes
+  // the value through verbatim, so the wire bound matches the file domain.
   const indent = expectOptionalNumber(value.indent, `${field}.indent`)
-  if (indent !== undefined && (indent < 0 || indent > 15)) {
-    throw new OfficeValidationError('validation', `${field}.indent must be within 0..15`)
+  if (indent !== undefined && !Number.isInteger(indent)) {
+    throw new OfficeValidationError('validation', `${field}.indent must be an integer`)
+  }
+  if (indent !== undefined && (indent < 0 || indent > 250)) {
+    throw new OfficeValidationError('validation', `${field}.indent must be within 0..250`)
   }
   const numberFormat = expectOptionalString(value.numberFormat, `${field}.numberFormat`, 255)
   const protectionLocked = expectOptionalBoolean(
@@ -793,22 +815,10 @@ function expectStyleEdit(value: unknown, field: string): WorkbookStyleEdit {
     value.protectionHidden,
     `${field}.protectionHidden`,
   )
-  const borderTop =
-    value.borderTop !== undefined && value.borderTop !== null
-      ? expectStyleBorder(value.borderTop, `${field}.borderTop`)
-      : undefined
-  const borderBottom =
-    value.borderBottom !== undefined && value.borderBottom !== null
-      ? expectStyleBorder(value.borderBottom, `${field}.borderBottom`)
-      : undefined
-  const borderLeft =
-    value.borderLeft !== undefined && value.borderLeft !== null
-      ? expectStyleBorder(value.borderLeft, `${field}.borderLeft`)
-      : undefined
-  const borderRight =
-    value.borderRight !== undefined && value.borderRight !== null
-      ? expectStyleBorder(value.borderRight, `${field}.borderRight`)
-      : undefined
+  const borderTop = expectStyleBorderEdge(value.borderTop, `${field}.borderTop`)
+  const borderBottom = expectStyleBorderEdge(value.borderBottom, `${field}.borderBottom`)
+  const borderLeft = expectStyleBorderEdge(value.borderLeft, `${field}.borderLeft`)
+  const borderRight = expectStyleBorderEdge(value.borderRight, `${field}.borderRight`)
   return {
     ...(bold !== undefined ? { bold } : {}),
     ...(italic !== undefined ? { italic } : {}),

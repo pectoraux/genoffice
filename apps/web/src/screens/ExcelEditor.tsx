@@ -80,8 +80,11 @@ import {
 } from '../office/sheet-images'
 import {
   cellEditFromMutation,
+  INDENT_STEP_PX,
   mergeCellEdit,
   numfmtEditsFromMutation,
+  ooxmlTextRotationToUniver,
+  XLSX_BORDER_TO_UNIVER,
 } from '../office/cell-mutation-merge'
 import {
   applyShowFormulasView,
@@ -335,6 +338,47 @@ function formatToUniverStyle(fmt: CellFormatState): IStyleData | null {
     // The previous implementation used tb=1 (OVERFLOW), which is the default
     // non-wrapping strategy — a no-op for wrap.
     out.tb = 3
+  }
+  // EXCEL-027 import parity (desktop toUniverStyle in univer-sync.ts):
+  // number format, per-edge borders, text rotation, and indent seed the
+  // live model so imported advanced formatting RENDERS, not just persists.
+  if (fmt.numberFormat) out.n = { pattern: fmt.numberFormat }
+  if (fmt.border) {
+    const bd: Record<string, unknown> = {}
+    const toEdge = (
+      edge: { readonly style: string; readonly color?: string | undefined } | undefined,
+    ): { s: number; cl: { rgb: string } } | undefined => {
+      if (!edge) return undefined
+      const s = XLSX_BORDER_TO_UNIVER[edge.style]
+      if (s === undefined) return undefined
+      // Snapshot colors carry no '#' prefix (the reader's fontColor/fillColor
+      // convention); Univer wants '#RRGGBB'.
+      const rgb = edge.color
+        ? edge.color.startsWith('#')
+          ? edge.color
+          : `#${edge.color}`
+        : '#000000'
+      return { s, cl: { rgb } }
+    }
+    const top = toEdge(fmt.border.top)
+    if (top) bd.t = top
+    const bottom = toEdge(fmt.border.bottom)
+    if (bottom) bd.b = bottom
+    const left = toEdge(fmt.border.left)
+    if (left) bd.l = left
+    const right = toEdge(fmt.border.right)
+    if (right) bd.r = right
+    if (Object.keys(bd).length > 0) out.bd = bd as IStyleData['bd']
+  }
+  if (fmt.textRotation !== undefined) {
+    // The snapshot carries the OOXML convention (1..180, 'vertical' = 255);
+    // the engine wants { a: degrees } / { v: 1 }.
+    const tr =
+      fmt.textRotation === 'vertical' ? { a: 0, v: 1 } : ooxmlTextRotationToUniver(fmt.textRotation)
+    if (tr) out.tr = tr as IStyleData['tr']
+  }
+  if (fmt.indent !== undefined && fmt.indent > 0) {
+    out.pd = { l: fmt.indent * INDENT_STEP_PX } as IStyleData['pd']
   }
   const hasAny = Object.keys(out).length > 0
   return hasAny ? out : null

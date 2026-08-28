@@ -4302,3 +4302,166 @@ export async function buildExcelViewFixture(
 
   return toBytes(zip)
 }
+
+// ── EXCEL-027: advanced-formatting fixture ──────────────────────────────────
+
+/**
+ * Deterministic XLSX exercising the advanced cell-formatting surfaces:
+ *
+ *   Sheet "Data" (visible):
+ *     A1 "Mixed"     — border 1: top thin FFC00000 + bottom medium FF0000FF
+ *                      (different styles AND colors on different sides)
+ *     B1 "DiagLeft"  — border 2: left dashed + DIAGONAL hair +
+ *                      diagonalUp/Down (the diagonal-preservation control)
+ *     C1 "Rot45"     — textRotation 45 (counterclockwise)
+ *     D1 "RotCW"     — textRotation 135 (clockwise down)
+ *     E1 "Stacked"   — textRotation 255 (vertical stacked)
+ *     F1 "Indent"    — indent 2
+ *     G1 "Combo"     — THE combined cell: bold + solid fill FFFFF2CC +
+ *                      numFmt 164 "#,##0.000" + alignment center/bottom/wrap
+ *                      + border 3 (double FF00B050 on all four sides) +
+ *                      rotation 60. Editing any one property must preserve
+ *                      every other (accidental-replacement detector).
+ *     H1 "Wave"      — border 4: left style="wave" (NOT an ST_BorderStyle
+ *                      value) — the fail-closed import control: the browser
+ *                      never models it and the XML survives saves verbatim.
+ *     I1 "Plain"     — no formatting (the edit target)
+ *   Sheet "Other": A1 "Untouched" — the byte-preservation control.
+ */
+export async function buildExcelAdvancedFormatFixture(): Promise<Buffer> {
+  const zip = new JSZip()
+
+  addFile(
+    zip,
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>`,
+  )
+
+  addFile(
+    zip,
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Data" sheetId="1" r:id="rId1"/>
+    <sheet name="Other" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>`,
+  )
+
+  addFile(
+    zip,
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  )
+
+  addFile(
+    zip,
+    'xl/sharedStrings.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="9" uniqueCount="9">
+  <si><t>Mixed</t></si>
+  <si><t>DiagLeft</t></si>
+  <si><t>Rot45</t></si>
+  <si><t>RotCW</t></si>
+  <si><t>Stacked</t></si>
+  <si><t>Indent</t></si>
+  <si><t>Combo</t></si>
+  <si><t>Wave</t></si>
+  <si><t>Plain</t></si>
+  <si><t>Untouched</t></si>
+</sst>`,
+  )
+
+  // borders: 0 empty, 1 top thin red + bottom medium blue,
+  // 2 left dashed + diagonal hair + diagonalUp/Down, 3 double green x4,
+  // 4 left "wave" (unmodelable)
+  addFile(
+    zip,
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.000"/></numFmts>
+  <fonts count="2"><font/><font><b/></font></fonts>
+  <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill></fills>
+  <borders count="5">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border><left/><right/><top style="thin"><color rgb="FFC00000"/></top><bottom style="medium"><color rgb="FF0000FF"/></bottom><diagonal/></border>
+    <border diagonalDown="1" diagonalUp="1"><left style="dashed"/><right/><top/><bottom/><diagonal style="hair"/></border>
+    <border><left style="double"><color rgb="FF00B050"/></left><right style="double"><color rgb="FF00B050"/></right><top style="double"><color rgb="FF00B050"/></top><bottom style="double"><color rgb="FF00B050"/></bottom><diagonal/></border>
+    <border><left style="wave"/><right/><top/><bottom/><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="9">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="2" xfId="0" applyBorder="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment textRotation="45"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment textRotation="135"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment textRotation="255"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment indent="2"/></xf>
+    <xf numFmtId="164" fontId="1" fillId="1" borderId="3" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="bottom" wrapText="1" textRotation="60"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="4" xfId="0" applyBorder="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s" s="1"><v>0</v></c>
+      <c r="B1" t="s" s="2"><v>1</v></c>
+      <c r="C1" t="s" s="3"><v>2</v></c>
+      <c r="D1" t="s" s="4"><v>3</v></c>
+      <c r="E1" t="s" s="5"><v>4</v></c>
+      <c r="F1" t="s" s="6"><v>5</v></c>
+      <c r="G1" t="s" s="7"><v>6</v></c>
+      <c r="H1" t="s" s="8"><v>7</v></c>
+      <c r="I1" t="s"><v>8</v></c>
+    </row>
+  </sheetData>
+</worksheet>`,
+  )
+
+  addFile(
+    zip,
+    'xl/worksheets/sheet2.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="s"><v>9</v></c></row>
+  </sheetData>
+</worksheet>`,
+  )
+
+  return toBytes(zip)
+}

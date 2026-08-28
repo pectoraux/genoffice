@@ -1,9 +1,4 @@
-import type {
-  BorderPatch,
-  CellFormatPatch,
-  LayoutOperation,
-  StructuralOperation,
-} from './workbook-dsl'
+import type { CellFormatPatch, LayoutOperation, StructuralOperation } from './workbook-dsl'
 import type { SheetVisual } from './chart-visual'
 import type { SheetFilterState } from '../gateway/xlsx-filter'
 import type { DvWireRule } from '../gateway/xlsx-dv'
@@ -15,6 +10,50 @@ import type { SheetImageInfo } from '../gateway/xlsx-image-read'
 import type { DefinedNameEntry } from '../gateway/xlsx-defined-names'
 
 export type CellScalar = string | number | boolean | null
+
+/**
+ * The 13 OOXML ST_BorderStyle values the canonical editor can round-trip
+ * (EXCEL-027). Structurally mirrors `EditableBorderStyle` in gateway
+ * `types.ts`; defined here because the domain layer must not import from the
+ * gateway layer. An edge carrying any other style value is NOT modeled — the
+ * reader skips it and the file's own XML keeps it (untouched cells are never
+ * re-emitted, so the unrepresentable edge survives byte-for-byte).
+ */
+export type CellBorderStyleName =
+  | 'thin'
+  | 'medium'
+  | 'thick'
+  | 'dashed'
+  | 'dotted'
+  | 'double'
+  | 'hair'
+  | 'dashDot'
+  | 'dashDotDot'
+  | 'mediumDashed'
+  | 'mediumDashDot'
+  | 'mediumDashDotDot'
+  | 'slantDashDot'
+
+/** One resolved border edge (the file's exact value for that side). */
+export interface CellBorderEdge {
+  readonly style: CellBorderStyleName
+  /** '#RRGGBB'; absent when the edge carries no modeled color (theme/auto). */
+  readonly color?: string | undefined
+}
+
+/**
+ * Per-edge border state of one cell (EXCEL-027). Each side appears only when
+ * the file carries a border on that side with a modelable style; absent =
+ * no border on that side. Diagonal borders are deliberately NOT modeled (no
+ * canonical write path) — the writer preserves them verbatim for untouched
+ * cells.
+ */
+export interface CellBorderState {
+  readonly top?: CellBorderEdge | undefined
+  readonly bottom?: CellBorderEdge | undefined
+  readonly left?: CellBorderEdge | undefined
+  readonly right?: CellBorderEdge | undefined
+}
 
 export interface CellState {
   readonly value: CellScalar
@@ -35,9 +74,17 @@ export interface CellFormatState {
   readonly horizontalAlign?: 'left' | 'center' | 'right' | undefined
   readonly verticalAlign?: 'top' | 'center' | 'bottom' | undefined
   readonly wrapText?: boolean | undefined
+  /**
+   * OOXML text rotation (EXCEL-027): 1..90 = counterclockwise (text reads
+   * upward), 91..180 = clockwise (Excel stores 90 + degrees), 'vertical' =
+   * the stacked (255) form. Absent = no rotation; 0 is never emitted (it is
+   * the schema default). Malformed values are ignored for modeling.
+   */
   readonly textRotation?: number | 'vertical' | undefined
+  /** OOXML indent steps (EXCEL-027); absent = no indent. */
   readonly indent?: number | undefined
-  readonly border?: BorderPatch | undefined
+  /** Per-edge border state (EXCEL-027); absent = no modeled border. */
+  readonly border?: CellBorderState | undefined
 }
 
 export interface WorksheetState {

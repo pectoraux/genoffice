@@ -83,6 +83,7 @@ import {
   UnderlineIcon,
   FontColorIcon,
   FillColorIcon,
+  BorderColorIcon,
   AlignLeftIcon,
   AlignCenterIcon,
   AlignRightIcon,
@@ -134,6 +135,50 @@ const NUMBER_FORMATS: ReadonlyArray<{ label: string; pattern: string }> = [
   { label: 'Date', pattern: 'yyyy-mm-dd' },
   { label: 'Time', pattern: 'hh:mm' },
   { label: 'Text', pattern: '@' },
+]
+
+/**
+ * EXCEL-027 — border presets (desktop Home → Borders dropdown parity: all,
+ * outer, thick-outer, top, bottom, left, right, none) and the line-style
+ * picker (desktop Format Cells Border tab parity: the seven ST_BorderStyle
+ * names the desktop offers; the canonical gateway round-trips all 13).
+ */
+const BORDER_PRESETS: ReadonlyArray<{
+  label: string
+  value: 'all' | 'outer' | 'thickOuter' | 'top' | 'bottom' | 'left' | 'right' | 'none'
+}> = [
+  { label: 'All Borders', value: 'all' },
+  { label: 'Outside Borders', value: 'outer' },
+  { label: 'Thick Outside Borders', value: 'thickOuter' },
+  { label: 'Top Border', value: 'top' },
+  { label: 'Bottom Border', value: 'bottom' },
+  { label: 'Left Border', value: 'left' },
+  { label: 'Right Border', value: 'right' },
+  { label: 'No Border', value: 'none' },
+]
+const BORDER_LINE_STYLES: ReadonlyArray<{
+  label: string
+  value: 'thin' | 'medium' | 'thick' | 'double' | 'hair' | 'dashed' | 'dotted'
+}> = [
+  { label: 'Thin', value: 'thin' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'Thick', value: 'thick' },
+  { label: 'Double', value: 'double' },
+  { label: 'Hair', value: 'hair' },
+  { label: 'Dashed', value: 'dashed' },
+  { label: 'Dotted', value: 'dotted' },
+]
+/** EXCEL-027 — orientation presets (desktop Home → Orientation parity). */
+const ORIENTATION_PRESETS: ReadonlyArray<{
+  label: string
+  value: '45' | '-45' | 'vertical' | '90' | '-90' | '0'
+}> = [
+  { label: 'Angle Counterclockwise', value: '45' },
+  { label: 'Angle Clockwise', value: '-45' },
+  { label: 'Vertical Text', value: 'vertical' },
+  { label: 'Rotate Text Up', value: '90' },
+  { label: 'Rotate Text Down', value: '-90' },
+  { label: 'Clear Rotation', value: '0' },
 ]
 
 function Group({ label, children }: { label: string; children: ReactNode }) {
@@ -339,6 +384,14 @@ export function Ribbon({
   pageLayout?: RibbonPageLayoutProps | null
 }) {
   const [tab, setTab] = useState<TabId>('home')
+  // EXCEL-027 — border picker state (desktop parity: the line style and
+  // color persist across preset applications; the preset select itself is
+  // an ACTION control — it does not echo the selection's per-edge state,
+  // exactly like the desktop's Borders MenuSelect).
+  const [borderStyle, setBorderStyle] = useState<
+    'thin' | 'medium' | 'thick' | 'double' | 'hair' | 'dashed' | 'dotted'
+  >('thin')
+  const [borderColor, setBorderColor] = useState('#000000')
   // EXCEL-018 — Remove Duplicates dialog state. Mirrors the desktop's
   // `setShowDedupeDialog(true)` flow: the Data → Remove Duplicates
   // button opens a small inline dialog with a "My data has headers"
@@ -511,6 +564,77 @@ export function Ribbon({
                   onChange={(e) => api?.setFillColor(e.target.value)}
                 />
               </label>
+              {/* EXCEL-027 — Borders: preset + line style + color (desktop
+                  Home → Borders dropdown + Format Cells line-style picker).
+                  Every application fires FRange.setBorder → the single
+                  set-range-values mutation family → the existing style
+                  journal → the canonical WorkbookStyleEdit border deltas. */}
+              <select
+                className="rb-select"
+                aria-label="Border preset"
+                title="Borders — applies to the selection and persists on save"
+                disabled={disabled}
+                value=""
+                onChange={(e) => {
+                  const preset = e.target.value as
+                    'all' | 'outer' | 'thickOuter' | 'top' | 'bottom' | 'left' | 'right' | 'none'
+                  if (preset) api?.applyBorderPreset(preset, borderStyle, borderColor)
+                }}
+              >
+                <option value="">Borders</option>
+                {BORDER_PRESETS.map((preset) => (
+                  <option key={preset.value} value={preset.value}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="rb-select"
+                aria-label="Border line style"
+                title="Border line style"
+                style={{ maxWidth: 84 }}
+                disabled={disabled}
+                value={borderStyle}
+                onChange={(e) =>
+                  setBorderStyle(
+                    e.target.value as
+                      'thin' | 'medium' | 'thick' | 'double' | 'hair' | 'dashed' | 'dotted',
+                  )
+                }
+              >
+                {BORDER_LINE_STYLES.map((style) => (
+                  <option key={style.value} value={style.value}>
+                    {style.label}
+                  </option>
+                ))}
+              </select>
+              <label
+                className="rb-btn"
+                title="Border color"
+                aria-label="Border color"
+                style={{ position: 'relative', padding: 0 }}
+              >
+                <BorderColorIcon />
+                <input
+                  type="color"
+                  aria-label="Border color picker"
+                  className="rb-color"
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    opacity: 0,
+                    width: '100%',
+                    height: '100%',
+                    padding: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    cursor: 'pointer',
+                  }}
+                  value={borderColor}
+                  disabled={disabled}
+                  onChange={(e) => setBorderColor(e.target.value)}
+                />
+              </label>
             </Group>
             <Group label="Alignment">
               <RibbonButton
@@ -562,6 +686,29 @@ export function Ribbon({
                 disabled={disabled}
                 onClick={() => api?.toggleWrap()}
               />
+              {/* EXCEL-027 — Orientation presets (desktop Home → Orientation
+                  dropdown parity). Each application executes the public
+                  'sheet.command.set-text-rotation' command → the single
+                  set-range-values mutation family → the existing style
+                  journal → the canonical WorkbookStyleEdit.textRotation. */}
+              <select
+                className="rb-select"
+                aria-label="Orientation"
+                title="Orientation — rotates the selected text and persists on save"
+                disabled={disabled}
+                value=""
+                onChange={(e) => {
+                  const value = e.target.value as '45' | '-45' | 'vertical' | '90' | '-90' | '0'
+                  if (value) api?.setOrientation(value)
+                }}
+              >
+                <option value="">Orientation</option>
+                {ORIENTATION_PRESETS.map((preset) => (
+                  <option key={preset.value} value={preset.value}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
               <RibbonButton
                 title="Merge & center"
                 icon={<MergeIcon />}

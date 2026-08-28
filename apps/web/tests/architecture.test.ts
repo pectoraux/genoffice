@@ -1257,3 +1257,138 @@ describe('architecture: EXCEL-026 View / Page Layout uses the canonical wire fam
     expect(content).toContain('INTERCEPTOR_POINT.CELL_CONTENT')
   })
 })
+
+describe('architecture: EXCEL-027 Advanced Formatting uses the canonical style family', () => {
+  const webFiles = readFiles(join(WEB_ROOT, 'src'))
+
+  it('apps/web/src has NO border/rotation OOXML, JSZip, or browser XML construction', () => {
+    // The browser must never construct or parse <border>/<left>/<top>/
+    // textRotation XML — borders and rotation travel ONLY through the typed
+    // WorkbookStyleEdit fields of the existing cell-edit style family.
+    // (The XLSX_BORDER_TO_UNIVER table keys are ST_BorderStyle NAMES, not
+    // XML; the regexes below target actual XML construction.)
+    const forbidden = [
+      /<border\b/,
+      /<\/?(left|right|top|bottom)\b[^>]*style="/,
+      /borderId="/,
+      /textRotation="/,
+      /from\s+['"]jszip['"]/,
+      /<alignment\b/,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('apps/web/src has no second advanced-formatting persistence family', () => {
+    // The EXCEL-027 handoff forbids borderStates / rotationStates /
+    // advancedFormatStates: borders and rotation persist through the SAME
+    // WorkbookStyleEdit delta on the SAME cell-edit family as bold/fill.
+    const forbidden = [
+      /borderStates/,
+      /rotationStates/,
+      /advancedFormatStates/,
+      /borderEdits/,
+      /rotationEdits/,
+    ]
+    const violations = webFiles.filter((f) => {
+      const lines = nonCommentLines(f.content)
+      return lines.some((line) => forbidden.some((re) => re.test(line)))
+    })
+    expect(violations.map((v) => v.rel)).toEqual([])
+  })
+
+  it('border and rotation edits journal through the EXISTING style family', () => {
+    // cell-mutation-merge.ts maps the engine's bd/tr/pd patches onto the
+    // canonical WorkbookStyleEdit fields — the same styleDeltaFromUniver the
+    // basic families use, appended to the same CellEdit delta. No separate
+    // listener, no separate save-plan emission.
+    const mergePath = join(WEB_ROOT, 'src', 'office', 'cell-mutation-merge.ts')
+    const content = readFileSync(mergePath, 'utf8')
+    expect(content).toContain('borderTop')
+    expect(content).toContain('borderBottom')
+    expect(content).toContain('borderLeft')
+    expect(content).toContain('borderRight')
+    expect(content).toContain('textRotation')
+    expect(content).toContain('indent')
+    // The Univer↔OOXML conversion tables live with the journal (desktop
+    // edit-journal.ts parity) and are REUSED by the import seeding.
+    expect(content).toContain('UNIVER_BORDER_TO_XLSX')
+    expect(content).toContain('INDENT_STEP_PX')
+    expect(content).toContain('ooxmlTextRotationToUniver')
+    // The journal maps the engine's OWN mutation payload (set-range-values),
+    // not a browser-side re-interpretation.
+    expect(content).toContain("bd'")
+  })
+
+  it('border and rotation entry points use PUBLIC Univer APIs only', () => {
+    // FRange.setBorder + BorderType/BorderStyleTypes (public core enums) +
+    // the 'sheet.command.set-text-rotation' command — no private injector
+    // access, no internal services, no `as unknown as` escapes.
+    const runtimePath = join(WEB_ROOT, 'src', 'screens', 'excel', 'useExcelRuntime.ts')
+    const content = readFileSync(runtimePath, 'utf8')
+    expect(content).toContain('setBorder(')
+    expect(content).toContain("'sheet.command.set-text-rotation'")
+    expect(content).toMatch(/import\s*\{[^}]*BorderStyleTypes[^}]*\}\s*from\s*'@univerjs\/core'/)
+    expect(content).toMatch(/import\s*\{[^}]*BorderType[^}]*\}\s*from\s*'@univerjs\/core'/)
+    // No private-reach escapes inside the EXCEL-027 callbacks.
+    const applyBorder = content.slice(
+      content.indexOf('applyBorderPreset = useCallback'),
+      content.indexOf('setOrientation = useCallback'),
+    )
+    expect(applyBorder).not.toContain('as unknown as')
+    expect(applyBorder).not.toContain('_injector')
+    const setOrientation = content.slice(
+      content.indexOf('setOrientation = useCallback'),
+      content.indexOf('toggleMerge = useCallback'),
+    )
+    expect(setOrientation).not.toContain('as unknown as')
+    expect(setOrientation).not.toContain('_injector')
+  })
+
+  it('import seeding renders the file advanced formatting (desktop toUniverStyle parity)', () => {
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    const content = readFileSync(editorPath, 'utf8')
+    expect(content).toContain('XLSX_BORDER_TO_UNIVER')
+    expect(content).toContain('ooxmlTextRotationToUniver')
+    expect(content).toContain('INDENT_STEP_PX')
+    // Borders, rotation, indent, AND number format seed the live model.
+    expect(content).toContain('out.n = { pattern: fmt.numberFormat }')
+    expect(content).toContain('out.bd = bd as IStyleData')
+    expect(content).toContain("fmt.textRotation === 'vertical'")
+    expect(content).toContain('out.pd = { l: fmt.indent * INDENT_STEP_PX }')
+  })
+
+  it('Ribbon Home carries the border and orientation controls (no disabled stubs)', () => {
+    const ribbonPath = join(WEB_ROOT, 'src', 'screens', 'excel', 'Ribbon.tsx')
+    const content = readFileSync(ribbonPath, 'utf8')
+    // Borders: preset + line style + color, all wired to the runtime API.
+    expect(content).toContain('applyBorderPreset')
+    expect(content).toContain('BORDER_PRESETS')
+    expect(content).toContain('BORDER_LINE_STYLES')
+    expect(content).toContain('BorderColorIcon')
+    // Orientation presets: the desktop's six, wired to the rotation command.
+    expect(content).toContain('setOrientation')
+    expect(content).toContain('ORIENTATION_PRESETS')
+    expect(content).toContain('Vertical Text')
+    expect(content).toContain('Clear Rotation')
+    // No disabled placeholders for the advanced formatting surface.
+    expect(content).not.toContain('Borders (not persisted)')
+    expect(content).not.toContain('Orientation (not persisted)')
+  })
+
+  it('border and rotation state read back through the canonical snapshot', () => {
+    // The gateway reader exposes borders/rotation/indent on CellFormatState
+    // (the SAME field the browser imports from); the browser never builds a
+    // parallel read model. The wire types come through the existing
+    // type-only gateway import in the editor.
+    const editorPath = join(WEB_ROOT, 'src', 'screens', 'ExcelEditor.tsx')
+    const content = readFileSync(editorPath, 'utf8')
+    expect(content).toMatch(/fmt\.border\.(top|bottom|left|right)/)
+    expect(content).toContain('fmt.textRotation')
+    expect(content).toContain('fmt.indent')
+    expect(content).toContain('fmt.numberFormat')
+  })
+})

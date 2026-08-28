@@ -15,7 +15,7 @@
  * the save plan directly.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { BooleanNumber, WrapStrategy } from '@univerjs/core'
+import { BooleanNumber, BorderStyleTypes, BorderType, WrapStrategy } from '@univerjs/core'
 import type { IStyleData } from '@univerjs/core'
 import { ILayoutService } from '@univerjs/ui'
 // Side-effect import — loads the @univerjs/sheets-sort facade types, which
@@ -175,6 +175,35 @@ export interface ExcelRuntimeApi {
   setHAlign(v: 1 | 2 | 3): void
   setVAlign(v: 1 | 2 | 3): void
   toggleWrap(): void
+  /**
+   * EXCEL-027 — Apply a border preset to the active range through the
+   * PUBLIC FRange.setBorder(type, style, color) facade (Univer 0.25.1; the
+   * same call the desktop's `border:` ribbon command makes). The facade
+   * executes SetBorderBasicCommand → SetBorderCommand → the SINGLE
+   * `sheet.mutation.set-range-values` mutation carrying per-cell `bd` edge
+   * patches (a 'none' preset emits `bd: {t: null, b: null, l: null, r: null}`
+   * — null edges CLEAR). ExcelEditor's existing journal subscription maps
+   * those patches to canonical WorkbookStyleEdit borderTop/Bottom/Left/Right
+   * deltas via styleDeltaFromUniver — the SAME style family as bold/fill/
+   * alignment, persisted by the canonical StylesheetEditor (side-isolated:
+   * an untouched edge and every non-border property survive).
+   */
+  applyBorderPreset(
+    preset: 'all' | 'outer' | 'thickOuter' | 'top' | 'bottom' | 'left' | 'right' | 'none',
+    style: 'thin' | 'medium' | 'thick' | 'double' | 'hair' | 'dashed' | 'dotted',
+    color: string,
+  ): void
+  /**
+   * EXCEL-027 — Apply a text-rotation preset to the active range through the
+   * PUBLIC 'sheet.command.set-text-rotation' command (the same command the
+   * desktop's `rotate:` ribbon action executes; values are
+   * counterclockwise-positive degrees, 'v' = vertically stacked). The
+   * command emits the same `sheet.mutation.set-range-values` mutation with a
+   * `tr` patch, journaled by the existing subscription as the canonical
+   * WorkbookStyleEdit.textRotation (OOXML convention: 1..90 up, 91..180
+   * down, 255 stacked; 0 clears).
+   */
+  setOrientation(value: '45' | '-45' | 'vertical' | '90' | '-90' | '0'): void
   toggleMerge(): void
   undo(): void
   redo(): void
@@ -438,6 +467,81 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     const next = style?.tb === WrapStrategy.WRAP ? WrapStrategy.OVERFLOW : WrapStrategy.WRAP
     applyStyle({ tb: next })
   }, [applyStyle])
+
+  // EXCEL-027 — border presets, line styles, and colors. The preset →
+  // BorderType mapping mirrors the desktop's BORDER_COMMAND_TYPES exactly
+  // (thick-outer applies MEDIUM where the plain presets apply the chosen
+  // style — desktop ribbon-actions.ts parity).
+  const applyBorderPreset = useCallback(
+    (
+      preset: 'all' | 'outer' | 'thickOuter' | 'top' | 'bottom' | 'left' | 'right' | 'none',
+      style: 'thin' | 'medium' | 'thick' | 'double' | 'hair' | 'dashed' | 'dotted',
+      color: string,
+    ) => {
+      const r = rtRef.current
+      if (!r) return
+      const range = r.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getActiveRange()
+      if (!range) return
+      const type =
+        preset === 'all'
+          ? BorderType.ALL
+          : preset === 'outer'
+            ? BorderType.OUTSIDE
+            : preset === 'thickOuter'
+              ? BorderType.OUTSIDE
+              : preset === 'top'
+                ? BorderType.TOP
+                : preset === 'bottom'
+                  ? BorderType.BOTTOM
+                  : preset === 'left'
+                    ? BorderType.LEFT
+                    : preset === 'right'
+                      ? BorderType.RIGHT
+                      : BorderType.NONE
+      const lineStyle =
+        preset === 'thickOuter'
+          ? BorderStyleTypes.MEDIUM
+          : style === 'thin'
+            ? BorderStyleTypes.THIN
+            : style === 'medium'
+              ? BorderStyleTypes.MEDIUM
+              : style === 'thick'
+                ? BorderStyleTypes.THICK
+                : style === 'double'
+                  ? BorderStyleTypes.DOUBLE
+                  : style === 'hair'
+                    ? BorderStyleTypes.HAIR
+                    : style === 'dashed'
+                      ? BorderStyleTypes.DASHED
+                      : BorderStyleTypes.DOTTED
+      const rgb = /^#[0-9a-fA-F]{6}$/.test(color) ? color : '#000000'
+      try {
+        range.setBorder(type, lineStyle, rgb)
+      } catch {
+        /* border not applicable to the current selection */
+      }
+    },
+    [],
+  )
+
+  // EXCEL-027 — text rotation presets. The value convention is the desktop's:
+  // counterclockwise-positive degrees, 'v' for vertically stacked text, 0
+  // clears. The command falls back to the active selection when no explicit
+  // range is passed (SetStyleCommand reads the selection manager) — the
+  // exact call shape the desktop's `rotate:` handler makes.
+  const setOrientation = useCallback((value: '45' | '-45' | 'vertical' | '90' | '-90' | '0') => {
+    const r = rtRef.current
+    if (!r) return
+    const commandValue = value === 'vertical' ? 'v' : Number(value)
+    if (value !== 'vertical' && !Number.isFinite(commandValue)) return
+    try {
+      void r.univerAPI.executeCommand('sheet.command.set-text-rotation', {
+        value: commandValue,
+      })
+    } catch {
+      /* rotation not applicable to the current selection */
+    }
+  }, [])
 
   const toggleMerge = useCallback(() => {
     const r = rtRef.current
@@ -854,6 +958,8 @@ export function useExcelRuntime(rt: BrowserUniverRuntime | null): ExcelRuntimeAp
     setHAlign,
     setVAlign,
     toggleWrap,
+    applyBorderPreset,
+    setOrientation,
     toggleMerge,
     undo,
     redo,
