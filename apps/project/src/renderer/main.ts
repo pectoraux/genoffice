@@ -1,11 +1,13 @@
 /**
- * PROJECT-027 — the renderer entry: mounts the Project desktop host into
- * the window. The desktop bridge is the preload surface; keyboard events
- * translate through the host table and dispatch through the controller.
+ * The Project desktop renderer entry (PROJECT-027; the shared binding
+ * consumed from `@genoffice/project-host` since PROJECT-028): mounts the
+ * host controller into the window. The desktop bridge is the preload
+ * surface; keyboard events translate through the shared host table and
+ * dispatch through the controller.
  */
-import './styles.css'
-import { createProjectDesktopApp } from './app.js'
-import { translateKeyDown } from './translate.js'
+import '@genoffice/project-host/styles.css'
+import { createProjectApp, translateKeyDown } from '@genoffice/project-host'
+import type { KeyInput } from '@genoffice/project-host'
 import type { ProjectDesktopBridge } from '../shared/ipc.js'
 
 declare global {
@@ -20,14 +22,14 @@ if (root === null) {
 }
 
 const bridge: ProjectDesktopBridge = window.projectDesktop
-const app = createProjectDesktopApp({ bridge, root })
+const app = createProjectApp({ bridge, root })
 
 // Keyboard: the single translation path (the native menu accelerators are
 // displayed but not registered — see src/main/menu.ts).
 window.addEventListener(
   'keydown',
   (event) => {
-    const input = {
+    const input: KeyInput = {
       key: event.key,
       ctrlOrMeta: event.ctrlKey || event.metaKey,
       shift: event.shiftKey,

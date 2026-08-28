@@ -1,9 +1,10 @@
 /**
- * PROJECT-027 — the host controller battery (jsdom + the in-memory bridge
- * fake + the REAL engine/scheduler/adapters through the app's own
- * bindings).
+ * The shared host controller battery (jsdom + the in-memory bridge fake +
+ * the REAL engine/scheduler/adapters through the app's own bindings;
+ * established as the PROJECT-027 desktop suite, moved with the controller
+ * to `@genoffice/project-host` at PROJECT-028).
  *
- * Proves the desktop binding end-to-end at the unit layer: boot render,
+ * Proves the host binding end-to-end at the unit layer: boot render,
  * task creation through the renderer-core builder, cell editing through the
  * canonical edit flow with the SCHEDULE moving as the authority derives it,
  * undo/redo, dirty tracking by document identity, open/save through the
@@ -18,11 +19,11 @@ import type {
   MenuCommandId,
   NativeReadResult,
   OpenFileSelection,
-  ProjectDesktopBridge,
-} from '../../src/shared/ipc.js'
-import { createProjectDesktopApp } from '../../src/renderer/app.js'
-import type { ProjectDesktopApp } from '../../src/renderer/app.js'
-import { exportDocumentBytes, newProjectDocument } from '../../src/renderer/document.js'
+  ProjectHostBridge,
+} from '../../src/bridge.js'
+import { createProjectApp } from '../../src/app.js'
+import type { ProjectHostApp } from '../../src/app.js'
+import { exportDocumentBytes, newProjectDocument } from '../../src/document.js'
 
 const flush = async (): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -51,7 +52,7 @@ function fakeBridge(config: BridgeConfig = {}) {
     confirmDiscard: [] as string[],
     approveClose: 0,
   }
-  const bridge: ProjectDesktopBridge = {
+  const bridge: ProjectHostBridge = {
     pickOpenFile: async () => {
       calls.pickOpenFile += 1
       return config.pickOpenFile ? config.pickOpenFile() : null
@@ -108,7 +109,7 @@ const dirtyIndicator = (): string | null =>
     .dirty ?? null
 
 const key = (
-  app: ProjectDesktopApp,
+  app: ProjectHostApp,
   k: string,
   modifiers: Partial<{ ctrl: boolean; shift: boolean; alt: boolean }> = {},
 ): void => {
@@ -127,7 +128,7 @@ beforeEach(() => {
 describe('boot', () => {
   it('renders the shell chrome and the empty state for a new project', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     expect(document.querySelector('[data-testid="project-app"]')).not.toBeNull()
     expect(document.querySelector('[data-testid="empty-state"]')).not.toBeNull()
@@ -142,7 +143,7 @@ describe('boot', () => {
 describe('task creation through the renderer-core builder', () => {
   it('Insert creates, selects, focuses, and schedules the default task', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     const created = rows()
@@ -159,7 +160,7 @@ describe('task creation through the renderer-core builder', () => {
 
   it('a second task lands as the second root row', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     key(app, 'Insert')
@@ -171,7 +172,7 @@ describe('task creation through the renderer-core builder', () => {
 describe('cell editing through the canonical edit flow', () => {
   it('F2 → draft → Enter renames through a RenameTask command', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     key(app, 'F2')
@@ -188,7 +189,7 @@ describe('cell editing through the canonical edit flow', () => {
 
   it('Escape cancels without a command', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     const before = app.state.session
@@ -203,7 +204,7 @@ describe('cell editing through the canonical edit flow', () => {
 
   it('a duration edit moves the derived finish (the real scheduler)', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     const finishBefore = rowText(rows()[0]!)
@@ -231,7 +232,7 @@ describe('cell editing through the canonical edit flow', () => {
 
   it('an invalid duration draft surfaces the canonical reason and ends the editor', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     app.execute({
@@ -251,7 +252,7 @@ describe('cell editing through the canonical edit flow', () => {
 describe('history', () => {
   it('Ctrl+Z undoes; Ctrl+Shift+Z redoes (document + schedule + view)', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     // The pristine template reference — captured before any command.
     const initialDocument = app.state.session.document
@@ -280,7 +281,7 @@ describe('history', () => {
 
   it('undo with empty history is an honest no-op', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'z', { ctrl: true })
     expect(statusText()).toContain('Nothing to undo')
@@ -290,7 +291,7 @@ describe('history', () => {
 describe('dirty tracking by document identity', () => {
   it('save persists through the canonical adapter and clears the dirty flag', async () => {
     const { bridge, files, calls } = fakeBridge({ pickSavePath: '/tmp/save-target.gproj' })
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     expect(dirtyIndicator()).toBe('true')
@@ -306,7 +307,7 @@ describe('dirty tracking by document identity', () => {
 
   it('a save-as to an .xml path switches the canonical format', async () => {
     const { bridge, calls } = fakeBridge({ pickSavePath: '/tmp/interchange.xml' })
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     await app.execute({ kind: 'file', action: 'saveAs' })
@@ -319,7 +320,7 @@ describe('dirty tracking by document identity', () => {
 
   it('undo back to the saved document clears dirty (identity, not revision)', async () => {
     const { bridge } = fakeBridge({ pickSavePath: '/tmp/identity.gproj' })
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     await app.execute({ kind: 'file', action: 'save' })
@@ -342,7 +343,7 @@ describe('open through the bridge + canonical adapter', () => {
         read: { ok: true, bytes: exported.bytes },
       }),
     })
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     await app.execute({ kind: 'file', action: 'open' })
     expect(calls.pickOpenFile).toBe(1)
@@ -359,7 +360,7 @@ describe('open through the bridge + canonical adapter', () => {
       }),
       discardChoice: 'discard',
     })
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     const documentBefore = app.state.session.document
@@ -374,7 +375,7 @@ describe('open through the bridge + canonical adapter', () => {
     const { bridge, files, calls } = fakeBridge()
     files.set('/tmp/argv.gproj', exported.bytes)
     let openHandler: ((path: string) => void) | undefined
-    const app = createProjectDesktopApp({
+    const app = createProjectApp({
       bridge: {
         ...bridge,
         onOpenRequested: (handler) => {
@@ -402,7 +403,7 @@ describe('open through the bridge + canonical adapter', () => {
       }),
       discardChoice: 'discard',
     })
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     const documentBefore = app.state.session.document
@@ -422,7 +423,7 @@ describe('open through the bridge + canonical adapter', () => {
       discardChoice: 'discard',
     })
     let openHandler: ((path: string) => void) | undefined
-    const app = createProjectDesktopApp({
+    const app = createProjectApp({
       bridge: {
         ...bridge,
         onOpenRequested: (handler) => {
@@ -445,7 +446,7 @@ describe('open through the bridge + canonical adapter', () => {
   it('a missing argv path surfaces the read error (ENOENT) without touching the session', async () => {
     const { bridge, calls } = fakeBridge()
     let openHandler: ((path: string) => void) | undefined
-    const app = createProjectDesktopApp({
+    const app = createProjectApp({
       bridge: {
         ...bridge,
         onOpenRequested: (handler) => {
@@ -468,7 +469,7 @@ describe('open through the bridge + canonical adapter', () => {
 describe('the close guard handshake', () => {
   it('a clean document approves the close immediately', async () => {
     const { bridge, calls } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     await app.handleCloseRequested()
     expect(calls.approveClose).toBe(1)
@@ -480,7 +481,7 @@ describe('the close guard handshake', () => {
       discardChoice: 'save',
       pickSavePath: '/tmp/close-save.gproj',
     })
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     await app.handleCloseRequested()
@@ -491,7 +492,7 @@ describe('the close guard handshake', () => {
 
   it('Cancel refuses the close (no save, no approval)', async () => {
     const { bridge, calls } = fakeBridge({ discardChoice: 'cancel' })
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     await app.handleCloseRequested()
@@ -503,7 +504,7 @@ describe('the close guard handshake', () => {
 describe('menu command dispatch', () => {
   it('menu commands drive the same actions as the keyboard (file.new)', async () => {
     const { bridge } = fakeBridge({ discardChoice: 'discard' })
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     app.menuCommand('file.new' as MenuCommandId)
@@ -515,7 +516,7 @@ describe('menu command dispatch', () => {
 
   it('view.fit refits the viewport through the canonical fitViewport', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     app.menuCommand('view.zoomOut' as MenuCommandId)
@@ -531,7 +532,7 @@ describe('menu command dispatch', () => {
 describe('keyboard navigation + selection', () => {
   it('arrow keys walk the visible rows and shift extends', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     key(app, 'Insert')
@@ -544,7 +545,7 @@ describe('keyboard navigation + selection', () => {
 
   it('Delete removes the selected tasks through the builder commands', () => {
     const { bridge } = fakeBridge()
-    const app = createProjectDesktopApp({ bridge, root: mount() })
+    const app = createProjectApp({ bridge, root: mount() })
     app.start()
     key(app, 'Insert')
     key(app, 'Insert')

@@ -1,5 +1,7 @@
 /**
- * PROJECT-027 — the desktop host DOM rendering layer.
+ * The host DOM rendering layer — shared by both shells (established as the
+ * desktop DOM layer at PROJECT-027; moved to the shared
+ * `@genoffice/project-host` layer at PROJECT-028).
  *
  * Maps the shared renderer-core view models (the pure `ProjectGanttView`:
  * task grid, time axis, bars, milestones, dependency links, calendar

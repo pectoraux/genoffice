@@ -1,17 +1,25 @@
 /**
- * PROJECT-027 — the Project desktop host's IPC contract.
+ * The Project desktop host's IPC contract (PROJECT-027).
  *
  * The typed boundary between the Electron main process (native transport),
  * the preload bridge (contextBridge surface), and the renderer (the shared
- * renderer-core binding). This module owns CHANNEL IDENTIFIERS, MENU COMMAND
- * IDS, and the BRIDGE INTERFACE — transport vocabulary only. It contains no
- * Project semantics: every semantic value that crosses the bridge is either
- * raw file bytes (the canonical file adapters run renderer-side) or an
- * opaque path string.
+ * host binding from `@genoffice/project-host`, consumed since PROJECT-028).
+ * This module owns CHANNEL IDENTIFIERS, MENU COMMAND IDS, and the DESKTOP
+ * BRIDGE INTERFACE — transport vocabulary only. It contains no Project
+ * semantics: every semantic value that crosses the bridge is either raw
+ * file bytes (the canonical file adapters run in the shared host
+ * controller) or an opaque path string.
  *
- * The main process never imports a `@genoffice/project-*` package (the
+ * The main process never imports a `@genoffice/*` package (the desktop
  * architecture discipline suite asserts this): dialogs, file reads/writes,
- * and menu forwarding are native transport, not Project logic.
+ * and menu forwarding are native transport, not Project logic. This module
+ * therefore stays SELF-CONTAINED — it duplicates the host-neutral bridge
+ * contract that `@genoffice/project-host`'s `src/bridge.ts` defines, and
+ * the desktop architecture suite pins the two definitions structurally
+ * identical at compile time (the PROJECT-020 injected-runner
+ * structural-typing precedent), so the main-process bundle never pulls a
+ * `@genoffice/*` package while the desktop bridge can never drift from the
+ * shared contract.
  */
 
 /** Structured-clone channel identifiers for `ipcMain`/`ipcRenderer`. */
@@ -41,9 +49,9 @@ export const PROJECT_IPC = {
 
 /**
  * The native menu command vocabulary. Menu ids are TRANSPORT identifiers:
- * the renderer's translation layer (`src/renderer/translate.ts`) maps each
- * id to the canonical renderer-core intent/command action — the host menu
- * never names a Project semantic operation directly.
+ * the shared translation layer (`@genoffice/project-host`'s `translate.ts`)
+ * maps each id to the canonical renderer-core intent/command action — the
+ * host menu never names a Project semantic operation directly.
  */
 export type MenuCommandId =
   | 'file.new'
@@ -90,9 +98,10 @@ export interface DesktopAppInfo {
 
 /**
  * The typed surface the preload exposes as `window.projectDesktop`. The
- * renderer depends on THIS interface (injected into the host controller),
- * never on `electron` — which keeps the renderer binding unit-testable
- * under jsdom with an in-memory fake.
+ * renderer depends on THIS interface (injected into the shared host
+ * controller as a structurally-identical `ProjectHostBridge`), never on
+ * `electron` — which keeps the entire host binding unit-testable under
+ * jsdom with an in-memory fake.
  */
 export interface ProjectDesktopBridge {
   /** Native open dialog (`.gproj` / MSPDI XML filters) + the bounded read. */

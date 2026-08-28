@@ -13,9 +13,9 @@ import {
   translateMenuCommand,
   ZOOM_IN_FACTOR,
   ZOOM_OUT_FACTOR,
-} from '../../src/renderer/translate.js'
-import type { KeyInput } from '../../src/renderer/translate.js'
-import { MENU_COMMAND_IDS } from '../../src/main/menu.js'
+} from '../../src/translate.js'
+import type { KeyInput } from '../../src/translate.js'
+import { MENU_COMMAND_IDS } from '../../src/bridge.js'
 
 const key = (partial: Partial<KeyInput>): KeyInput => ({
   key: '',

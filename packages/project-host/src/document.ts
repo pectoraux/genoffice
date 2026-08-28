@@ -1,6 +1,8 @@
 /**
- * PROJECT-027 — the host document module: the new-document template and the
- * open/save composition over the CANONICAL file adapters.
+ * The host document module (shared by both shells — established at
+ * PROJECT-027, moved to the shared `@genoffice/project-host` layer at
+ * PROJECT-028): the new-document template and the open/save composition
+ * over the CANONICAL file adapters.
  *
  * The template is document DATA, never semantics: a standard Mon–Fri
  * 9:00–17:00 working week (the same shape the scheduling fixtures use) and

@@ -1,8 +1,10 @@
 /**
- * PROJECT-027 — the host keyboard/menu translation layer.
+ * The host keyboard/menu translation layer — shared by both shells
+ * (established at PROJECT-027; moved to the shared `@genoffice/project-host`
+ * layer at PROJECT-028).
  *
- * THE one mapping from native input (DOM KeyboardEvent essentials, native
- * menu command ids) to the canonical renderer-core vocabulary: view
+ * THE one mapping from host input (DOM KeyboardEvent essentials, host menu
+ * command ids) to the canonical renderer-core vocabulary: view
  * `ProjectViewIntent` values, host document actions (executed through the
  * renderer-core command builders), edit-flow actions, session history
  * actions, and file actions. Pure functions — the app controller
@@ -10,13 +12,13 @@
  * the session, or a document.
  *
  * This is the entire "host keyboard/menu translation" the PROJECT-027 work
- * item names: two tables (`translateKeyDown`, `translateMenuCommand`) and
+ * item named: two tables (`translateKeyDown`, `translateMenuCommand`) and
  * the zoom constants. The host invents no Project semantics — every
  * semantic action is expressed in the accepted renderer-core/intent
  * vocabulary.
  */
 import type { ProjectViewIntent } from '@genoffice/project-renderer-core'
-import type { MenuCommandId } from '../shared/ipc.js'
+import type { MenuCommandId } from './bridge.js'
 
 /**
  * A host action: what the controller should do with one native input. The

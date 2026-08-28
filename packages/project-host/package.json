@@ -1,0 +1,27 @@
+{
+  "name": "@genoffice/project-host",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "GenOffice Project shared host binding (PROJECT-028) — the ONE host controller both shells consume: the renderer session/view-state/projection pipeline binding @genoffice/project-renderer-core to the canonical engine, scheduler, and file adapters, the DOM rendering layer, the keyboard/menu translation tables, the document open/save composition, and the host-neutral transport bridge contract (implemented by the Electron preload on desktop and the web bridge in the browser). Host layer, NOT a foundation package: DOM APIs are its job; Electron/Node APIs are forbidden (architecture-lock §3/§13 — the discipline suite enforces it).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@genoffice/project-contracts": "0.1.0",
+    "@genoffice/project-file": "0.1.0",
+    "@genoffice/project-renderer-core": "0.1.0",
+    "@genoffice/project-scheduling": "0.1.0"
+  },
+  "devDependencies": {
+    "jsdom": "^28.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

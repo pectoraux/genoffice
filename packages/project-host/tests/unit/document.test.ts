@@ -19,7 +19,7 @@ import {
   formatForPath,
   importDocumentBytes,
   newProjectDocument,
-} from '../../src/renderer/document.js'
+} from '../../src/document.js'
 
 describe('the new-document template', () => {
   it('is a valid canonical document (the engine accepts it)', () => {

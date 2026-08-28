@@ -1,0 +1,29 @@
+{
+  "name": "@genoffice/project-web",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "GenOffice Project web host (PROJECT-028) — the browser shell over the shared @genoffice/project-host binding: the web transport bridge (bounded File API reads, Blob-download saves, the DOM discard dialog, the beforeunload close guard, drag-and-drop opens) and the DOM menu bar, mounting the SAME controller/DOM/translation binding the desktop shell runs against the canonical engine, scheduler, and file adapters. The browser-side implementation imports NO Node/Electron API (architecture-lock §3 — enforced structurally by the discipline suite and the built-bundle scan in CI). NOT a foundation package.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "vite build && playwright test --config e2e/playwright.config.ts"
+  },
+  "dependencies": {
+    "@genoffice/project-host": "0.1.0"
+  },
+  "devDependencies": {
+    "@genoffice/project-contracts": "0.1.0",
+    "@genoffice/project-file": "0.1.0",
+    "@genoffice/project-renderer-core": "0.1.0",
+    "@playwright/test": "^1.61.1",
+    "jsdom": "^28.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vitest": "^4.1.0"
+  }
+}
