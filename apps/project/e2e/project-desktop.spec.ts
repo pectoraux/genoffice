@@ -725,3 +725,154 @@ test.describe('E14 — single-instance lock isolation', () => {
     }
   })
 })
+
+test.describe('E15 — the shared ribbon (PROJECT-029)', () => {
+  test('boots with the complete ribbon vocabulary and honest boot echoes', async () => {
+    const { app, page } = await launchProjectApp()
+    try {
+      const ribbon = page.locator('[data-testid="ribbon"]')
+      await expect(ribbon).toBeVisible()
+      // The three tabs; the Task tab is active by default.
+      await expect(page.locator('[data-testid="ribbon-tab"][data-tab="task"]')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      )
+      await expect(page.locator('[data-testid="ribbon-tab"][data-tab="view"]')).toHaveAttribute(
+        'aria-selected',
+        'false',
+      )
+      await expect(page.locator('[data-testid="ribbon-panel"][data-tab="task"]')).toBeVisible()
+      await expect(page.locator('[data-testid="ribbon-panel"][data-tab="view"]')).toBeHidden()
+      // The complete shared command vocabulary, exactly once per command.
+      const commands = await page
+        .locator('[data-testid="ribbon-button"]')
+        .evaluateAll((buttons) => buttons.map((button) => button.dataset.command))
+      expect(new Set(commands).size).toBe(15)
+      expect([...commands].sort()).toEqual(
+        [
+          'file.new',
+          'file.open',
+          'file.save',
+          'file.saveAs',
+          'edit.undo',
+          'edit.redo',
+          'edit.deleteTask',
+          'task.create',
+          'task.indent',
+          'task.outdent',
+          'view.zoomIn',
+          'view.zoomOut',
+          'view.fit',
+          'view.collapse',
+          'view.expand',
+        ].sort(),
+      )
+      // Boot echoes: empty journal, no selection, clean document.
+      await expect(
+        page.locator('[data-testid="ribbon-button"][data-command="edit.undo"]'),
+      ).toBeDisabled()
+      await expect(
+        page.locator('[data-testid="ribbon-button"][data-command="edit.redo"]'),
+      ).toBeDisabled()
+      await expect(
+        page.locator('[data-testid="ribbon-button"][data-command="edit.deleteTask"]'),
+      ).toBeDisabled()
+      await expect(page.locator('[data-testid="ribbon-dirty-indicator"]')).toHaveAttribute(
+        'data-dirty',
+        'false',
+      )
+    } finally {
+      await closeApp(app)
+    }
+  })
+
+  test('the semantic controls drive the REAL engine paths through the ribbon', async () => {
+    const { app, page } = await launchProjectApp()
+    try {
+      // New Task through the ribbon: the builder → engine → scheduler chain.
+      await page.click('[data-testid="ribbon-button"][data-command="task.create"]')
+      await expect(rows(page)).toHaveCount(1)
+      const created = page.locator('[data-testid="task-row"][data-task-id="t1"]')
+      await expect(created).toHaveAttribute('data-selected', 'true')
+      // The scheduler derived the new task's cells (the authority's dates).
+      await expect(cellOf(page, 't1', 'start')).toContainText('2026-')
+      // The selection echoes flip on (delete/indent/outdent enabled).
+      await expect(
+        page.locator('[data-testid="ribbon-button"][data-command="edit.deleteTask"]'),
+      ).toBeEnabled()
+      await expect(
+        page.locator('[data-testid="ribbon-button"][data-command="task.indent"]'),
+      ).toBeEnabled()
+
+      // A second task, then Undo/Redo through the ribbon buttons (the
+      // session journal — the disabled states follow the honest flags).
+      await page.click('[data-testid="ribbon-button"][data-command="task.create"]')
+      await expect(rows(page)).toHaveCount(2)
+      const undo = page.locator('[data-testid="ribbon-button"][data-command="edit.undo"]')
+      const redo = page.locator('[data-testid="ribbon-button"][data-command="edit.redo"]')
+      await undo.click()
+      await expect(rows(page)).toHaveCount(1)
+      await redo.click()
+      await expect(rows(page)).toHaveCount(2)
+      await undo.click()
+      await undo.click()
+      await expect(rows(page)).toHaveCount(0)
+      await expect(undo).toBeDisabled()
+
+      // Delete through the ribbon: the real engine path removes the task.
+      await page.click('[data-testid="ribbon-button"][data-command="task.create"]')
+      await expect(rows(page)).toHaveCount(1)
+      await page.click('[data-testid="ribbon-button"][data-command="edit.deleteTask"]')
+      await expect(rows(page)).toHaveCount(0)
+      await expect(
+        page.locator('[data-testid="ribbon-button"][data-command="edit.deleteTask"]'),
+      ).toBeDisabled()
+    } finally {
+      await closeApp(app)
+    }
+  })
+
+  test('Save through the ribbon persists the canonical bytes; View controls zoom and fit', async () => {
+    const fixture = await writeE2EFixture()
+    const { app, page } = await launchProjectApp({ openFile: fixture })
+    try {
+      // A real edit through the canonical cell-editor flow.
+      await page.dblclick(`[data-testid="task-row"][data-task-id="t1"] [data-column="taskName"]`)
+      const editor = page.locator('[data-testid="cell-editor"]')
+      await editor.fill('Ribbon Renamed')
+      await page.keyboard.press('Enter')
+      await expect(page.locator('[data-testid="ribbon-dirty-indicator"]')).toHaveAttribute(
+        'data-dirty',
+        'true',
+      )
+      // Save through the ribbon (the File tab): the adapter export → the
+      // real fs write.
+      await page.click('[data-testid="ribbon-tab"][data-tab="file"]')
+      await expect(page.locator('[data-testid="ribbon-panel"][data-tab="file"]')).toBeVisible()
+      await page.click('[data-testid="ribbon-button"][data-command="file.save"]')
+      await expect(page.locator('[data-testid="ribbon-dirty-indicator"]')).toHaveAttribute(
+        'data-dirty',
+        'false',
+      )
+      await expect(statusText(page)).toContainText('Saved')
+      // The bytes on disk are the adapter's own output (readable back).
+      const roundTrip = gprojFileAdapter.import(readFileSync(fixture))
+      expect(roundTrip.diagnostics.every((d) => d.severity !== 'error')).toBe(true)
+      expect(roundTrip.document.tasks[0]!.name).toBe('Ribbon Renamed')
+
+      // The View tab: zoom out widens the axis; fit restores the span.
+      await page.click('[data-testid="ribbon-tab"][data-tab="view"]')
+      await expect(page.locator('[data-testid="ribbon-panel"][data-tab="view"]')).toBeVisible()
+      const bands = page.locator('[data-testid="time-axis"] .gp-axis-band')
+      const initial = await bands.count()
+      await page.click('[data-testid="ribbon-button"][data-command="view.zoomOut"]')
+      const zoomedOut = await bands.count()
+      expect(zoomedOut).toBeGreaterThan(initial)
+      await page.click('[data-testid="ribbon-button"][data-command="view.fit"]')
+      const fitted = await bands.count()
+      expect(fitted).toBeLessThan(zoomedOut)
+    } finally {
+      await closeApp(app)
+    }
+  })
+})

@@ -194,3 +194,28 @@ describe('the renderer entry consumes the shared host binding (PROJECT-028)', ()
     expect(mainEntry.includes('function createProjectApp')).toBe(false)
   })
 })
+
+describe('the shared ribbon (PROJECT-029)', () => {
+  it('the desktop shell adds NO ribbon of its own — the shared binding owns it', () => {
+    // The renderer surface is the ENTRY ONLY: the shared host binding's
+    // DOM layer mounts the ribbon in BOTH shells; the desktop never
+    // re-renders, re-interprets, or augments it.
+    for (const [name, source] of [
+      ['renderer/main.ts', mainEntry],
+      ['main/menu.ts', mainMenu],
+      ['main/index.ts', mainIndex],
+      ['preload/index.ts', preloadIndex],
+      ['shared/ipc.ts', sharedIpc],
+    ] as const) {
+      expect(source.includes('gp-ribbon'), `${name} must not build ribbon DOM`).toBe(false)
+      expect(
+        source.includes('createRibbon'),
+        `${name} must not construct a ribbon (the shared binding renders it)`,
+      ).toBe(false)
+      expect(
+        source.includes('RIBBON_'),
+        `${name} must not define a private ribbon vocabulary (the shared contract owns it)`,
+      ).toBe(false)
+    }
+  })
+})
