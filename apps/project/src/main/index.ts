@@ -3,12 +3,16 @@
  *
  * NATIVE TRANSPORT ONLY (architecture-lock §3): this process owns the
  * window/lifecycle integration, the native menu (activation forwarding),
- * the native file dialogs, size-capped raw filesystem reads/writes (every
+ * the native file pickers, size-capped raw filesystem reads/writes (every
  * read crosses the ONE canonical bounded helper — bounded-read.ts), and
  * the window close guard. It NEVER imports a `@genoffice/project-*`
  * package and never sees a `ProjectDocument` — documents cross the
  * boundary as raw bytes and the canonical file adapters run renderer-side
- * (the discipline suite asserts the import surface).
+ * (the discipline suite asserts the import surface). The unsaved-changes
+ * dialog left the transport at PROJECT-030: it is shared presentation
+ * rendered by the host binding's dialog layer in the renderer (the close
+ * handshake below is unchanged — a prevented close consults the renderer,
+ * which runs the shared dialog and approves or refuses).
  *
  * Close guard: the window 'close' event is prevented once and forwarded to
  * the renderer, which owns the dirty state and the save flow. The renderer
@@ -17,7 +21,7 @@
  */
 import { BrowserWindow, Menu, app, dialog, ipcMain, shell } from 'electron'
 import { writeFile } from 'node:fs/promises'
-import { basename, extname, join } from 'node:path'
+import { extname, join } from 'node:path'
 import { PROJECT_FILE_FILTERS, PROJECT_IPC } from '../shared/ipc.js'
 import type { MenuCommandId } from '../shared/ipc.js'
 import { MAX_FILE_BYTES, boundedReadFile } from './bounded-read.js'
@@ -149,24 +153,6 @@ function registerIpcHandlers(): void {
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
-  })
-
-  // Unsaved-changes dialog: Save / Don't Save / Cancel.
-  ipcMain.handle(PROJECT_IPC.confirmDiscard, async (_event, projectName: string) => {
-    const focused = BrowserWindow.getFocusedWindow() ?? mainWindow
-    if (focused === null) return 'cancel'
-    const title = basename(projectName) || 'Untitled'
-    const result = await dialog.showMessageBox(focused, {
-      type: 'warning',
-      buttons: ['Save', "Don't Save", 'Cancel'],
-      defaultId: 0,
-      cancelId: 2,
-      message: `Save changes to “${title}” before closing?`,
-      detail: 'Unsaved changes will be lost if you don’t save them.',
-    })
-    if (result.response === 0) return 'save'
-    if (result.response === 1) return 'discard'
-    return 'cancel'
   })
 
   ipcMain.handle(PROJECT_IPC.appInfo, () => ({

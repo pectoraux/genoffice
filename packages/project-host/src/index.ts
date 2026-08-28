@@ -14,6 +14,9 @@
  * - `createRibbon` / `RIBBON_TABS` / `RIBBON_COMMAND_IDS` — the shared
  *   tabbed command surface both hosts render through `createUI` (the
  *   ribbon vocabulary is the shared `MENU_COMMAND_IDS` exactly).
+ * - `confirmUnsavedChanges` / `createTaskInformationDialog` — the shared
+ *   dialog layer (PROJECT-030): the unsaved-changes dialog and the Task
+ *   Information dialog, one implementation rendered by both hosts.
  * - `translateKeyDown` / `translateMenuCommand` — the input translation
  *   tables (keyboard + menu converge on one action vocabulary).
  * - `newProjectDocument` / import/export composition — the document flows
@@ -34,7 +37,6 @@ export {
 } from './app.js'
 export { allocationQuery, scheduleRunner, workingTimeQuery } from './bindings.js'
 export {
-  type DiscardChoice,
   type HostAppInfo,
   MENU_COMMAND_IDS,
   type MenuCommandId,
@@ -43,6 +45,16 @@ export {
   PROJECT_FILE_FILTERS,
   type ProjectHostBridge,
 } from './bridge.js'
+export {
+  confirmUnsavedChanges,
+  createTaskInformationDialog,
+  type DiscardChoice,
+  type TaskInformationCallbacks,
+  type TaskInformationDialog,
+  type TaskInformationInput,
+  type TaskInformationRequest,
+  type TaskInformationResult,
+} from './dialogs.js'
 export {
   createRibbon,
   RIBBON_COMMAND_IDS,

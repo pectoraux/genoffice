@@ -76,7 +76,6 @@ function fakeBridge() {
       files.set(path, bytes)
       return { ok: true }
     },
-    confirmDiscard: async () => 'cancel',
     appInfo: async () => ({ platform: 'test', version: '0.1.0' }),
     onMenuCommand: () => {},
     onCloseRequested: () => {},
@@ -93,10 +92,10 @@ beforeEach(() => {
 // ---- layer 1: the ribbon module ---------------------------------------------
 
 describe('the ribbon vocabulary (transport discipline)', () => {
-  it('carries every shared menu command exactly once (the complete 15)', () => {
+  it('carries every shared menu command exactly once (the complete 16)', () => {
     expect(new Set(RIBBON_COMMAND_IDS).size).toBe(RIBBON_COMMAND_IDS.length)
     expect([...RIBBON_COMMAND_IDS].sort()).toEqual([...MENU_COMMAND_IDS].sort())
-    expect(RIBBON_COMMAND_IDS).toHaveLength(15)
+    expect(RIBBON_COMMAND_IDS).toHaveLength(16)
   })
 
   it('structures the vocabulary as tabs → groups → controls', () => {
@@ -128,12 +127,12 @@ describe('the ribbon structure', () => {
     expect(ribbonPanel('file').hidden).toBe(true)
   })
 
-  it('renders all 15 controls with command ids, labels, and accelerator tooltips', () => {
+  it('renders all 16 controls with command ids, labels, and accelerator tooltips', () => {
     createRibbon(mount(), { onCommand: () => {} })
     const buttons = ribbonButtons()
-    expect(buttons).toHaveLength(15)
+    expect(buttons).toHaveLength(16)
     const ids = buttons.map((button) => button.dataset.command)
-    expect(new Set(ids).size).toBe(15)
+    expect(new Set(ids).size).toBe(16)
     for (const button of buttons) {
       const label = button.querySelector('.gp-ribbon-button-label')?.textContent ?? ''
       expect(label.length).toBeGreaterThan(0)
@@ -286,7 +285,7 @@ describe('the ribbon through the real controller (engine/save paths)', () => {
     expect(appRoot.contains(ribbon)).toBe(true)
     // The ribbon sits above the workspace and carries the full vocabulary.
     expect(appRoot.querySelector('[data-testid="ribbon-button"]')).not.toBeNull()
-    expect(ribbonButtons()).toHaveLength(15)
+    expect(ribbonButtons()).toHaveLength(16)
   })
 
   it('boot echoes: nothing to undo/redo, no selection, clean document', () => {

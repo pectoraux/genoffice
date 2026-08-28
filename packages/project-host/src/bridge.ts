@@ -3,18 +3,20 @@
  *
  * The typed boundary between the host controller (this package) and each
  * shell's transport. It contains TRANSPORT vocabulary only: menu command
- * ids, file-picker/read/write surfaces, the unsaved-changes dialog, and the
- * close/open event subscriptions. It contains no Project semantics: every
- * semantic value that crosses a bridge is either raw file bytes (the
- * canonical file adapters run host-side, in the controller) or an opaque
- * path/name string.
+ * ids, file-picker/read/write surfaces, and the close/open event
+ * subscriptions. It contains no Project semantics and (since PROJECT-030,
+ * the shared dialogs increment) no dialog surfaces either: the modal
+ * dialogs are shared PRESENTATION rendered by this package's dialog layer
+ * (`src/dialogs.ts`) in BOTH hosts — every semantic value that crosses a
+ * bridge is either raw file bytes (the canonical file adapters run
+ * host-side, in the controller) or an opaque path/name string.
  *
  * Two implementations exist, one per shell (architecture-lock §3):
  *
  * - the Electron preload bridge (`apps/project/src/preload`) crossing
  *   `contextBridge` IPC to the native main-process transport;
  * - the web bridge (`apps/project-web/src/web-bridge.ts`) over browser
- *   primitives (the File API, Blob downloads, DOM dialogs, `beforeunload`).
+ *   primitives (the File API, Blob downloads, `beforeunload`).
  *
  * The controller depends on THIS interface (injected at construction),
  * never on Electron or Node — which keeps the entire host binding
@@ -36,6 +38,7 @@ export type MenuCommandId =
   | 'edit.redo'
   | 'edit.deleteTask'
   | 'task.create'
+  | 'task.information'
   | 'task.indent'
   | 'task.outdent'
   | 'view.zoomIn'
@@ -49,6 +52,8 @@ export type MenuCommandId =
  * (File → Edit → Task → View). Every host menu — the native desktop menu,
  * the web menu bar — carries exactly these ids; the shared translation
  * table covers every one of them (the discipline suites pin the lockstep).
+ * `task.information` (PROJECT-030) opens the shared Task Information
+ * dialog — the semantic dialog that operates on commands.
  */
 export const MENU_COMMAND_IDS: readonly MenuCommandId[] = [
   'file.new',
@@ -59,6 +64,7 @@ export const MENU_COMMAND_IDS: readonly MenuCommandId[] = [
   'edit.redo',
   'edit.deleteTask',
   'task.create',
+  'task.information',
   'task.indent',
   'task.outdent',
   'view.zoomIn',
@@ -86,9 +92,6 @@ export interface OpenFileSelection {
   readonly read: NativeReadResult
 }
 
-/** The unsaved-changes dialog answer. */
-export type DiscardChoice = 'save' | 'discard' | 'cancel'
-
 /** Host platform/version echo (presentation only, never semantics). */
 export interface HostAppInfo {
   readonly platform: string
@@ -112,8 +115,6 @@ export interface ProjectHostBridge {
   /** Writes raw bytes; errors are returned, never thrown, so the
    * controller's status surface can show them. */
   writeFile(path: string, bytes: Uint8Array): Promise<{ ok: boolean; error?: string }>
-  /** The unsaved-changes dialog: Save / Don't Save / Cancel. */
-  confirmDiscard(projectName: string): Promise<DiscardChoice>
   /** Host platform/version echo. */
   appInfo(): Promise<HostAppInfo>
   /** Host menu command activation (host chrome → controller). */

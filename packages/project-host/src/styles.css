@@ -529,3 +529,112 @@ body {
   color: #c8532d;
   font-size: 10px;
 }
+
+/* ---- the shared dialog layer (PROJECT-030) -------------------------------- */
+
+.gp-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(31, 41, 51, 0.32);
+}
+
+.gp-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 340px;
+  max-width: 480px;
+  padding: 16px 20px 18px;
+  background: #ffffff;
+  border: 1px solid #9fd4d9;
+  box-shadow: 0 10px 32px rgba(31, 41, 51, 0.24);
+}
+
+.gp-dialog-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #14808a;
+}
+
+.gp-dialog-detail {
+  font-size: 12px;
+  color: #616e7c;
+}
+
+.gp-dialog-fields {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  row-gap: 8px;
+  align-items: center;
+}
+
+.gp-dialog-label {
+  font-size: 12px;
+  color: #616e7c;
+}
+
+.gp-dialog-input {
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid #cdd5dd;
+  background: #ffffff;
+  font: inherit;
+  font-size: 13px;
+  color: #1f2933;
+}
+
+.gp-dialog-input:focus-visible {
+  outline: 2px solid #14808a;
+  outline-offset: -1px;
+}
+
+.gp-dialog-input:disabled {
+  background: #eef1f4;
+  color: #9aa5b1;
+}
+
+.gp-dialog-value {
+  font-size: 13px;
+  color: #1f2933;
+}
+
+.gp-dialog-error {
+  min-height: 16px;
+  font-size: 12px;
+  color: #c8532d;
+}
+
+.gp-dialog-error:empty {
+  display: none;
+}
+
+.gp-dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.gp-dialog-buttons button {
+  min-width: 84px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #9fd4d9;
+  background: #ffffff;
+  font: inherit;
+  font-size: 13px;
+  color: #1f2933;
+  cursor: default;
+}
+
+.gp-dialog-buttons button:hover {
+  background: #dceef0;
+}
+
+.gp-dialog-buttons button:focus-visible {
+  outline: 2px solid #14808a;
+  outline-offset: -2px;
+}

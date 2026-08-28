@@ -49,6 +49,10 @@ const MENUS: ReadonlyArray<{ readonly label: string; readonly items: readonly Me
       label: 'Task',
       items: [
         { id: 'task.create', label: 'New Task', accelerator: 'Insert' },
+        // Opens the shared Task Information dialog (PROJECT-030). No
+        // displayed accelerator — the shared keyboard table binds no key
+        // to it; menu/ribbon activation are the firing surfaces.
+        { id: 'task.information', label: 'Task Information…' },
         { id: 'task.indent', label: 'Indent Task', accelerator: 'Alt+Shift+Right' },
         { id: 'task.outdent', label: 'Outdent Task', accelerator: 'Alt+Shift+Left' },
       ],

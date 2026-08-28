@@ -24,7 +24,9 @@ import type { MenuCommandId } from './bridge.js'
  * A host action: what the controller should do with one native input. The
  * `document`/`edit`/`history`/`file` kinds are executed by the controller
  * through the renderer-core builders/flows (they need the live session);
- * `intent` values are dispatched straight through the reducer.
+ * `intent` values are dispatched straight through the reducer; `dialog`
+ * opens the shared dialog layer (PROJECT-030 — the dialog's confirmations
+ * flow back through these same action kinds, never beside them).
  */
 export type HostAction =
   | { readonly kind: 'none' }
@@ -37,6 +39,7 @@ export type HostAction =
   | { readonly kind: 'history'; readonly action: 'undo' | 'redo' }
   | { readonly kind: 'file'; readonly action: 'new' | 'open' | 'save' | 'saveAs' }
   | { readonly kind: 'view'; readonly action: 'collapseSelection' | 'expandSelection' }
+  | { readonly kind: 'dialog'; readonly action: 'taskInformation' }
 
 /** The presentation-only viewport zoom factors (fraction of the window). */
 export const ZOOM_IN_FACTOR = 0.8
@@ -165,6 +168,8 @@ export function translateMenuCommand(command: MenuCommandId): HostAction {
       return { kind: 'document', action: 'deleteSelection' }
     case 'task.create':
       return { kind: 'document', action: 'createTask' }
+    case 'task.information':
+      return { kind: 'dialog', action: 'taskInformation' }
     case 'task.indent':
       return { kind: 'document', action: 'indentSelection' }
     case 'task.outdent':

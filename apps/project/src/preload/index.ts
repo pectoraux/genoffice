@@ -21,9 +21,6 @@ const bridge: ProjectDesktopBridge = {
   writeFile: (path: string, bytes: Uint8Array) =>
     ipcRenderer.invoke(PROJECT_IPC.writeFile, path, bytes),
 
-  confirmDiscard: (projectName: string) =>
-    ipcRenderer.invoke(PROJECT_IPC.confirmDiscard, projectName),
-
   appInfo: () => ipcRenderer.invoke(PROJECT_IPC.appInfo),
 
   onMenuCommand: (handler) => {

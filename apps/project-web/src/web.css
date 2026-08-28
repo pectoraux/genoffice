@@ -84,59 +84,9 @@ body {
   color: #7b8794;
 }
 
-/* ---- the unsaved-changes dialog ---- */
-.gp-web-dialog-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(31, 41, 51, 0.32);
-}
-
-.gp-web-dialog {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  min-width: 320px;
-  padding: 18px 20px;
-  background: #ffffff;
-  border: 1px solid #c6cfd6;
-  border-radius: 4px;
-  box-shadow: 0 8px 28px rgba(31, 41, 51, 0.24);
-  font-size: 13px;
-}
-
-.gp-web-dialog-title {
-  color: #1f2933;
-}
-
-.gp-web-dialog-buttons {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.gp-web-dialog-buttons button {
-  min-width: 84px;
-  padding: 5px 12px;
-  font: inherit;
-  color: #1f2933;
-  background: #f2f4f6;
-  border: 1px solid #c6cfd6;
-  border-radius: 3px;
-  cursor: default;
-}
-
-.gp-web-dialog-buttons button:hover {
-  background: #dceef0;
-}
-
-.gp-web-dialog-buttons button:focus-visible {
-  outline: 2px solid #0f766e;
-  outline-offset: 1px;
-}
+/* (The unsaved-changes dialog moved to the SHARED host stylesheet at
+   PROJECT-030 — one dialog implementation rendered by both hosts; the
+   shared layer owns all dialog chrome.) */
 
 /* ---- the drag-over affordance ---- */
 body.gp-web-dragging::after {

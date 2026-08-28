@@ -26,6 +26,7 @@ import type {
   ImportDiagnostic,
   ProjectCommand,
   ProjectDocument,
+  TaskId,
 } from '@genoffice/project-contracts'
 import {
   canRedoRendererCommand,
@@ -34,6 +35,8 @@ import {
   commitTaskEditThroughSession,
   createRendererSession,
   createViewState,
+  initialTaskEditDraft,
+  isTaskFieldEditable,
   nextTaskIdentity,
   projectDocumentView,
   reconcileViewState,
@@ -66,6 +69,8 @@ import {
 import type { HostFileFormat } from './document.js'
 import { translateKeyDown, translateMenuCommand } from './translate.js'
 import type { HostAction, KeyInput } from './translate.js'
+import { confirmUnsavedChanges, createTaskInformationDialog } from './dialogs.js'
+import type { TaskInformationResult } from './dialogs.js'
 import { createUI } from './ui.js'
 import type { UI } from './ui.js'
 
@@ -148,6 +153,11 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
     // no dispatch of its own.
     onRibbonCommand: (command) => menuCommand(command),
   })
+
+  // The shared Task Information dialog (PROJECT-030) — one instance, the
+  // controller's only dialog surface. The unsaved-changes dialog is the
+  // layer's stateless prompt (created per consultation).
+  const taskDialog = createTaskInformationDialog()
 
   /** Host layout state (pixels): scroll window + pane width. Never view state. */
   const uiState = { firstRow: 0, timelineWidth: 1024 }
@@ -284,6 +294,35 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
 
   // ---- edit flows (the PROJECT-023/024 commit paths) ---------------------
 
+  /** Commits the ACTIVE task edit through the canonical one-call flow and
+   * folds the outcome into the controller state. Returns the failure text
+   * when the commit did not apply (the cell editor's status line and the
+   * Task Information dialog surface the same reason). */
+  function commitActiveTaskEdit(): { ok: boolean; reason?: string } {
+    const outcome = commitTaskEditThroughSession(state.session, state.viewState)
+    state = {
+      ...state,
+      session: outcome.session,
+      viewState: reconcileViewState(outcome.state, outcome.session.document),
+    }
+    if (outcome.commit.kind === 'invalid') {
+      const text = `Invalid edit: ${outcome.commit.reason}`
+      state = { ...state, status: { kind: 'error', text } }
+      render()
+      return { ok: false, reason: text }
+    }
+    if (outcome.result !== undefined && !outcome.result.accepted) {
+      const first = outcome.result.diagnostics[0]
+      const text = first === undefined ? 'Command rejected' : `${first.code}: ${first.message}`
+      state = { ...state, status: { kind: 'error', text } }
+      render()
+      return { ok: false, reason: text }
+    }
+    state = { ...state, status: { kind: 'info', text: 'Ready' } }
+    render()
+    return { ok: true }
+  }
+
   function executeEditAction(action: 'beginEditName' | 'commit' | 'cancel'): void {
     if (action === 'beginEditName') {
       const target = state.viewState.tasks.focusId
@@ -304,17 +343,7 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
     }
     // commit: the active edit (task or dependency) through its flow.
     if (state.viewState.editing !== undefined) {
-      const outcome = commitTaskEditThroughSession(state.session, state.viewState)
-      state = {
-        ...state,
-        session: outcome.session,
-        viewState: reconcileViewState(outcome.state, outcome.session.document),
-        status:
-          outcome.commit.kind === 'invalid'
-            ? { kind: 'error', text: `Invalid edit: ${outcome.commit.reason}` }
-            : { kind: 'info', text: 'Ready' },
-      }
-      render()
+      commitActiveTaskEdit()
       return
     }
     if (state.viewState.dependencyEditing !== undefined) {
@@ -362,6 +391,9 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
     format: HostFileFormat,
     diagnostics: readonly ImportDiagnostic[],
   ): void {
+    // A loaded document ends any open Task Information dialog — its
+    // target context is gone (the modal rule's honest completion).
+    taskDialog.close()
     const session = createRendererSession(document, { schedule: scheduleRunner })
     state = {
       session,
@@ -438,7 +470,9 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
   /** The unsaved-changes gate; false = the caller must stop (cancelled). */
   async function confirmUnsaved(): Promise<boolean> {
     if (!dirty()) return true
-    const choice = await bridge.confirmDiscard(state.session.document.properties.name)
+    // The SHARED dialog (PROJECT-030) — one implementation in both hosts;
+    // the pre-030 bridge transport surface is gone.
+    const choice = await confirmUnsavedChanges(state.session.document.properties.name)
     if (choice === 'cancel') return false
     if (choice === 'save') return saveFlow(false)
     return true
@@ -464,6 +498,76 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
     await saveFlow(action === 'saveAs')
   }
 
+  // ---- the shared Task Information dialog (PROJECT-030) -------------------
+
+  /** Runs the dialog's collected drafts through the CANONICAL per-field
+   * commit flow — the same begin → draft → `commitTaskEditThroughSession`
+   * pipeline the cell editor runs, one field at a time (the single-editor
+   * rule preserved by construction: the dialog never holds two view-state
+   * edits at once). Each accepted field is ONE semantic command
+   * (RenameTask / SetTaskDuration) through the session with journal +
+   * reschedule + reconcile — the dialog operates on commands, never
+   * beside them. A refused field stops the sequence: fields already
+   * applied stay applied (they were real commands — undoable); the
+   * dialog surfaces the reason and stays open for the fix or cancel. */
+  function commitDialogFields(
+    taskId: TaskId,
+    request: { name: string; duration: string },
+  ): TaskInformationResult {
+    const fields: ReadonlyArray<'taskName' | 'duration'> = ['taskName', 'duration']
+    for (const field of fields) {
+      const draft = field === 'taskName' ? request.name : request.duration
+      dispatchIntent({ type: 'beginTaskEdit', taskId, field })
+      // A non-editable field (a summary's duration) never begins an edit:
+      // the disabled input's unchanged draft is an honest no-op.
+      if (state.viewState.editing === undefined) continue
+      dispatchIntent({ type: 'updateTaskEditDraft', draft })
+      const outcome = commitActiveTaskEdit()
+      if (!outcome.ok) return { ok: false, reason: outcome.reason ?? 'Command rejected' }
+    }
+    state = { ...state, status: { kind: 'info', text: 'Ready' } }
+    render()
+    return { ok: true }
+  }
+
+  /** Opens (or refreshes) the shared Task Information dialog for the
+   * focused/selected task — the same target rule indent/outdent use. */
+  function openTaskInformation(): void {
+    const selected = state.viewState.tasks.taskIds
+    const target = state.viewState.tasks.focusId ?? selected[selected.length - 1]
+    const task =
+      target === undefined
+        ? undefined
+        : state.session.document.tasks.find((candidate) => candidate.id === target)
+    if (target === undefined || task === undefined) {
+      state = { ...state, status: { kind: 'info', text: 'No task selected' } }
+      render()
+      return
+    }
+    // The dialog supersedes the cell editor: any active edit ends first
+    // (its uncommitted draft is discarded — the dialog opens clean).
+    if (state.viewState.editing !== undefined) dispatchIntent({ type: 'endTaskEdit' })
+    else if (state.viewState.dependencyEditing !== undefined) {
+      dispatchIntent({ type: 'endDependencyEdit' })
+    }
+    const document = state.session.document
+    const schedule = state.session.schedule
+    taskDialog.open(
+      {
+        taskId: task.id,
+        name: initialTaskEditDraft(document, schedule, task.id, 'taskName'),
+        duration: initialTaskEditDraft(document, schedule, task.id, 'duration'),
+        durationEditable: isTaskFieldEditable(task, 'duration'),
+        start: initialTaskEditDraft(document, schedule, task.id, 'start'),
+        finish: initialTaskEditDraft(document, schedule, task.id, 'finish'),
+      },
+      {
+        onCommit: (request) => commitDialogFields(task.id, request),
+        onCancelled: () => {},
+      },
+    )
+  }
+
   // ---- action dispatch -----------------------------------------------------
 
   async function execute(action: HostAction): Promise<void> {
@@ -485,6 +589,9 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
       case 'file':
         await executeFileAction(action.action)
         return
+      case 'dialog':
+        openTaskInformation()
+        return
       case 'view': {
         const taskIds = state.viewState.tasks.taskIds
         dispatchIntent({
@@ -498,12 +605,25 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
   }
 
   function keydown(input: KeyInput): void {
+    // The open Task Information dialog owns the keyboard (the menu bar's
+    // open-dropdown precedent): the app's translation path is suspended
+    // until it closes. The dialog's own listener handles Enter/Escape.
+    if (taskDialog.isOpen()) return
     const editing =
       state.viewState.editing !== undefined || state.viewState.dependencyEditing !== undefined
     void execute(translateKeyDown(input, { editing }))
   }
 
   function menuCommand(command: MenuCommandId): void {
+    // The open Task Information dialog is modal to the app's COMMAND
+    // surface: host chrome activation is suspended — except the dialog's
+    // own open command, which refreshes it from the CURRENT document (the
+    // honest re-open). The close handshake is NOT a command: a host close
+    // request still runs its full save/discard/cancel flow while the
+    // dialog is open (a window close is never blockable by an in-page
+    // dialog), and an external open request (argv/drag-drop) loads and
+    // closes the dialog (loadDocument).
+    if (taskDialog.isOpen() && command !== 'task.information') return
     void execute(translateMenuCommand(command))
   }
 
@@ -512,7 +632,7 @@ export function createProjectApp(deps: AppDependencies): ProjectHostApp {
       bridge.approveClose()
       return
     }
-    const choice = await bridge.confirmDiscard(state.session.document.properties.name)
+    const choice = await confirmUnsavedChanges(state.session.document.properties.name)
     if (choice === 'cancel') return
     if (choice === 'save') {
       const saved = await saveFlow(false)

@@ -38,6 +38,10 @@ const editCommands: readonly MenuCommandSpec[] = [
 
 const taskCommands: readonly MenuCommandSpec[] = [
   { id: 'task.create', label: 'New Task', accelerator: 'Insert' },
+  // Opens the shared Task Information dialog (PROJECT-030). No displayed
+  // accelerator: the shared keyboard table owns execution and binds no key
+  // to it — menu/ribbon activation are the firing surfaces.
+  { id: 'task.information', label: 'Task Information…' },
   { id: 'task.indent', label: 'Indent Task', accelerator: 'Alt+Shift+Right' },
   { id: 'task.outdent', label: 'Outdent Task', accelerator: 'Alt+Shift+Left' },
 ]

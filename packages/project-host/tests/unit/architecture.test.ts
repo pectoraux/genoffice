@@ -26,6 +26,7 @@ import packageManifestRaw from '../../package.json?raw'
 import appSource from '../../src/app.ts?raw'
 import bindings from '../../src/bindings.ts?raw'
 import bridge from '../../src/bridge.ts?raw'
+import dialogsSource from '../../src/dialogs.ts?raw'
 import documentSource from '../../src/document.ts?raw'
 import indexSource from '../../src/index.ts?raw'
 import ribbonSource from '../../src/ribbon.ts?raw'
@@ -36,6 +37,7 @@ const packageSources: Record<string, string> = {
   'app.ts': appSource,
   'bindings.ts': bindings,
   'bridge.ts': bridge,
+  'dialogs.ts': dialogsSource,
   'document.ts': documentSource,
   'index.ts': indexSource,
   'ribbon.ts': ribbonSource,
@@ -189,17 +191,65 @@ describe('the package is browser-safe (the binding both shells load)', () => {
       'RIBBON_COMMAND_IDS',
       'RIBBON_TABS',
       'RibbonState',
+      'confirmUnsavedChanges',
+      'createTaskInformationDialog',
+      'TaskInformationInput',
+      'TaskInformationResult',
     ]) {
       expect(indexSource.includes(name), `the public surface must export "${name}"`).toBe(true)
     }
   })
 
-  it('the menu command vocabulary is complete and unique (15 ids)', () => {
-    expect(MENU_COMMAND_IDS.length).toBe(15)
-    expect(new Set(MENU_COMMAND_IDS).size).toBe(15)
+  it('the menu command vocabulary is complete and unique (16 ids)', () => {
+    expect(MENU_COMMAND_IDS.length).toBe(16)
+    expect(new Set(MENU_COMMAND_IDS).size).toBe(16)
     for (const id of MENU_COMMAND_IDS) {
       expect(bridge).toContain(`'${id}'`)
     }
+  })
+})
+
+describe('the shared dialog layer (PROJECT-030)', () => {
+  it('dialogs.ts imports NOTHING (pure shared presentation — the strictest shape in the package)', () => {
+    const imports = [...dialogsSource.matchAll(/from '([^']+)'/g)].map((match) => match[1]!)
+    expect(imports).toEqual([])
+    expect(dialogsSource.includes('require(')).toBe(false)
+  })
+
+  it('the bridge contract carries NO dialog surface (dialogs are shared presentation, not transport)', () => {
+    for (const source of [bridge, appSource]) {
+      expect(source.includes('confirmDiscard')).toBe(false)
+    }
+    // The controller consults the shared dialog directly, never the bridge.
+    expect(appSource).toContain('confirmUnsavedChanges(')
+    expect(appSource).toContain('taskDialog.open(')
+  })
+
+  it('the Task Information dialog operates ON commands — the canonical commit flow, never a private mutation', () => {
+    // The dialog's OK sequence routes through the SAME one-call commit
+    // flow the cell editor runs (renderer-core builds the command; the
+    // engine validates; the session journals) — scanned at the source.
+    expect(appSource).toContain('commitDialogFields')
+    expect(appSource).toContain('commitTaskEditThroughSession(state.session, state.viewState)')
+    // The dialog module itself constructs no command and reads no
+    // document/schedule/session surface.
+    for (const marker of [
+      'ProjectCommand',
+      'RenameTask',
+      'SetTaskDuration',
+      'session',
+      'schedule',
+    ]) {
+      expect(
+        dialogsSource.includes(marker),
+        `dialogs.ts must not touch "${marker}" (presentation only — the controller owns semantics)`,
+      ).toBe(false)
+    }
+  })
+
+  it('the open dialog is modal to the command surface (the gate is scanned at the source)', () => {
+    expect(appSource).toContain("if (taskDialog.isOpen() && command !== 'task.information') return")
+    expect(appSource).toContain('if (taskDialog.isOpen()) return')
   })
 })
 
